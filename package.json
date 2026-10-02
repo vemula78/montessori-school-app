@@ -1,0 +1,12 @@
+{
+  "name": "montessori-preschool-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 1 static prototype of a single-school Montessori preschool app (demo data only).",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "scan": "node scripts/scan-seed.mjs",
+    "serve": "node scripts/serve.mjs"
+  }
+}

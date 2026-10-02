@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+*.log
+# exported JSON backups from Settings → Export
+*-export*.json
+# research notes that name the real school — never publish to public Pages
+school-app-feature-list.md
+
+# local Claude Code preview config
+.claude/
+
+# internal process records (local paths, vendor references) — not for the public repo
+PLAN.md
+PLAN-REVIEW-LOG.md
