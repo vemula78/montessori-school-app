@@ -12,3 +12,20 @@ school-app-feature-list.md
 # internal process records (local paths, vendor references) — not for the public repo
 PLAN.md
 PLAN-REVIEW-LOG.md
+PLAN-PHASE2.md
+
+# secrets: any env file except the placeholder template (Supabase keys, Razorpay keys, VAPID private key)
+.env*
+!.env.example
+!supabase/.env.example
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
+supabase/.env.local
+# real-app developer overrides (local Supabase URL/keys for app/)
+app/config.local.js
+app/*.local.js
+
+# real school details for the first-run generator
+first-run.json
+first-run.sql

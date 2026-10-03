@@ -22,9 +22,9 @@ async function refundForm(ctx, pay, studentInvoices) {
   if (!rows.length) { toast('Nothing left to refund on this payment', 'bad'); return false; }
   return formModal({
     title: `Refund against ${pay.receiptNumber}`, submitLabel: 'Record refund',
-    fieldsHtml: `<label class="field"><span class="lbl">Invoice</span><select name="invoiceId">${options(rows.map((r) => ({ value: r.invoiceId, label: `${r.number} - up to ${formatPaise(r.left)}` })), rows[0].invoiceId)}</select></label>
+    fieldsHtml: `${pay.mode === 'online' ? '<div class="banner warn"><strong>This was an online payment.</strong> Refund the money from the payment provider\'s dashboard: the refund is then recorded here automatically. Use this form only to record a refund that was already made, otherwise it will be counted twice.</div>' : ''}<label class="field"><span class="lbl">Invoice</span><select name="invoiceId">${options(rows.map((r) => ({ value: r.invoiceId, label: `${r.number} - up to ${formatPaise(r.left)}` })), rows[0].invoiceId)}</select></label>
       <label class="field"><span class="lbl">Amount (&#8377;)</span><input name="amount" inputmode="decimal" required></label>
-      <div class="grid cols-2"><label class="field"><span class="lbl">Refund mode</span><select name="mode">${options(MODES.map(([value, label]) => ({ value, label })), 'cash')}</select></label>
+      <div class="grid cols-2"><label class="field"><span class="lbl">Refund mode</span><select name="mode">${options((pay.mode === 'online' ? [...MODES, ['online', 'Online (payment provider)']] : MODES).map(([value, label]) => ({ value, label })), pay.mode === 'online' ? 'online' : 'cash')}</select></label>
       <label class="field"><span class="lbl">Date</span><input type="date" name="date" value="${esc(todayISO())}" max="${esc(todayISO())}" required></label></div>
       <label class="field"><span class="lbl">Reference (optional)</span><input name="reference"></label>
       <label class="field"><span class="lbl">Reason (required)</span><textarea name="reason" required></textarea></label>`,
@@ -84,7 +84,7 @@ export async function render(ctx) {
     </form>` : ''}` : ''}
     <h2 style="margin-top:20px">Payments</h2>
     ${payments.length ? `<div class="tablewrap"><table><thead><tr><th>Receipt</th><th>Date</th><th>Mode</th><th class="r">Amount</th><th>Applied to</th><th>Status</th><th></th></tr></thead><tbody>
-      ${payments.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td class="nowrap"><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td class="nowrap">${fdate(p.paidOn)}</td><td>${esc(p.mode)}${p.mode === 'online-mock' ? ' ' + badge('MOCK', 'warn') : ''}</td>
+      ${payments.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td class="nowrap"><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td class="nowrap">${fdate(p.paidOn)}</td><td>${esc(p.mode)}${p.mode === 'online-mock' ? ' ' + badge('MOCK', 'warn') : ''}${p.mode === 'online' && p.gatewayMode === 'test' ? ' ' + badge('TEST', 'warn') : ''}</td>
         <td class="r num">${money(p.amountPaise)}</td><td><small>${p.allocations.map((a) => esc(invNum.get(a.invoiceId) || a.invoiceId) + ' ' + money(a.amountPaise)).join('<br>') || DASH}${p.creditPaise ? `<br>credit ${money(p.creditPaise)}` : ''}</small></td>
         <td>${p.status === 'valid' ? badge('Valid', 'ok') : badge('Cancelled', 'mute')}${p.status === 'cancelled' && p.cancelReason ? `<br><small>${esc(p.cancelReason)}</small>` : ''}</td>
         <td class="nowrap"><a class="btn sm" href="#/print/receipt/${esc(p.id)}">Receipt</a>${staff && p.status === 'valid' ? ` <button class="btn sm" data-refund="${esc(p.id)}">Refund</button> <button class="btn sm ghost" data-cancel="${esc(p.id)}">Cancel</button>` : ''}</td></tr>`).join('')}

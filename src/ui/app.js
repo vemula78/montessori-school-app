@@ -4,6 +4,13 @@ import { parseHash, matchRoute, go, setQuery, href, startRouter } from './router
 import { renderShell, markActive, setBadges, curatePersonas } from './shell.js';
 import * as runner from './sim-runner.js';
 import { esc, banner, empty, toast, onQuotaError, downloadText, readFileText, attempt, errMessage } from './components.js';
+import { isRealMode } from './mode.js';
+import { renderLogin, renderBlocked } from './login.js';
+import { renderInvite } from './invite.js';
+import { renderConsent } from './consent.js';
+import * as push from './push.js';
+
+const REAL = isRealMode();
 
 const root = document.getElementById('app');
 const ALL = ['admin', 'teacher', 'accountant', 'parent', 'driver'];
@@ -29,7 +36,16 @@ const ROUTES = [
   { pattern: '/print/receipt/:id', roles: ['admin', 'accountant', 'parent'], bare: true, load: () => import('./screens/receipt-print.js') },
   { pattern: '/reports', roles: ['admin', 'accountant'], load: () => import('./screens/reports.js') },
   { pattern: '/audit', roles: ['admin', 'accountant'], load: () => import('./screens/audit.js') },
-  { pattern: '/settings', roles: ['admin'], load: () => import('./screens/settings.js') },
+  { pattern: '/settings', roles: ALL, demoRoles: ['admin'], load: () => import('./screens/settings.js') },
+  // ---- real app only (the demo has no such routes) ----
+  { pattern: '/privacy', roles: ALL, realOnly: true, load: () => import('./privacy.js') },
+  { pattern: '/reports/settlements', roles: ['admin', 'accountant'], realOnly: true, load: () => import('./screens/settlements.js') },
+  { pattern: '/fees/late-fees', roles: ['admin', 'accountant'], realOnly: true, load: () => import('./screens/late-fees.js') },
+  { pattern: '/reminders', roles: ['admin', 'accountant', 'parent'], realOnly: true, load: () => import('./screens/reminders.js') },
+  { pattern: '/invites', roles: ['admin', 'accountant'], realOnly: true, load: () => import('./screens/invites.js') },
+  { pattern: '/print/invites', roles: ['admin', 'accountant'], realOnly: true, bare: true, load: () => import('./screens/invites-print.js') },
+  { pattern: '/import', roles: ['admin'], realOnly: true, load: () => import('./screens/import-people.js') },
+  { pattern: '/import/fees', roles: ['admin', 'accountant'], realOnly: true, load: () => import('./screens/import-fees.js') },
 ];
 
 const ROLE_BLURB = {
@@ -81,10 +97,10 @@ async function checkReconcile() {
 function refreshBanners() {
   if (!shell) return;
   const parts = [];
-  if (quotaErr) {
+  if (!REAL && quotaErr) {
     parts.push(banner('bad', `<div class="row between"><span><strong>Browser storage is full - changes are not being saved.</strong> Export a JSON backup now, then free space (Settings).</span><span class="row"><button class="btn sm" data-act="export">Export JSON</button><a class="btn sm" href="#/settings">Settings</a></span></div>`));
   }
-  const ck = corruptKeys();
+  const ck = REAL ? [] : corruptKeys(); // browser-storage recovery is a demo-only concern
   if (ck.length) {
     parts.push(banner('warn', `<div class="row between"><span><strong>A damaged copy of earlier data was preserved</strong> (${ck.length}). Nothing was deleted.</span><a class="btn sm" href="#/settings">Review in Settings</a></div>`));
   }
@@ -139,7 +155,10 @@ async function enterRecovery(err) {
 
 function onDbChange() {
   if (recovering) return;
-  if (!api.getDb()) { enterRecovery(); return; }
+  if (!api.getDb()) {
+    if (REAL) { if (gateOk) { gateOk = false; renderRoute(); } return; } // signed out elsewhere, or the data could not be loaded: re-check
+    enterRecovery(); return;
+  }
   // the quota warning clears itself once a write has succeeded again
   if (quotaErr) api.admin.storageInfo().then((i) => { if (i && !i.writeFailed) { quotaErr = null; refreshBanners(); } }).catch(() => {});
   if (shell) {
@@ -165,9 +184,57 @@ function makeCtx(persona, el, params, query, route) {
 
 function showInto(el, html) { el.innerHTML = html; }
 
+// ---- real app: sign-in, invite, consent gate -----------------------------------------
+let gateOk = false;
+
+async function signOutNow() {
+  if (runner.isRunning()) runner.stop('Trip recording stopped because you signed out.');
+  await attempt(() => api.auth.signOut());
+  gateOk = false; shell = null; shellFor = null; token += 1; runCleanups();
+  document.title = 'School app';
+  location.hash = '';
+  renderRoute();
+}
+
+// Returns true when the person is signed in, linked and has given the required consent; otherwise draws the right screen.
+async function gate() {
+  if (!REAL || gateOk) return true;
+  const my = ++token;
+  runCleanups();
+  shell = null; shellFor = null;
+  const retry = () => { gateOk = false; renderRoute(); };
+  let st;
+  try { st = await api.auth.status(); } catch (e) { renderBlocked(root, 'unavailable', { error: e, onRetry: retry, onSignOut: signOutNow }); return false; }
+  if (my !== token) return false;
+  const again = () => { gateOk = false; renderRoute(); };
+  switch (st.state) {
+    case 'signedOut': renderLogin(root, { onDone: again }); return false;
+    case 'unlinked': renderInvite(root, { email: st.email, onDone: again, onSignOut: signOutNow }); return false;
+    case 'pending': renderBlocked(root, 'pending', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false;
+    case 'withdrawn': renderBlocked(root, 'withdrawn', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false;
+    case 'revoked': renderBlocked(root, 'revoked', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false;
+    case 'active': break;
+    default: renderBlocked(root, 'unavailable', { error: new Error(`Unexpected account state: ${st.state}`), onRetry: retry, onSignOut: signOutNow }); return false;
+  }
+  const persona = api.session.current();
+  if (!persona || !api.getDb()) { renderBlocked(root, 'unavailable', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false; }
+  if (persona.role === 'parent') {
+    let cs;
+    try { cs = await api.consent.status(); } catch (e) { renderBlocked(root, 'unavailable', { email: st.email, error: e, onRetry: retry, onSignOut: signOutNow }); return false; }
+    if (my !== token) return false;
+    if (!cs?.purposes?.app_account?.given) { renderConsent(root, { status: cs, onDone: again, onSignOut: signOutNow }); return false; }
+    // a parent who already chose notifications keeps them working across browser clean-ups (no prompt, no new consent)
+    if (cs.purposes.push?.given) Promise.resolve().then(() => api.push.vapidPublicKey()).then((vapidKey) => push.keepAlive({ vapidKey, send: (j) => api.push.subscribe(j) })).catch(() => {});
+  }
+  gateOk = true;
+  return true;
+}
+
 async function renderRoute({ keepScroll = false } = {}) {
   if (recovering) return;
-  if (!api.getDb()) { enterRecovery(); return; }
+  if (REAL) {
+    if (!(await gate())) return;
+  } else if (!api.getDb()) { enterRecovery(); return; }
   const my = ++token;
   const scrollY = keepScroll ? window.scrollY : 0;
   runCleanups();
@@ -177,6 +244,12 @@ async function renderRoute({ keepScroll = false } = {}) {
   const { path, query } = parseHash();
   if (path === '/') { go('/home'); return; }
   const m = matchRoute(ROUTES, path);
+  if (m && m.route.realOnly && !REAL) {
+    ensureShell(persona);
+    markActive(root, path);
+    shell.screen.innerHTML = `<div class="stack">${empty('Not part of the demo', 'This page exists only in the real school app.')}<a class="btn" href="#/home">Go home</a></div>`;
+    return;
+  }
 
   // bare routes (print) render without chrome
   if (m?.route.bare) {
@@ -193,7 +266,7 @@ async function renderRoute({ keepScroll = false } = {}) {
   shell.screen.replaceChildren(el);
 
   if (!m) { showInto(el, `<div class="stack">${empty('Page not found', path)}<a class="btn" href="#/home">Go home</a></div>`); return; }
-  if (!m.route.roles.includes(persona.role)) {
+  if (!((!REAL && m.route.demoRoles) || m.route.roles).includes(persona.role)) {
     showInto(el, `<div class="stack">${empty('Not available for this persona', `The ${persona.label} persona cannot open this page.`)}<a class="btn" href="#/home">Go home</a></div>`);
     return;
   }
@@ -219,14 +292,20 @@ async function mountScreen(m, persona, el, query, my) {
 function ensureShell(persona) {
   if (shell && shellFor === persona.id && root.contains(shell.screen)) return;
   const db = api.getDb();
-  shell = renderShell(root, { school: db.school, personas: curatePersonas(api.session.personas(), db), current: persona });
+  if (REAL) {
+    shell = renderShell(root, { school: db.school, current: persona, real: true });
+    if (db.school?.name) document.title = db.school.name;
+    shell.signOut.addEventListener('click', signOutNow);
+  } else {
+    shell = renderShell(root, { school: db.school, personas: curatePersonas(api.session.personas(), db), current: persona });
+    shell.select.addEventListener('change', async () => {
+      if (runner.isRunning()) runner.stop('Trip recording stopped because the persona was switched.');
+      await attempt(() => api.session.set(shell.select.value));
+      shell = null; shellFor = null;
+      go('/home');
+    });
+  }
   shellFor = persona.id;
-  shell.select.addEventListener('change', async () => {
-    if (runner.isRunning()) runner.stop('Trip recording stopped because the persona was switched.');
-    await attempt(() => api.session.set(shell.select.value));
-    shell = null; shellFor = null;
-    go('/home');
-  });
   setBadges(root, computeBadges());
   checkReconcile().then(refreshBanners);
   refreshBanners();

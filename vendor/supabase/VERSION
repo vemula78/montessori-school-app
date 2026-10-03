@@ -1,0 +1,17 @@
+package:      @supabase/supabase-js
+version:      2.117.2
+licence:      MIT
+file:         supabase-js.esm.js   (single-file ES module, exports createClient)
+sha256:       c2cca96c251ee79d071f0d13153fa08e634fcd0c0ad4d923b800cd98a43ead6e
+npm integrity of the source tarball: sha512-eSG2VKnHR+Clp1PmidZ1/weJ8PJwoybjva3L2GgKqFG4YDS1Iqmc61psKGZP5xw6OMT2O7ZorPR42PY6q1BOXg==
+
+How it was made (dev-time only; nothing from this is installed in the repo):
+  The jsDelivr "+esm" build is not a single file (it imports its five sub-packages from the CDN),
+  so the exact npm release was bundled locally instead:
+    npm i @supabase/supabase-js@2.117.2 esbuild@0.28.2
+    echo "export { createClient } from '@supabase/supabase-js';" > entry.js
+    npx esbuild entry.js --bundle --format=esm --platform=browser --minify --legal-comments=none --outfile=supabase-js.esm.js
+  To upgrade, repeat with the new version, replace the file, update this record and run the app smoke test.
+
+Import by relative path only (never from a CDN): the app is for children's data, so no third-party script
+is loaded at runtime other than the payment provider's Checkout script, which cannot be self-hosted.

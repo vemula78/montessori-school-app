@@ -1,0 +1,10 @@
+﻿Admission No,First Name,Last Name,Date of Birth,Class,Status,Bus Stop,Mother Name,Mother Mobile,Mother Email,Father Name,Father Mobile
+NEW-001,Asha,Testwala,05/03/2022,Primary A,active,Lotus Park Gate,Rani Testwala,90000 00301,rani.testwala@example.com,,
+NEW-002,Bela,Testwala,14/11/2023,Toddler Community,,,Rani Testwala,+91 90000 00301,,,
+NEW-003,Chetan,Sampleraj,31/02/2022,Primary A,active,,Mala Sampleraj,90000 00303,,,
+NEW-004,Dia,Mockherjee,2022-07-09,Primary C,active,,Tina Mockherjee,90000 00304,,,
+NEW-005,Esha,Demoson,10/10/2021,Primary B,active,,Uma Demoson,90000 00305,,Ravi Demoson,90000 00315
+NEW-005,Esha,Demoson,10/10/2021,Primary B,active,,Uma Demoson,90000 00305,,Ravi Demoson,90000 00315
+NEW-006,Farah,Dummyan,01/01/2022,Primary A,active,,Zara Dummyan,90000 00306,,,
+NEW-006,Farah,Dummyan,02/01/2022,Primary A,active,,Zara Dummyan,90000 00306,,,
+NEW-007,Gita,"Notrealsen, Jr",07/08/2022,primary a,Active,,"Hema Notrealsen",+91-90000-00307,hema.n@example.com,,

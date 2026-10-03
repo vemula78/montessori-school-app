@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#B3472F">
+  <meta name="robots" content="noindex">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="School">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>School app</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="preload" href="../assets/fonts/Nunito-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="../app.css">
+  <link rel="stylesheet" href="../src/ui/print.css" media="print">
+</head>
+<body class="real-app">
+  <div id="ribbon-host"></div>
+  <div id="app"><p style="padding:24px">Loading&hellip;</p></div>
+  <div id="toasts" class="toast-host no-print" aria-live="polite"></div>
+  <noscript><p style="padding:24px">This app needs JavaScript.</p></noscript>
+  <!-- public settings; see the comments inside config.js -->
+  <script src="./config.js"></script>
+  <script>
+    // Optional developer override (gitignored). Only ever tried on this machine, never on the public site.
+    if (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) document.write('<script src="./config.local.js"><\/script>');
+  </script>
+  <script src="../vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="./boot.js"></script>
+</body>
+</html>

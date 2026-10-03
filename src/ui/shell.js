@@ -15,6 +15,9 @@ const N = {
   reports: { path: '/reports', label: 'Reports', icon: 'chart' },
   audit: { path: '/audit', label: 'Audit log', icon: 'shield' },
   settings: { path: '/settings', label: 'Settings', icon: 'gear' },
+  // real app only (see REAL_EXTRA)
+  invites: { path: '/invites', label: 'Invite codes', icon: 'users' },
+  importData: { path: '/import', label: 'Import data', icon: 'upload' },
 };
 
 export const NAV = {
@@ -25,8 +28,23 @@ export const NAV = {
   driver: ['home', 'trip', 'calendar'],
 };
 
+// Extra rail items in the real app, inserted before the named existing item. The demo's menus are left exactly as they were.
+const REAL_EXTRA = {
+  admin: [['invites', 'audit'], ['importData', 'audit']],
+  accountant: [['invites', 'audit']],
+};
+
 export const isTouchRole = (role) => role === 'parent' || role === 'driver';
-export const navFor = (role) => (NAV[role] || ['home']).map((k) => N[k]);
+export function navFor(role, real = false) {
+  const keys = [...(NAV[role] || ['home'])];
+  if (real) {
+    for (const [add, before] of REAL_EXTRA[role] || []) {
+      const at = keys.indexOf(before);
+      keys.splice(at < 0 ? keys.length : at, 0, add);
+    }
+  }
+  return keys.map((k) => N[k]);
+}
 
 function isActive(item, path) {
   if (item.path === '/home') return path === '/home' || path === '/';
@@ -59,23 +77,38 @@ export function curatePersonas(personas, db) {
   return { featured, others: personas.filter((p) => !ids.has(p.id)) };
 }
 
-export function renderShell(root, { school, personas, current }) {
+const ROLE_TAG = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
+const initialsOf = (label) => esc(String(label || '?').replace(/\(.*$/, '').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?');
+
+// Real app: no persona switcher. The person is whoever signed in; the top bar offers Settings and Sign out.
+function personaBlock(personas, current, real) {
+  if (real) {
+    const name = String(current?.label || '').replace(/^[^\u2014]*\u2014\s*/, '').replace(/\s*\(.*$/, '');
+    return `<div class="profile">
+        <a class="who" href="#/settings" aria-label="Settings and privacy for ${esc(name || ROLE_TAG[current?.role] || 'you')}"><span class="avatar">${initialsOf(name)}</span><span class="who-text"><strong>${esc(name || DASHCHAR)}</strong><small>${esc(ROLE_TAG[current?.role] || '')}</small></span></a>
+        <button class="btn sm" id="signout" type="button">Sign out</button></div>`;
+  }
+  return `<div class="persona">
+        <label for="persona-select">Viewing as</label>
+        <select id="persona-select" aria-label="Switch demo persona">
+          <optgroup label="Demo personas">${personas.featured.map((p) => `<option value="${esc(p.id)}"${p.id === current?.id ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</optgroup>
+          <optgroup label="All people">${personas.others.map((p) => `<option value="${esc(p.id)}"${p.id === current?.id ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</optgroup>
+        </select>
+      </div>`;
+}
+const DASHCHAR = '\u2014';
+
+export function renderShell(root, { school, personas, current, real = false }) {
   const role = current?.role;
   const touch = isTouchRole(role);
-  const items = navFor(role);
+  const items = navFor(role, real);
   const link = (i, cls = '') => `<a href="#${esc(i.path)}" data-path="${esc(i.path)}" data-key="${esc(i.path)}">${icon(i.icon)}<span>${esc(touch ? (i.short || i.label) : i.label)}</span><span class="nbadge badge clay hide" data-badge="${esc(i.path)}"></span></a>`;
   root.innerHTML = `
   <div class="shell ${touch ? 'touch' : 'staff'}">
     <header class="topbar no-print">
       <a class="brand" href="#/home"><span class="logo" aria-hidden="true">A</span><span class="name">${esc(school?.name || 'School')}</span></a>
       <span class="spacer"></span>
-      <div class="persona">
-        <label for="persona-select">Viewing as</label>
-        <select id="persona-select" aria-label="Switch demo persona">
-          <optgroup label="Demo personas">${personas.featured.map((p) => `<option value="${esc(p.id)}"${p.id === current?.id ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</optgroup>
-          <optgroup label="All people">${personas.others.map((p) => `<option value="${esc(p.id)}"${p.id === current?.id ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</optgroup>
-        </select>
-      </div>
+      ${personaBlock(personas, current, real)}
     </header>
     ${touch ? '' : `<nav class="stripnav no-print" aria-label="Main">${items.map((i) => link(i)).join('')}</nav>`}
     <div class="body">
@@ -91,6 +124,7 @@ export function renderShell(root, { school, personas, current }) {
     screen: root.querySelector('#screen'),
     banners: root.querySelector('#banners'),
     select: root.querySelector('#persona-select'),
+    signOut: root.querySelector('#signout'),
   };
 }
 

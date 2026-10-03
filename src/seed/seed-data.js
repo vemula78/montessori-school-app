@@ -142,7 +142,9 @@ export function buildSeed(now = new Date()) {
     { id: P.pa, name: 'Primary A', ageRange: '3 to 4.5 years', teacherIds: [ID.tPA, ID.tFloat] },
     { id: P.pb, name: 'Primary B', ageRange: '4.5 to 6 years', teacherIds: [ID.tPB, ID.tFloat] },
   ];
-  db.staff = STAFF.map(([id, firstName, lastName, role, programIds], i) => ({ id, firstName, lastName, role, programIds, phone: fakePhone(101 + i) }));
+  // staff sign in with the email on their staff record (the real app links a new login to staff by exact email)
+  const STAFF_EMAIL = { [ID.principal]: 'principal', [ID.accountant]: 'accountant', [ID.tPA]: 'teacher-pa', [ID.tTD]: 'teacher-toddler', [ID.tPB]: 'teacher-pb', [ID.tFloat]: 'teacher-float', [ID.d1]: 'driver1', [ID.d2]: 'driver2' };
+  db.staff = STAFF.map(([id, firstName, lastName, role, programIds], i) => ({ id, firstName, lastName, role, programIds, phone: fakePhone(101 + i), email: `${STAFF_EMAIL[id]}@example.com` }));
   db.routes = ROUTE_DEFS.map(buildRoute);
 
   // guardians + students (bidirectional links built together)

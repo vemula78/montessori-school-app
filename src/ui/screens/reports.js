@@ -1,12 +1,13 @@
 // Reports: outstanding / defaulters, collection day book, numeric reconciliation.
 import { todayISO, addDays, isISODate } from '../../domain/dates.js';
 import { esc, money, fdate, badge, empty, pageHead, options, downloadText, indexBy, fullName, DASH } from '../components.js';
+import { isRealMode } from '../mode.js';
 
 const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
 // spreadsheet formula injection: a text cell starting with = + - @ tab or CR gets a leading apostrophe
 const csvText = (v) => csvCell(/^[=+\-@\t\r]/.test(String(v ?? '')) ? `'${v}` : v);
 const rupeesPlain = (p) => (p == null ? '' : (p / 100).toFixed(2));
-const MODE = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank', 'online-mock': 'Online (mock)', credit: 'Credit' };
+const MODE = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank', 'online-mock': 'Online (mock)', online: 'Online', credit: 'Credit' };
 
 // Only the reconciliation checks decide ok/bad. A difference between this year's report and the all-years total is
 // just prior-year balances, which is legitimate.
@@ -110,7 +111,7 @@ async function reconcile(ctx, host) {
 export async function render(ctx) {
   const tab = ['outstanding', 'collection', 'reconcile'].includes(ctx.query.tab) ? ctx.query.tab : 'outstanding';
   ctx.el.innerHTML = `${pageHead('Reports')}
-    <div class="seg" style="margin-bottom:14px"><a href="${ctx.href('/reports', { tab: 'outstanding' })}" ${tab === 'outstanding' ? 'aria-current="page"' : ''}>Outstanding</a><a href="${ctx.href('/reports', { tab: 'collection' })}" ${tab === 'collection' ? 'aria-current="page"' : ''}>Collection day book</a><a href="${ctx.href('/reports', { tab: 'reconcile' })}" ${tab === 'reconcile' ? 'aria-current="page"' : ''}>Reconciliation</a></div>
+    <div class="seg" style="margin-bottom:14px"><a href="${ctx.href('/reports', { tab: 'outstanding' })}" ${tab === 'outstanding' ? 'aria-current="page"' : ''}>Outstanding</a><a href="${ctx.href('/reports', { tab: 'collection' })}" ${tab === 'collection' ? 'aria-current="page"' : ''}>Collection day book</a><a href="${ctx.href('/reports', { tab: 'reconcile' })}" ${tab === 'reconcile' ? 'aria-current="page"' : ''}>Reconciliation</a>${isRealMode() ? '<a href="#/reports/settlements">Online settlements</a>' : ''}</div>
     <div id="rp-body"></div>`;
   const host = ctx.el.querySelector('#rp-body');
   await ({ outstanding, collection, reconcile }[tab])(ctx, host);

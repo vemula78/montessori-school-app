@@ -1,7 +1,12 @@
-// Invoices: staff list + detail (concessions, late fee, cancel); parent view with mock online payment.
+// Invoices: staff list + detail (concessions, late fee, cancel); parent view with online payment
+// (a mock in the demo, the real payment provider in the real app).
 import { todayISO } from '../../domain/dates.js';
 import { rupeesToPaise } from '../../domain/money.js';
 import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH } from '../components.js';
+import { isRealMode } from '../mode.js';
+import { payOnline, resumePending } from './pay-online.js';
+
+const REAL = isRealMode();
 
 const STAFF = ['admin', 'accountant'];
 const isOpen = (i) => i.status !== 'cancelled' && i.status !== 'paid' && i.balancePaise > 0;
@@ -26,7 +31,8 @@ async function staffList(ctx) {
   const sum = (arr, k) => arr.reduce((s, i) => s + i[k], 0);
   const students = db.students.filter((s) => s.status === 'active');
 
-  ctx.el.innerHTML = `${pageHead('Fees', 'Invoices for the current academic year', `<a class="btn" href="#/fees/structures">Fee structures</a>`)}
+  const extra = REAL ? '<a class="btn" href="#/fees/late-fees">Late fees due</a><a class="btn" href="#/reminders">Reminders sent</a>' : '';
+  ctx.el.innerHTML = `${pageHead('Fees', 'Invoices for the current academic year', `${extra}<a class="btn" href="#/fees/structures">Fee structures</a>`)}
     <div class="grid cols-3" style="margin-bottom:14px">
       <div class="kpi"><div class="v">${money(sum(live, 'totalPaise'))}</div><div class="l">invoiced (after concessions)</div></div>
       <div class="kpi good"><div class="v">${money(sum(live, 'paidPaise'))}</div><div class="l">collected (net of refunds)</div></div>
@@ -58,6 +64,11 @@ async function staffList(ctx) {
 }
 
 // ---------------- parent ----------------
+async function pay(ctx, student, invoices) {
+  if (REAL) { await payOnline(ctx, student, invoices); return; }
+  await mockPay(ctx, student, invoices);
+}
+
 async function mockPay(ctx, student, invoices) {
   const total = invoices.reduce((s, i) => s + i.balancePaise, 0);
   const ok = await confirmDialog('Mock online payment', `This is a demonstration. Paying ${money(total)} for ${student.firstName} (${invoices.map((i) => i.number).join(', ')}) will produce a receipt stamped "MOCK ONLINE PAYMENT \u2014 NO MONEY MOVED". No card or bank details are collected.`, { okLabel: `Pay ${money(total)} (mock)` });
@@ -71,6 +82,7 @@ async function parentList(ctx) {
   const kids = await api.people.childrenOf(persona.guardianId);
   const blocks = [];
   const store = new Map();
+  const pending = REAL ? await resumePending(ctx) : '';
   for (const k of kids) {
     if (k.status !== 'active') {
       blocks.push(`<div class="card"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3>${badge('Left', 'mute')}</div><small>This child has left the school; fee records are held by the school office.</small></div>`);
@@ -83,15 +95,15 @@ async function parentList(ctx) {
     blocks.push(`<div class="card stack"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3><div class="row">${bal ? badge(`Due ${money(bal)}`, 'bad') : badge('All paid', 'ok')}<a class="btn sm" href="#/fees/student/${esc(k.id)}">Payments &amp; receipts</a></div></div>
       ${inv.length ? `<ul class="list">${inv.map((i) => `<li><div class="row between"><div><a href="#/fees/invoice/${esc(i.id)}" class="item-title">${esc(i.installmentName)}</a> <small>${esc(i.number)} &middot; due ${fdate(i.dueDate)}</small></div>
         <div class="row"><span class="num">${isOpen(i) ? money(i.balancePaise) : money(i.totalPaise)}</span>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</div></div></li>`).join('')}</ul>` : empty('No invoices yet')}
-      ${open.length ? `<button class="btn primary" data-pay="${esc(k.id)}">Pay ${money(bal)} online (mock)</button>` : ''}</div>`);
+      ${open.length ? `<button class="btn primary" data-pay="${esc(k.id)}">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>` : ''}</div>`);
   }
-  ctx.el.innerHTML = `${pageHead('Fees')}<div class="stack">${blocks.join('') || empty('No children linked to this account')}</div>
-    <p class="muted" style="font-size:.82rem;margin-top:12px">Online payment here is a mock for the prototype - no real payment is taken.</p>`;
+  ctx.el.innerHTML = `${pageHead('Fees', '', REAL ? '<a class="btn" href="#/reminders">Reminders</a>' : '')}${pending}<div class="stack">${blocks.join('') || empty('No children linked to this account')}</div>
+    ${REAL ? '' : '<p class="muted" style="font-size:.82rem;margin-top:12px">Online payment here is a mock for the prototype - no real payment is taken.</p>'}`;
   ctx.el.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-pay]');
     if (!b) return;
     const kid = kids.find((k) => k.id === b.dataset.pay);
-    await mockPay(ctx, kid, store.get(kid.id).filter(isOpen));
+    await pay(ctx, kid, store.get(kid.id).filter(isOpen));
   });
 }
 
@@ -133,7 +145,7 @@ async function detail(ctx) {
         ${open ? `<a class="btn primary" href="#/fees/student/${esc(inv.studentId)}?invoice=${esc(inv.id)}">Record payment</a>` : ''}
         ${!inv.locked ? '<button class="btn" id="fi-con">Add concession</button>' : ''}
         <button class="btn danger ghost" id="fi-cancel">Cancel invoice</button></div>` : ''}
-    ${persona.role === 'parent' && open ? `<div class="row" style="margin-top:14px"><button class="btn primary" id="fi-mock">Pay ${money(inv.balancePaise)} online (mock)</button></div>` : ''}
+    ${persona.role === 'parent' && open ? `<div class="row" style="margin-top:14px"><button class="btn primary" id="fi-mock">Pay ${money(inv.balancePaise)} online${REAL ? '' : ' (mock)'}</button></div>` : ''}
     <h2 style="margin-top:20px">Payments against this invoice</h2>
     ${pays.length ? `<div class="tablewrap"><table><thead><tr><th>Receipt</th><th>Date</th><th>Mode</th><th class="r">Applied</th><th>Status</th></tr></thead><tbody>
       ${pays.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td>${fdate(p.paidOn)}</td><td>${esc(p.mode)}</td><td class="r num">${money(p.allocations.find((a) => a.invoiceId === inv.id).amountPaise)}</td><td>${p.status === 'valid' ? badge('Valid', 'ok') : badge('Cancelled', 'mute')}</td></tr>`).join('')}
@@ -172,7 +184,7 @@ async function detail(ctx) {
   });
   ctx.el.querySelector('#fi-mock')?.addEventListener('click', async () => {
     const kid = await api.people.student(inv.studentId);
-    await mockPay(ctx, kid, [inv]);
+    await pay(ctx, kid, [inv]);
   });
 }
 

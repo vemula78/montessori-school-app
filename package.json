@@ -3,10 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Phase 1 static prototype of a single-school Montessori preschool app (demo data only).",
+  "description": "Single-school Montessori preschool app: public demo (static, localStorage, fake data) and the real app on Supabase (Phase 2).",
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\"",
     "scan": "node scripts/scan-seed.mjs",
-    "serve": "node scripts/serve.mjs"
+    "serve": "node scripts/serve.mjs",
+    "sync-domain": "node scripts/sync-domain.mjs",
+    "check-domain": "node scripts/sync-domain.mjs --check",
+    "seed-sql": "node scripts/seed-sql.mjs",
+    "test:db": "supabase db reset && supabase test db",
+    "test:supabase": "node --test --test-concurrency=1 \"tests-supabase/*.test.mjs\"",
+    "e2e": "node scripts/e2e-local.mjs",
+    "mock-razorpay": "node scripts/mock-razorpay.mjs",
+    "functions": "supabase functions serve --env-file supabase/.env.local"
   }
 }

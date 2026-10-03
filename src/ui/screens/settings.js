@@ -1,5 +1,6 @@
 // Settings: backup / restore, reset to demo data, storage usage, damaged-copy recovery, school details.
 import { esc, money, fdate, pageHead, downloadText, readFileText, confirmDialog, attempt, toast, errMessage, DASH } from '../components.js';
+import { isRealMode } from '../mode.js';
 
 const CORRUPT_PREFIX = 'montessori.db.corrupt.';
 const kb = (n) => (n == null ? DASH : n < 1024 * 1024 ? `${(Number(n) / 1024).toFixed(1)} KB` : `${(Number(n) / 1024 / 1024).toFixed(2)} MB`);
@@ -16,6 +17,7 @@ function corruptCopies() {
 }
 
 export async function render(ctx) {
+  if (isRealMode()) return (await import('./settings-real.js')).render(ctx); // browser-storage tools below are demo-only
   const { api, db } = ctx;
   const infoRes = await attempt(() => api.admin.storageInfo());
   const info = infoRes.ok ? infoRes.value : null;

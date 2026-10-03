@@ -1,11 +1,14 @@
-// The only data module screens import. Async facade over the pure domain + storage adapter.
-// Read scoping (what each persona may see) lives here; on a backend it moves server-side and
-// this file becomes HTTP-call wrappers with the same signatures. Results are structured clones,
-// so screens can never mutate stored state by accident.
+// The only data module screens import. Async facade over the pure domain.
+// Two modes, bound to the entry HTML (never a runtime toggle):
+//   demo     (root index.html)  — this file: localStorage, seed data, persona switcher.
+//   supabase (app/index.html sets window.__APP_CONFIG__) — ./remote.js: same signatures, same ApiError codes,
+//            reads over the server-scoped snapshot, writes through the `command` Edge Function.
+// Writes go through the command registry (src/domain/commands.js): the SAME authorize + run that the
+// server executes. Results are structured clones, so screens can never mutate stored state by accident.
 
 import { Storage, DB_KEY, memoryBackend } from '../store/storage.js';
 import { todayISO, nowISO } from '../domain/dates.js';
-import { byId, fullName, activeStudents, childrenOf, sortByName } from '../domain/people.js';
+import { byId, fullName, childrenOf, sortByName } from '../domain/people.js';
 import * as M from '../domain/messaging.js';
 import * as C from '../domain/calendar.js';
 import * as H from '../domain/holiday-csv.js';
@@ -17,6 +20,16 @@ import * as A from '../domain/attendance.js';
 import * as D from '../domain/diary.js';
 import { listAudit } from '../domain/audit.js';
 import { validateDb } from '../domain/validate.js';
+import {
+  COMMANDS, execute, buildPersonas, ctxFor as cmdCtx, allow as allowP, mustSee as mustSeeP, canManageNotice, visibleThread,
+  visibleRoutes, mustRoute, driverTrip, teachesProgram, tripOut as tripOutP, STAFF_SEES_ALL, CONSENT_VERSION,
+} from '../domain/commands.js';
+import { remindersDue, lateFeesDueList } from '../domain/reminders.js';
+import { parseCsvObjects } from '../domain/csv.js';
+import * as I from '../domain/import-people.js';
+import { guardianExport } from '../domain/export.js';
+
+export { buildPersonas };
 
 export class ApiError extends Error {
   /** @param {string} code  @param {string} message  @param {any} [details] */
@@ -29,45 +42,277 @@ export class ApiError extends Error {
 }
 
 export const SESSION_KEY = 'montessori.session.v1';
-const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
-const STAFF_SEES_ALL = ['admin', 'accountant'];
 
-function toApiError(e) {
+export function toApiError(e) {
   if (e instanceof ApiError) return e;
   if (e && typeof e.code === 'string') return new ApiError(e.code, e.message, e.details);
   return e; // a programming error: surface it unchanged
 }
 const out = x => (x === undefined ? undefined : structuredClone(x));
+/** Wrap: async, coded errors → ApiError, results cloned. */
+export const op = fn => async (...args) => {
+  try { return out(await fn(...args)); } catch (e) { throw toApiError(e); }
+};
+export const realAppOnly = what => new ApiError('NOT_ALLOWED', `${what} is available in the real app (app/), not in the demo`);
 
-/** Personas are derived from the data: one per staff member and one per guardian. */
-export function buildPersonas(db) {
-  const allPrograms = db.programs.map(p => p.id);
-  const allStudents = activeStudents(db).map(s => s.id);
-  const progName = id => byId(db.programs, id)?.name ?? id;
-  const list = [];
-  for (const s of db.staff) {
-    const base = { id: `persona-${s.id}`, role: s.role, staffId: s.id, label: `${ROLE_LABEL[s.role] || s.role} — ${fullName(s)}` };
-    if (s.role === 'admin' || s.role === 'accountant') list.push({ ...base, studentIds: allStudents, programIds: allPrograms });
-    else if (s.role === 'teacher') {
-      const programIds = [...(s.programIds || [])];
-      list.push({ ...base, label: `${base.label} (${programIds.map(progName).join(', ')})`, programIds, studentIds: activeStudents(db).filter(x => programIds.includes(x.programId)).map(x => x.id) });
-    } else if (s.role === 'driver') {
-      const routeIds = db.routes.filter(r => r.driverId === s.id || r.attendantId === s.id).map(r => r.id);
-      list.push({ ...base, routeIds, programIds: [], studentIds: activeStudents(db).filter(x => routeIds.includes(x.routeId)).map(x => x.id) });
-    }
+/**
+ * The persona-scoped api surface shared by both modes: every read, plus every registry write via `cmd`.
+ * @param {{db:()=>any, me:()=>any, clock:()=>Date, cmd:(name:string)=>Function}} deps
+ *   db()  current Db (throws when not loaded); me() current persona (throws NOT_ALLOWED when none);
+ *   cmd(name) → async (...args) running that registry command (demo: local commit; supabase: Edge Function).
+ */
+export function createSurface({ db, me, clock, cmd }) {
+  const today = () => todayISO(clock());
+  const allow = (...roles) => allowP(me(), ...roles);
+  const mustSee = (p, studentId) => mustSeeP(p, db(), studentId);
+
+  const studentView = (d, s, p) => {
+    const v = { ...s, name: fullName(s), programName: byId(d.programs, s.programId)?.name ?? '—' };
+    if (p.role === 'driver') v.healthNotes = null; // not needed for boarding
+    return v;
+  };
+  const visibleGuardianIds = (d, p) => {
+    if (STAFF_SEES_ALL.includes(p.role)) return d.guardians.map(g => g.id);
+    if (p.role === 'parent') return [p.guardianId];
+    if (p.role === 'teacher') return [...new Set(d.students.filter(s => p.studentIds.includes(s.id)).flatMap(s => s.guardianIds))];
+    return [];
+  };
+  /** A teacher sees only the children of a guardian that are in the teacher's programs. */
+  const guardianView = (p, g) => ({ ...g, name: fullName(g), studentIds: p.role === 'teacher' ? g.studentIds.filter(id => p.studentIds.includes(id)) : [...g.studentIds] });
+
+  const people = {
+    programs: op(() => { me(); return db().programs; }),
+    students: op(({ programId } = {}) => {
+      const p = me(); const d = db();
+      let list = STAFF_SEES_ALL.includes(p.role) ? d.students : d.students.filter(s => p.studentIds.includes(s.id));
+      if (programId) list = list.filter(s => s.programId === programId);
+      return sortByName(list).map(s => studentView(d, s, p));
+    }),
+    student: op(id => { const p = me(); mustSee(p, id); return studentView(db(), byId(db().students, id), p); }),
+    guardians: op(() => {
+      const p = me(); const d = db(); const ids = visibleGuardianIds(d, p);
+      return sortByName(d.guardians.filter(g => ids.includes(g.id))).map(g => guardianView(p, g));
+    }),
+    guardian: op(id => {
+      const p = me(); const d = db();
+      const g = byId(d.guardians, id);
+      if (!g) throw new ApiError('NOT_FOUND', 'Guardian not found');
+      if (!visibleGuardianIds(d, p).includes(id)) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
+      return guardianView(p, g);
+    }),
+    staff: op(({ role } = {}) => {
+      me();
+      return sortByName(db().staff.filter(s => !role || s.role === role)).map(s => ({ ...s, name: fullName(s) }));
+    }),
+    childrenOf: op(guardianId => {
+      const p = me(); const d = db();
+      if (!visibleGuardianIds(d, p).includes(guardianId)) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
+      return childrenOf(d, guardianId).filter(s => p.role !== 'teacher' || p.studentIds.includes(s.id)).map(s => studentView(d, s, p));
+    }),
+  };
+
+  const withStats = (d, n) => ({ ...n, ...M.noticeStats(d, n.id) });
+  const byNewest = (a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0);
+  const notices = {
+    list: op(() => {
+      const p = me(); const d = db();
+      if (p.role === 'parent') {
+        // Only this guardian's own children: never other targeted children.
+        return M.noticesForGuardian(d, p.guardianId).map(n => {
+          const about = n.receipt.studentIds;
+          const audience = n.audience.scope === 'students' ? { ...n.audience, studentIds: n.audience.studentIds.filter(id => about.includes(id)) } : n.audience;
+          return { ...n, audience, aboutStudentIds: [...about] };
+        }).sort(byNewest);
+      }
+      if (p.role === 'admin' || p.role === 'accountant') return d.notices.map(n => withStats(d, n)).sort(byNewest);
+      if (p.role === 'teacher') return M.noticesForPrograms(d, p.programIds).map(n => withStats(d, n)).sort(byNewest);
+      return [];
+    }),
+    send: cmd('notices.send'),
+    recipients: op(noticeId => {
+      const p = allow('admin', 'teacher'); const d = db();
+      canManageNotice(p, d, noticeId);
+      let rows = M.noticeRecipients(d, noticeId);
+      if (p.role === 'teacher') {
+        rows = rows.map(r => ({ ...r, studentIds: r.studentIds.filter(id => p.studentIds.includes(id)) })).filter(r => r.studentIds.length > 0);
+      }
+      return rows.map(r => ({ ...r, studentNames: r.studentIds.map(id => fullName(byId(d.students, id))) }));
+    }),
+    markRead: cmd('notices.markRead'),
+    acknowledge: cmd('notices.acknowledge'),
+  };
+
+  const threads = {
+    list: op(() => {
+      const p = allow('admin', 'teacher', 'parent'); const d = db();
+      const list = d.threads.filter(t => p.role === 'admin' || (p.role === 'teacher' && p.programIds.includes(t.programId)) || (p.role === 'parent' && t.guardianId === p.guardianId));
+      return list.map(t => M.threadView(d, t, p.role)).sort((a, b) => {
+        const ta = a.lastMessage?.sentAt || a.createdAt, tb = b.lastMessage?.sentAt || b.createdAt;
+        return ta < tb ? 1 : ta > tb ? -1 : 0;
+      });
+    }),
+    get: op(id => {
+      const p = allow('admin', 'teacher', 'parent'); const d = db();
+      const t = visibleThread(p, d, id);
+      return { thread: M.threadView(d, t, p.role), messages: M.threadMessages(d, id) };
+    }),
+    open: cmd('threads.open'),
+    reply: cmd('threads.reply'),
+    markRead: cmd('threads.markRead'),
+    close: cmd('threads.close'),
+  };
+
+  const calendar = {
+    academicYears: op(() => {
+      me(); const d = db();
+      return [...d.academicYears].sort((a, b) => (a.startDate < b.startDate ? -1 : 1)).map(ay => ({ ...ay, current: ay.id === d.school.currentAcademicYearId }));
+    }),
+    events: op(({ academicYearId, programId, types, from, to } = {}) => {
+      const p = me(); const d = db();
+      const ayId = academicYearId || d.school.currentAcademicYearId;
+      let birthdayStudentIds;
+      if (p.role === 'parent' || p.role === 'teacher') birthdayStudentIds = p.studentIds;
+      else if (p.role === 'driver') birthdayStudentIds = [];
+      const evs = C.listEvents(d, { academicYearId: ayId, programId, types, from, to, birthdayStudentIds });
+      if (STAFF_SEES_ALL.includes(p.role)) return evs;
+      // parents/teachers: school-wide events plus their own programs; drivers: school-wide only
+      return evs.filter(ev => ev.type === 'birthday' || ev.programIds.length === 0 || ev.programIds.some(x => p.programIds.includes(x)));
+    }),
+    create: cmd('calendar.create'),
+    update: cmd('calendar.update'),
+    remove: cmd('calendar.remove'),
+    previewHolidayCsv: op((text, academicYearId) => { allow('admin'); return H.previewHolidayCsv(db(), text, academicYearId); }),
+    importHolidays: cmd('calendar.importHolidays'),
+    isWorkingDay: op((dateISO, programId) => { me(); return C.isWorkingDay(db(), dateISO, programId); }),
+  };
+
+  const tripOut = (t, p) => tripOutP(db(), t, p);
+  const transport = {
+    routes: op(() => { const p = me(); return visibleRoutes(p, db()); }),
+    route: op(id => { const p = me(); return mustRoute(p, db(), id); }),
+    routeForStudent: op(studentId => {
+      const p = me(); mustSee(p, studentId); const d = db();
+      const s = byId(d.students, studentId);
+      if (!s.routeId) return null;
+      const route = byId(d.routes, s.routeId);
+      return route ? { route, stop: route.stops.find(x => x.id === s.stopId) || null } : null;
+    }),
+    roster: op(routeId => { const p = allow('admin', 'driver'); mustRoute(p, db(), routeId); return T.routeRoster(db(), routeId); }),
+    startTrip: cmd('transport.startTrip'),
+    endTrip: cmd('transport.endTrip'),
+    recordPosition: cmd('transport.recordPosition'),
+    markChild: cmd('transport.markChild'),
+    activeTrip: op(routeId => { const p = me(); mustRoute(p, db(), routeId); const t = T.activeTripFor(db(), routeId); return t ? tripOut(t, p) : null; }),
+    trips: op(({ routeId, date } = {}) => {
+      const p = me(); const d = db();
+      const routeIds = new Set(visibleRoutes(p, d).map(r => r.id));
+      if (p.role === 'parent') throw new ApiError('NOT_ALLOWED', 'Use the bus view for your child');
+      return d.trips.filter(t => routeIds.has(t.routeId) && (!routeId || t.routeId === routeId) && (!date || t.date === date))
+        .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1)).map(t => tripOut(t, p));
+    }),
+    parentView: op(studentId => {
+      const p = me(); mustSee(p, studentId);
+      const now = clock();
+      return T.parentView(db(), studentId, nowISO(now), todayISO(now));
+    }),
+    simulationPlan: op((routeId, o = {}) => { const p = allow('admin', 'driver'); return simulationPlan(mustRoute(p, db(), routeId), o); }),
+  };
+
+  function seeInvoice(p, d, id) {
+    const inv = byId(d.invoices, id);
+    if (!inv) throw new ApiError('NOT_FOUND', 'Invoice not found');
+    if (!(STAFF_SEES_ALL.includes(p.role) || (p.role === 'parent' && p.studentIds.includes(inv.studentId)))) throw new ApiError('NOT_ALLOWED', 'Not your invoice');
+    return inv;
   }
-  for (const g of db.guardians) {
-    // Withdrawn children stay visible to their guardian (read-only): fees, receipts, diary history.
-    const kids = childrenOf(db, g.id);
-    list.push({
-      id: `persona-${g.id}`, role: 'parent', guardianId: g.id,
-      label: `Parent — ${fullName(g)} (${kids.map(k => (k.status === 'active' ? k.firstName : `${k.firstName}, left`)).join('; ') || 'no children'})`,
-      studentIds: kids.map(k => k.id), activeStudentIds: kids.filter(k => k.status === 'active').map(k => k.id),
-      programIds: [...new Set(kids.map(k => k.programId))],
-    });
+  function seePayment(p, d, id) {
+    const pay = byId(d.payments, id);
+    if (!pay) throw new ApiError('NOT_FOUND', 'Payment not found');
+    if (!(STAFF_SEES_ALL.includes(p.role) || (p.role === 'parent' && p.studentIds.includes(pay.studentId)))) throw new ApiError('NOT_ALLOWED', 'Not your payment');
+    return pay;
   }
-  const order = { admin: 0, teacher: 1, accountant: 2, driver: 3, parent: 4 };
-  return list.sort((a, b) => order[a.role] - order[b.role] || a.label.localeCompare(b.label));
+  const fin = () => allow('admin', 'accountant');
+  const fees = {
+    heads: op(() => { allow('admin', 'accountant', 'parent'); return db().feeHeads; }),
+    structures: op(({ academicYearId } = {}) => { fin(); return db().feeStructures.filter(s => !academicYearId || s.academicYearId === academicYearId); }),
+    saveStructure: cmd('fees.saveStructure'),
+    generateInvoices: cmd('fees.generateInvoices'),
+    invoices: op(({ studentId, status, academicYearId, programId } = {}) => {
+      const p = allow('admin', 'accountant', 'parent'); const d = db(); const asOf = today();
+      return d.invoices
+        .filter(i => (STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(i.studentId))
+          && (!studentId || i.studentId === studentId) && (!status || i.status === status)
+          && (!academicYearId || i.academicYearId === academicYearId)
+          && (!programId || byId(d.students, i.studentId)?.programId === programId))
+        .map(i => F.invoiceView(d, i, asOf))
+        .sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : a.number < b.number ? -1 : 1));
+    }),
+    invoice: op(id => { const p = allow('admin', 'accountant', 'parent'); const d = db(); return F.invoiceView(d, seeInvoice(p, d, id), today()); }),
+    addConcession: cmd('fees.addConcession'),
+    removeConcession: cmd('fees.removeConcession'),
+    lateFeeDue: op((invoiceId, asOfDate) => {
+      const p = allow('admin', 'accountant', 'parent'); const d = db();
+      return F.lateFeeDue(d, seeInvoice(p, d, invoiceId), asOfDate || today());
+    }),
+    /** The accountant's "late fees due" list (computed as of today; nothing is applied automatically). */
+    lateFeesDueList: op(() => { fin(); return lateFeesDueList(db(), today()); }),
+    applyLateFee: cmd('fees.applyLateFee'),
+    /** applyLateFees({invoiceIds}) → {applied:[{invoiceId, line}], skipped:[{invoiceId, reason}]} */
+    applyLateFees: cmd('fees.applyLateFees'),
+    waiveLateFee: cmd('fees.waiveLateFee'),
+    cancelInvoice: cmd('fees.cancelInvoice'),
+    recordPayment: cmd('fees.recordPayment'),
+    cancelPayment: cmd('fees.cancelPayment'),
+    /**
+     * refund({paymentId, invoiceId, amountPaise, mode, reference, date, reason}) — money back against an invoice allocation.
+     * refund({creditId, amountPaise, mode, reference, date, reason}) — return unallocated credit (advance) held on account.
+     * refund({paymentId, invoiceId: null, amountPaise, …}) — same, from that payment's unconsumed credit.
+     * date must be on/after the payment date and not in the future.
+     */
+    refund: cmd('fees.refund'),
+    payments: op(({ studentId, from, to } = {}) => {
+      const p = allow('admin', 'accountant', 'parent'); const d = db();
+      return d.payments
+        .filter(x => (STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(x.studentId))
+          && (!studentId || x.studentId === studentId) && (!from || x.paidOn >= from) && (!to || x.paidOn <= to))
+        // externalReceivedPaise: money actually received; 'credit' payments are internal transfers (0)
+        .map(x => ({ ...x, studentName: fullName(byId(d.students, x.studentId)), externalReceivedPaise: x.mode === 'credit' ? 0 : x.amountPaise }))
+        .sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : a.recordedAt > b.recordedAt ? -1 : 0));
+    }),
+    payment: op(id => { const p = allow('admin', 'accountant', 'parent'); return seePayment(p, db(), id); }),
+    receiptView: op(paymentId => { const p = allow('admin', 'accountant', 'parent'); seePayment(p, db(), paymentId); return F.receiptView(db(), paymentId); }),
+    availableCredit: op(studentId => { const p = allow('admin', 'accountant', 'parent'); mustSee(p, studentId); return F.availableCreditPaise(db(), studentId); }),
+    outstandingReport: op(({ academicYearId, programId, asOfDate } = {}) => {
+      fin(); const d = db();
+      return F.outstandingReport(d, { academicYearId: academicYearId || d.school.currentAcademicYearId, programId, asOfDate: asOfDate || today() });
+    }),
+    reconcile: op(() => { fin(); return reconcile(db(), { asOfDate: today() }); }),
+    mockOnlinePayment: cmd('fees.mockOnlinePayment'),
+  };
+
+  const attendance = {
+    forDate: op((date, programId) => { const p = allow('admin', 'teacher'); teachesProgram(p, programId); return A.attendanceForDate(db(), date, programId); }),
+    mark: cmd('attendance.mark'),
+    summary: op((studentId, from, to) => { const p = allow('admin', 'teacher', 'parent'); mustSee(p, studentId); return A.attendanceSummary(db(), studentId, from, to); }),
+  };
+
+  const diary = {
+    forStudentDate: op((studentId, date) => { const p = allow('admin', 'teacher', 'parent'); mustSee(p, studentId); return D.diaryForStudentDate(db(), studentId, date); }),
+    forProgramDate: op((programId, date) => { const p = allow('admin', 'teacher'); teachesProgram(p, programId); return D.diaryForProgramDate(db(), programId, date); }),
+    add: cmd('diary.add'),
+    markRead: cmd('diary.markRead'),
+  };
+
+  const audit = { list: op(q => { allow('admin', 'accountant'); return listAudit(db(), q || {}); }) };
+
+  /** Children/fees CSV import helpers that need no server (parsing and the suggested column mapping). */
+  const importHelpers = {
+    /** parseCsv(text) → {headers, rows:[{line, values}], problems:[{line, reason}]} — pass rows to stage() unchanged. */
+    parseCsv: op(text => { allow('admin', 'accountant'); return parseCsvObjects(text); }),
+    targetFields: op(kind => { allow('admin', 'accountant'); if (!I.TARGET_FIELDS[kind]) throw new ApiError('VALIDATION', `Unknown import kind: ${kind}`); return { fields: I.TARGET_FIELDS[kind], required: I.REQUIRED_FIELDS[kind] }; }),
+    suggestMapping: op((kind, headers) => { allow('admin', 'accountant'); return I.suggestMapping(kind, headers || []); }),
+  };
+
+  return { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds } };
 }
 
 /**
@@ -104,7 +349,7 @@ export function createApi(opts = {}) {
     return storage.db;
   }
 
-  // ---------------- session ----------------
+  // ---------------- session (demo: persona switcher) ----------------
   function readSession() { try { return sessionBackend.getItem(SESSION_KEY); } catch { return null; } }
   const session = {
     personas() { return storage && storage.db ? out(buildPersonas(storage.db)) : []; },
@@ -126,363 +371,122 @@ export function createApi(opts = {}) {
     if (!p) throw new ApiError('NOT_ALLOWED', 'Choose a persona first');
     return p;
   }
-  function allow(...roles) {
+  const ctxNow = p => { const now = clock(); return cmdCtx(p, nowISO(now), todayISO(now)); };
+
+  /** A registry command run locally: authorize + run inside storage.commit (nothing written if either throws). */
+  const cmd = name => op((...args) => {
+    const c = COMMANDS[name];
+    if (!c) throw new ApiError('NOT_FOUND', `Unknown command: ${name}`);
+    if (c.serverOnly) throw realAppOnly('This action');
     const p = me();
-    if (!roles.includes(p.role)) throw new ApiError('NOT_ALLOWED', `Not available to ${ROLE_LABEL[p.role] || p.role}`);
-    return p;
-  }
-  const ctxFor = p => {
-    const now = clock();
-    return { actor: { role: p.role, id: p.staffId || p.guardianId }, now: nowISO(now), today: todayISO(now) };
-  };
+    db();
+    return storage.commit(d => execute(name, d, args, ctxNow(p), p));
+  });
+
+  const surface = createSurface({ db, me, clock, cmd });
+  const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers } = surface;
   const today = () => todayISO(clock());
-  const sees = (p, studentId) => STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(studentId);
-  function mustSee(p, studentId) {
-    if (!byId(db().students, studentId)) throw new ApiError('NOT_FOUND', 'Student not found');
-    if (!sees(p, studentId)) throw new ApiError('NOT_ALLOWED', 'Not your student');
-  }
-  /** Run a domain command inside commit with the current persona's ctx. */
-  const write = (p, fn) => storage.commit(draft => fn(draft, ctxFor(p)));
 
-  /** Wrap: async, coded errors → ApiError, results cloned. */
-  const op = fn => async (...args) => {
-    try { return out(await fn(...args)); } catch (e) { throw toApiError(e); }
+  // ---------------- live trip feed (demo: same-browser commits and storage events) ----------------
+  /** fn({type:'position', fix}) for each new kept fix; fn({type:'trip', trip}) when status/events change (positions omitted). */
+  transport.subscribeTrip = (routeId, fn) => {
+    const p = me();
+    mustRoute(p, db(), routeId);
+    let tripId = null, lastTs = null, lastSig = null;
+    const current = d => T.activeTripFor(d, routeId) || d.trips.filter(t => t.routeId === routeId && t.date === today()).sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))[0] || null;
+    const view = (d, t) => { const v = tripOutP(d, t, p); delete v.positions; return v; };
+    const sigOf = v => JSON.stringify([v.id, v.status, v.endedAt, v.stopEvents, v.childEvents]);
+    const prime = () => {
+      const d = storage?.db; const t = d && current(d);
+      tripId = t ? t.id : null; lastTs = t && t.positions.length ? t.positions.at(-1).ts : null; lastSig = t ? sigOf(view(d, t)) : null;
+    };
+    prime();
+    const check = d => {
+      if (!d) return;
+      const t = current(d);
+      if (!t) return;
+      if (t.id !== tripId) { tripId = t.id; lastTs = null; lastSig = null; }
+      const v = view(d, t);
+      const sig = sigOf(v);
+      if (sig !== lastSig) { lastSig = sig; try { fn(out({ type: 'trip', trip: v })); } catch (e) { console.error(e); } }
+      for (const fix of t.positions) {
+        if (lastTs && fix.ts <= lastTs) continue;
+        lastTs = fix.ts;
+        try { fn(out({ type: 'position', fix: { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, ts: fix.ts } })); } catch (e) { console.error(e); }
+      }
+    };
+    listeners.add(check);
+    return () => listeners.delete(check);
   };
 
-  const studentView = (d, s, p) => {
-    const v = { ...s, name: fullName(s), programName: byId(d.programs, s.programId)?.name ?? '—' };
-    if (p.role === 'driver') v.healthNotes = null; // not needed for boarding
-    return v;
+  // ---------------- real-app-only namespaces, demo behaviour ----------------
+  const auth = {
+    status: op(() => ({ state: 'demo', email: null })),
+    signInWithOtp: op(() => { throw realAppOnly('Sign-in with an email code'); }),
+    verifyOtp: op(() => { throw realAppOnly('Sign-in with an email code'); }),
+    redeemInvite: op(() => { throw realAppOnly('Linking with an invite code'); }),
+    signOut: op(() => { session.clear(); }),
   };
-  const visibleGuardianIds = (d, p) => {
-    if (STAFF_SEES_ALL.includes(p.role)) return d.guardians.map(g => g.id);
-    if (p.role === 'parent') return [p.guardianId];
-    if (p.role === 'teacher') return [...new Set(d.students.filter(s => p.studentIds.includes(s.id)).flatMap(s => s.guardianIds))];
-    return [];
+  const consent = {
+    // The demo holds no personal data; live bus tracking is shown, so the demo reports it as given.
+    status: op(() => ({ version: CONSENT_VERSION, purposes: { app_account: { given: true, at: null }, push: { given: false, at: null }, bus_live: { given: true, at: null } }, demo: true })),
+    give: op(() => { throw realAppOnly('Recording consent'); }),
+    withdraw: op(() => { throw realAppOnly('Withdrawing consent'); }),
+  };
+  const push = {
+    vapidPublicKey: op(() => null),
+    subscribe: op(() => { throw realAppOnly('Push notifications'); }),
+    unsubscribe: op(() => { throw realAppOnly('Push notifications'); }),
+    list: op(() => []),
+  };
+  Object.assign(fees, {
+    createGatewayOrder: op(() => { throw realAppOnly('Online payment (Razorpay)'); }),
+    verifyGatewayPayment: op(() => { throw realAppOnly('Online payment (Razorpay)'); }),
+    gatewayOrderStatus: op(() => { throw realAppOnly('Online payment (Razorpay)'); }),
+    importSettlementCsv: op(() => { throw realAppOnly('Settlement reconciliation'); }),
+    settlementReport: op(() => { throw realAppOnly('Settlement reconciliation'); }),
+  });
+
+  // Import works in the demo too: batches live in memory only (lost on reload); commit writes local data.
+  const batches = new Map();
+  const imports = {
+    ...importHelpers,
+    stage: op(({ kind, mapping, rows } = {}) => {
+      const p = allowP(me(), 'admin', 'accountant');
+      I.checkMapping(kind, mapping);
+      if (!Array.isArray(rows) || !rows.length) throw new ApiError('VALIDATION', 'The file has no data rows');
+      const batchId = `imb-demo-${batches.size + 1}`;
+      const v = I.validateRows(db(), { kind, mapping, rows }, { today: today(), batchId });
+      batches.set(batchId, { id: batchId, kind, mapping: { ...mapping }, rows: structuredClone(rows), status: 'staged', inputRows: rows.length, createdAt: nowISO(clock()), createdBy: p.staffId, result: null });
+      return { batchId, counts: v.counts };
+    }),
+    preview: op(batchId => {
+      allowP(me(), 'admin', 'accountant');
+      const b = batches.get(batchId);
+      if (!b) throw new ApiError('NOT_FOUND', 'Import batch not found');
+      const v = I.validateRows(db(), b, { today: today(), batchId });
+      return { batchId, kind: b.kind, status: b.status, rows: v.rows, counts: v.counts, guardians: v.guardians, sourceOutstandingPaise: v.sourceOutstandingPaise };
+    }),
+    commit: op(batchId => {
+      const p = allowP(me(), 'admin', 'accountant');
+      const b = batches.get(batchId);
+      if (!b) throw new ApiError('NOT_FOUND', 'Import batch not found');
+      if (b.status !== 'staged') throw new ApiError('VALIDATION', `This import was already ${b.status}`);
+      const r = storage.commit(d => I.applyRows(d, b, batchId, ctxNow(p)));
+      Object.assign(b, { status: 'committed', result: { ...r, rows: undefined } });
+      return r;
+    }),
+    batches: op(() => { allowP(me(), 'admin', 'accountant'); return [...batches.values()].map(({ rows, ...b }) => b); }),
   };
 
-  /** A teacher sees only the children of a guardian that are in the teacher's programs. */
-  const guardianView = (p, g) => ({ ...g, name: fullName(g), studentIds: p.role === 'teacher' ? g.studentIds.filter(id => p.studentIds.includes(id)) : [...g.studentIds] });
-
-  // ---------------- people ----------------
-  const people = {
-    programs: op(() => { me(); return db().programs; }),
-    students: op(({ programId } = {}) => {
-      const p = me(); const d = db();
-      let list = STAFF_SEES_ALL.includes(p.role) ? d.students : d.students.filter(s => p.studentIds.includes(s.id));
-      if (programId) list = list.filter(s => s.programId === programId);
-      return sortByName(list).map(s => studentView(d, s, p));
-    }),
-    student: op(id => { const p = me(); mustSee(p, id); return studentView(db(), byId(db().students, id), p); }),
-    guardians: op(() => {
-      const p = me(); const d = db(); const ids = visibleGuardianIds(d, p);
-      return sortByName(d.guardians.filter(g => ids.includes(g.id))).map(g => guardianView(p, g));
-    }),
-    guardian: op(id => {
-      const p = me(); const d = db();
-      const g = byId(d.guardians, id);
-      if (!g) throw new ApiError('NOT_FOUND', 'Guardian not found');
-      if (!visibleGuardianIds(d, p).includes(id)) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
-      return guardianView(p, g);
-    }),
-    staff: op(({ role } = {}) => {
-      me();
-      return sortByName(db().staff.filter(s => !role || s.role === role)).map(s => ({ ...s, name: fullName(s) }));
-    }),
-    childrenOf: op(guardianId => {
-      const p = me(); const d = db();
-      if (!visibleGuardianIds(d, p).includes(guardianId)) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
-      return childrenOf(d, guardianId).filter(s => p.role !== 'teacher' || p.studentIds.includes(s.id)).map(s => studentView(d, s, p));
-    }),
-  };
-
-  // ---------------- notices ----------------
-  const withStats = (d, n) => ({ ...n, ...M.noticeStats(d, n.id) });
-  const byNewest = (a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0);
-  function canManageNotice(p, d, noticeId) {
-    const n = byId(d.notices, noticeId);
-    if (!n) throw new ApiError('NOT_FOUND', 'Notice not found');
-    if (p.role === 'admin') return n;
-    if (p.role === 'teacher') {
-      const ps = M.audiencePrograms(d, n.audience);
-      if (n.createdBy === p.staffId || ps.length === 0 || ps.some(x => p.programIds.includes(x))) return n;
-    }
-    throw new ApiError('NOT_ALLOWED', 'Not your notice');
-  }
-  const notices = {
+  const reminders = {
+    /** Demo: the reminders the daily job WOULD send today for visible invoices (sentOn null = not sent; no job runs in the demo). */
     list: op(() => {
-      const p = me(); const d = db();
-      if (p.role === 'parent') {
-        // Only this guardian's own children: never other targeted children.
-        return M.noticesForGuardian(d, p.guardianId).map(n => {
-          const about = n.receipt.studentIds;
-          const audience = n.audience.scope === 'students' ? { ...n.audience, studentIds: n.audience.studentIds.filter(id => about.includes(id)) } : n.audience;
-          return { ...n, audience, aboutStudentIds: [...about] };
-        }).sort(byNewest);
-      }
-      if (p.role === 'admin' || p.role === 'accountant') return d.notices.map(n => withStats(d, n)).sort(byNewest);
-      if (p.role === 'teacher') return M.noticesForPrograms(d, p.programIds).map(n => withStats(d, n)).sort(byNewest);
-      return [];
-    }),
-    send: op(input => {
-      const p = allow('admin', 'teacher');
-      if (p.role === 'teacher') {
-        const a = input && input.audience;
-        if (!a || a.scope === 'school') throw new ApiError('NOT_ALLOWED', 'Teachers can message their own programs only');
-        const ps = M.audiencePrograms(db(), a);
-        if (!ps.length || ps.some(x => !p.programIds.includes(x))) throw new ApiError('NOT_ALLOWED', 'Teachers can message their own programs only');
-      }
-      return write(p, (d, ctx) => M.sendNotice(d, input, ctx));
-    }),
-    recipients: op(noticeId => {
-      const p = allow('admin', 'teacher'); const d = db();
-      canManageNotice(p, d, noticeId);
-      let rows = M.noticeRecipients(d, noticeId);
-      if (p.role === 'teacher') {
-        rows = rows.map(r => ({ ...r, studentIds: r.studentIds.filter(id => p.studentIds.includes(id)) })).filter(r => r.studentIds.length > 0);
-      }
-      return rows.map(r => ({ ...r, studentNames: r.studentIds.map(id => fullName(byId(d.students, id))) }));
-    }),
-    markRead: op(noticeId => { const p = allow('parent'); return write(p, (d, ctx) => M.markNoticeRead(d, noticeId, p.guardianId, ctx)); }),
-    acknowledge: op(noticeId => { const p = allow('parent'); return write(p, (d, ctx) => M.acknowledgeNotice(d, noticeId, p.guardianId, ctx)); }),
-  };
-
-  // ---------------- threads ----------------
-  function visibleThread(p, d, id) {
-    const t = byId(d.threads, id);
-    if (!t) throw new ApiError('NOT_FOUND', 'Conversation not found');
-    const ok = p.role === 'admin' || (p.role === 'teacher' && p.programIds.includes(t.programId)) || (p.role === 'parent' && t.guardianId === p.guardianId);
-    if (!ok) throw new ApiError('NOT_ALLOWED', 'Not your conversation');
-    return t;
-  }
-  const threads = {
-    list: op(() => {
-      const p = allow('admin', 'teacher', 'parent'); const d = db();
-      const list = d.threads.filter(t => p.role === 'admin' || (p.role === 'teacher' && p.programIds.includes(t.programId)) || (p.role === 'parent' && t.guardianId === p.guardianId));
-      return list.map(t => M.threadView(d, t, p.role)).sort((a, b) => {
-        const ta = a.lastMessage?.sentAt || a.createdAt, tb = b.lastMessage?.sentAt || b.createdAt;
-        return ta < tb ? 1 : ta > tb ? -1 : 0;
-      });
-    }),
-    get: op(id => {
-      const p = allow('admin', 'teacher', 'parent'); const d = db();
-      const t = visibleThread(p, d, id);
-      return { thread: M.threadView(d, t, p.role), messages: M.threadMessages(d, id) };
-    }),
-    open: op(({ guardianId, studentId, subject, body } = {}) => {
-      const p = allow('admin', 'teacher', 'parent');
-      const gid = p.role === 'parent' ? (guardianId || p.guardianId) : guardianId;
-      if (p.role === 'parent' && gid !== p.guardianId) throw new ApiError('NOT_ALLOWED', 'You can only write as yourself');
-      mustSee(p, studentId);
-      if (byId(db().students, studentId).status !== 'active') throw new ApiError('VALIDATION', 'This child has left the school; their records are read-only');
-      const r = write(p, (d, ctx) => M.openThread(d, { guardianId: gid, studentId, subject, body }, ctx));
-      const view = M.threadView(db(), byId(db().threads, r.thread.id), p.role);
-      return { ...view, thread: view, messages: r.messages };
-    }),
-    reply: op((id, body) => { const p = allow('admin', 'teacher', 'parent'); visibleThread(p, db(), id); return write(p, (d, ctx) => M.replyThread(d, id, body, ctx)); }),
-    markRead: op(id => { const p = allow('admin', 'teacher', 'parent'); visibleThread(p, db(), id); return write(p, (d, ctx) => M.markThreadRead(d, id, ctx)); }),
-    close: op(id => { const p = allow('admin', 'teacher', 'parent'); visibleThread(p, db(), id); return write(p, (d, ctx) => M.closeThread(d, id, ctx)); }),
-  };
-
-  // ---------------- calendar ----------------
-  const calendar = {
-    academicYears: op(() => {
-      me(); const d = db();
-      return [...d.academicYears].sort((a, b) => (a.startDate < b.startDate ? -1 : 1)).map(ay => ({ ...ay, current: ay.id === d.school.currentAcademicYearId }));
-    }),
-    events: op(({ academicYearId, programId, types, from, to } = {}) => {
-      const p = me(); const d = db();
-      const ayId = academicYearId || d.school.currentAcademicYearId;
-      let birthdayStudentIds;
-      if (p.role === 'parent' || p.role === 'teacher') birthdayStudentIds = p.studentIds;
-      else if (p.role === 'driver') birthdayStudentIds = [];
-      const evs = C.listEvents(d, { academicYearId: ayId, programId, types, from, to, birthdayStudentIds });
-      if (STAFF_SEES_ALL.includes(p.role)) return evs;
-      // parents/teachers: school-wide events plus their own programs; drivers: school-wide only
-      return evs.filter(ev => ev.type === 'birthday' || ev.programIds.length === 0 || ev.programIds.some(x => p.programIds.includes(x)));
-    }),
-    create: op(ev => { const p = allow('admin'); return write(p, (d, ctx) => C.createEvent(d, ev, ctx)); }),
-    update: op((id, patch) => { const p = allow('admin'); return write(p, (d, ctx) => C.updateEvent(d, id, patch, ctx)); }),
-    remove: op(id => { const p = allow('admin'); return write(p, (d, ctx) => C.removeEvent(d, id, ctx)); }),
-    previewHolidayCsv: op((text, academicYearId) => { allow('admin'); return H.previewHolidayCsv(db(), text, academicYearId); }),
-    importHolidays: op((preview, { includeOutsideYear = false } = {}) => {
-      const p = allow('admin');
-      return write(p, (d, ctx) => H.importHolidays(d, preview, { includeOutsideYear }, ctx));
-    }),
-    isWorkingDay: op((dateISO, programId) => { me(); return C.isWorkingDay(db(), dateISO, programId); }),
-  };
-
-  // ---------------- transport ----------------
-  const visibleRoutes = (p, d) => {
-    if (['admin', 'accountant', 'teacher'].includes(p.role)) return d.routes;
-    if (p.role === 'driver') return d.routes.filter(r => (p.routeIds || []).includes(r.id));
-    const ids = new Set(d.students.filter(s => p.studentIds.includes(s.id)).map(s => s.routeId).filter(Boolean));
-    return d.routes.filter(r => ids.has(r.id));
-  };
-  function mustRoute(p, d, routeId) {
-    const r = byId(d.routes, routeId);
-    if (!r) throw new ApiError('NOT_FOUND', 'Route not found');
-    if (!visibleRoutes(p, d).some(x => x.id === routeId)) throw new ApiError('NOT_ALLOWED', 'Not your route');
-    return r;
-  }
-  function driverTrip(p, d, tripId) {
-    const t = byId(d.trips, tripId);
-    if (!t) throw new ApiError('NOT_FOUND', 'Trip not found');
-    if (p.role === 'driver' && !(p.routeIds || []).includes(t.routeId)) throw new ApiError('NOT_ALLOWED', 'Not your route');
-    return t;
-  }
-  /** Trip as a persona may see it: parents/teachers only get their own children's events and stops. */
-  const tripOut = (t, p) => {
-    const c = { ...t };
-    delete c.tracker;
-    if (p && (p.role === 'parent' || p.role === 'teacher')) {
-      const kids = db().students.filter(s => p.studentIds.includes(s.id) && s.routeId === t.routeId);
-      const stopIds = new Set(kids.map(s => s.stopId));
-      const kidIds = new Set(kids.map(s => s.id));
-      c.childEvents = t.childEvents.filter(e => kidIds.has(e.studentId));
-      c.stopEvents = t.stopEvents.filter(e => stopIds.has(e.stopId));
-    }
-    return c;
-  };
-  const transport = {
-    routes: op(() => { const p = me(); return visibleRoutes(p, db()); }),
-    route: op(id => { const p = me(); return mustRoute(p, db(), id); }),
-    routeForStudent: op(studentId => {
-      const p = me(); mustSee(p, studentId); const d = db();
-      const s = byId(d.students, studentId);
-      if (!s.routeId) return null;
-      const route = byId(d.routes, s.routeId);
-      return route ? { route, stop: route.stops.find(x => x.id === s.stopId) || null } : null;
-    }),
-    roster: op(routeId => { const p = allow('admin', 'driver'); mustRoute(p, db(), routeId); return T.routeRoster(db(), routeId); }),
-    startTrip: op(({ routeId, direction, simulated } = {}) => {
-      const p = allow('admin', 'driver'); mustRoute(p, db(), routeId);
-      return tripOut(write(p, (d, ctx) => T.startTrip(d, { routeId, direction, simulated }, ctx)));
-    }),
-    endTrip: op(tripId => { const p = allow('admin', 'driver'); driverTrip(p, db(), tripId); return tripOut(write(p, (d, ctx) => T.endTrip(d, tripId, ctx))); }),
-    recordPosition: op((tripId, fix) => {
-      const p = allow('admin', 'driver'); driverTrip(p, db(), tripId);
-      const r = write(p, d => T.recordPosition(d, tripId, fix || {}));
-      return { trip: tripOut(r.trip), newEvents: r.newEvents, rejected: r.rejected ?? null }; // rejected: why a fix was refused (duplicate/out-of-order)
-    }),
-    markChild: op((tripId, ev) => { const p = allow('admin', 'driver'); driverTrip(p, db(), tripId); return write(p, (d, ctx) => T.markChild(d, tripId, ev || {}, ctx)); }),
-    activeTrip: op(routeId => { const p = me(); mustRoute(p, db(), routeId); const t = T.activeTripFor(db(), routeId); return t ? tripOut(t, p) : null; }),
-    trips: op(({ routeId, date } = {}) => {
-      const p = me(); const d = db();
-      const routeIds = new Set(visibleRoutes(p, d).map(r => r.id));
-      if (p.role === 'parent') throw new ApiError('NOT_ALLOWED', 'Use the bus view for your child');
-      return d.trips.filter(t => routeIds.has(t.routeId) && (!routeId || t.routeId === routeId) && (!date || t.date === date))
-        .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1)).map(t => tripOut(t, p));
-    }),
-    parentView: op(studentId => {
-      const p = me(); mustSee(p, studentId);
-      const now = clock();
-      return T.parentView(db(), studentId, nowISO(now), todayISO(now));
-    }),
-    simulationPlan: op((routeId, o = {}) => { const p = allow('admin', 'driver'); return simulationPlan(mustRoute(p, db(), routeId), o); }),
-  };
-
-  // ---------------- fees ----------------
-  function seeInvoice(p, d, id) {
-    const inv = byId(d.invoices, id);
-    if (!inv) throw new ApiError('NOT_FOUND', 'Invoice not found');
-    if (!(STAFF_SEES_ALL.includes(p.role) || (p.role === 'parent' && p.studentIds.includes(inv.studentId)))) throw new ApiError('NOT_ALLOWED', 'Not your invoice');
-    return inv;
-  }
-  function seePayment(p, d, id) {
-    const pay = byId(d.payments, id);
-    if (!pay) throw new ApiError('NOT_FOUND', 'Payment not found');
-    if (!(STAFF_SEES_ALL.includes(p.role) || (p.role === 'parent' && p.studentIds.includes(pay.studentId)))) throw new ApiError('NOT_ALLOWED', 'Not your payment');
-    return pay;
-  }
-  const fin = () => allow('admin', 'accountant');
-  const fees = {
-    heads: op(() => { allow('admin', 'accountant', 'parent'); return db().feeHeads; }),
-    structures: op(({ academicYearId } = {}) => { fin(); return db().feeStructures.filter(s => !academicYearId || s.academicYearId === academicYearId); }),
-    saveStructure: op(s => { const p = fin(); return write(p, (d, ctx) => F.saveStructure(d, s, ctx)); }),
-    generateInvoices: op(args => { const p = fin(); return write(p, (d, ctx) => F.generateInvoices(d, args, ctx)); }),
-    invoices: op(({ studentId, status, academicYearId, programId } = {}) => {
-      const p = allow('admin', 'accountant', 'parent'); const d = db(); const asOf = today();
-      return d.invoices
-        .filter(i => (STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(i.studentId))
-          && (!studentId || i.studentId === studentId) && (!status || i.status === status)
-          && (!academicYearId || i.academicYearId === academicYearId)
-          && (!programId || byId(d.students, i.studentId)?.programId === programId))
-        .map(i => F.invoiceView(d, i, asOf))
-        .sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : a.number < b.number ? -1 : 1));
-    }),
-    invoice: op(id => { const p = allow('admin', 'accountant', 'parent'); const d = db(); return F.invoiceView(d, seeInvoice(p, d, id), today()); }),
-    addConcession: op((invoiceId, c) => { const p = fin(); return write(p, (d, ctx) => F.addConcession(d, invoiceId, c || {}, ctx)); }),
-    removeConcession: op((invoiceId, concessionId, reason) => { const p = fin(); return write(p, (d, ctx) => F.removeConcession(d, invoiceId, concessionId, reason, ctx)); }),
-    lateFeeDue: op((invoiceId, asOfDate) => {
-      const p = allow('admin', 'accountant', 'parent'); const d = db();
-      return F.lateFeeDue(d, seeInvoice(p, d, invoiceId), asOfDate || today());
-    }),
-    applyLateFee: op((invoiceId, asOfDate) => { const p = fin(); return write(p, (d, ctx) => F.applyLateFee(d, invoiceId, asOfDate || ctx.today, ctx)); }),
-    waiveLateFee: op((invoiceId, reason) => { const p = fin(); return write(p, (d, ctx) => F.waiveLateFee(d, invoiceId, reason, ctx)); }),
-    cancelInvoice: op((id, reason) => { const p = fin(); return write(p, (d, ctx) => F.cancelInvoice(d, id, reason, ctx)); }),
-    recordPayment: op(args => { const p = fin(); return write(p, (d, ctx) => F.recordPayment(d, args || {}, ctx)); }),
-    cancelPayment: op((id, reason) => { const p = fin(); return write(p, (d, ctx) => F.cancelPayment(d, id, reason, ctx)); }),
-    /**
-     * refund({paymentId, invoiceId, amountPaise, mode, reference, date, reason}) — money back against an invoice allocation.
-     * refund({creditId, amountPaise, mode, reference, date, reason}) — return unallocated credit (advance) held on account.
-     * refund({paymentId, invoiceId: null, amountPaise, …}) — same, from that payment's unconsumed credit.
-     * date must be on/after the payment date and not in the future.
-     */
-    refund: op(args => { const p = fin(); return write(p, (d, ctx) => F.refund(d, args || {}, ctx)); }),
-    payments: op(({ studentId, from, to } = {}) => {
-      const p = allow('admin', 'accountant', 'parent'); const d = db();
-      return d.payments
-        .filter(x => (STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(x.studentId))
-          && (!studentId || x.studentId === studentId) && (!from || x.paidOn >= from) && (!to || x.paidOn <= to))
-        // externalReceivedPaise: money actually received; 'credit' payments are internal transfers (0)
-        .map(x => ({ ...x, studentName: fullName(byId(d.students, x.studentId)), externalReceivedPaise: x.mode === 'credit' ? 0 : x.amountPaise }))
-        .sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : a.recordedAt > b.recordedAt ? -1 : 0));
-    }),
-    payment: op(id => { const p = allow('admin', 'accountant', 'parent'); return seePayment(p, db(), id); }),
-    receiptView: op(paymentId => { const p = allow('admin', 'accountant', 'parent'); seePayment(p, db(), paymentId); return F.receiptView(db(), paymentId); }),
-    availableCredit: op(studentId => { const p = allow('admin', 'accountant', 'parent'); mustSee(p, studentId); return F.availableCreditPaise(db(), studentId); }),
-    outstandingReport: op(({ academicYearId, programId, asOfDate } = {}) => {
-      fin(); const d = db();
-      return F.outstandingReport(d, { academicYearId: academicYearId || d.school.currentAcademicYearId, programId, asOfDate: asOfDate || today() });
-    }),
-    reconcile: op(() => { fin(); return reconcile(db(), { asOfDate: today() }); }),
-    mockOnlinePayment: op(({ studentId, invoiceIds } = {}) => {
-      const p = allow('admin', 'accountant', 'parent'); mustSee(p, studentId);
-      return write(p, (d, ctx) => F.mockOnlinePayment(d, { studentId, invoiceIds, guardianId: p.role === 'parent' ? p.guardianId : null }, ctx));
+      const p = allowP(me(), 'admin', 'accountant', 'parent');
+      return remindersDue(db(), today()).filter(r => STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(r.studentId))
+        .map(r => ({ invoiceId: r.invoiceId, kind: r.kind, sentOn: null, text: r.text }));
     }),
   };
-
-  // ---------------- attendance ----------------
-  function teachesProgram(p, programId) {
-    if (p.role === 'admin') return;
-    if (p.role === 'teacher' && p.programIds.includes(programId)) return;
-    throw new ApiError('NOT_ALLOWED', 'Not your program');
-  }
-  const attendance = {
-    forDate: op((date, programId) => { const p = allow('admin', 'teacher'); teachesProgram(p, programId); return A.attendanceForDate(db(), date, programId); }),
-    mark: op((date, entries) => {
-      const p = allow('admin', 'teacher');
-      for (const e of entries || []) mustSee(p, e.studentId);
-      return write(p, (d, ctx) => A.markAttendance(d, date, entries, ctx));
-    }),
-    summary: op((studentId, from, to) => { const p = allow('admin', 'teacher', 'parent'); mustSee(p, studentId); return A.attendanceSummary(db(), studentId, from, to); }),
-  };
-
-  // ---------------- diary ----------------
-  const diary = {
-    forStudentDate: op((studentId, date) => { const p = allow('admin', 'teacher', 'parent'); mustSee(p, studentId); return D.diaryForStudentDate(db(), studentId, date); }),
-    forProgramDate: op((programId, date) => { const p = allow('admin', 'teacher'); teachesProgram(p, programId); return D.diaryForProgramDate(db(), programId, date); }),
-    add: op(entry => { const p = allow('admin', 'teacher'); mustSee(p, entry && entry.studentId); return write(p, (d, ctx) => D.addDiaryEntry(d, entry, ctx)); }),
-    markRead: op(entryId => {
-      const p = allow('parent'); const e = byId(db().diaryEntries, entryId);
-      if (!e) throw new ApiError('NOT_FOUND', 'Diary entry not found');
-      mustSee(p, e.studentId);
-      return write(p, (d, ctx) => D.markDiaryRead(d, entryId, ctx));
-    }),
-  };
-
-  const audit = { list: op(q => { allow('admin', 'accountant'); return listAudit(db(), q || {}); }) };
 
   // ---------------- admin ----------------
   const broken = () => !storage || storage.status !== 'ok';
@@ -491,7 +495,7 @@ export function createApi(opts = {}) {
     if (broken()) return systemCtx();
     const p = session.current();
     if (!p || p.role !== 'admin') throw new ApiError('NOT_ALLOWED', 'Only the principal can do this');
-    return ctxFor(p);
+    return ctxNow(p);
   };
   const admin = {
     resetToSeed: op(async () => {
@@ -502,7 +506,7 @@ export function createApi(opts = {}) {
     }),
     exportJson: op(() => {
       if (!storage) throw new ApiError('STORAGE_CORRUPT', 'Data is not loaded');
-      allow('admin');
+      allowP(me(), 'admin');
       return storage.exportJson();
     }),
     importJson: op(async text => {
@@ -514,9 +518,24 @@ export function createApi(opts = {}) {
     }),
     storageInfo: op(() => (storage ? storage.info() : { bytesUsed: 0, approxQuotaBytes: 0, status: 'empty', unsaved: false, writeFailed: false, persistent: opts.persistent ?? true, persistenceNote: opts.persistenceNote ?? null, corruptKey: null, lastError: null, rev: null })),
     validate: op(() => { me(); return validateDb(db()); }),
+    inviteCode: op(() => { throw realAppOnly('Invite codes'); }),
+    invites: op(() => { allowP(me(), 'admin', 'accountant'); return []; }),
+    revokeUser: op(() => { throw realAppOnly('Revoking a sign-in'); }),
+    /** The guardian's own data as JSON (DPDP access request). */
+    dataExport: op(guardianId => {
+      const p = allowP(me(), 'admin', 'parent');
+      if (p.role === 'parent' && guardianId !== p.guardianId) throw new ApiError('NOT_ALLOWED', 'You can download only your own data');
+      return JSON.stringify(guardianExport(db(), guardianId), null, 2);
+    }),
+    erasureRequests: op(() => { allowP(me(), 'admin'); return []; }),
+    revokeInvite: op(() => { throw realAppOnly('Invite codes'); }),
+    users: op(() => { allowP(me(), 'admin'); return []; }),
+    anonymiseGuardian: op(() => { throw realAppOnly('Erasing a guardian'); }),
+    setStaffRole: op(() => { throw realAppOnly('Changing a staff role'); }),
   };
 
   return {
+    mode: 'demo',
     ready() {
       if (!readyPromise) {
         readyPromise = (async () => {
@@ -533,7 +552,10 @@ export function createApi(opts = {}) {
     /** fn(db, info) after every commit and cross-tab change; info.status !== 'ok' (db null) → show recovery. */
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     getDb() { return storage ? storage.db : null; },
+    /** Real app: refetch the server snapshot. Demo: nothing to fetch. */
+    refresh: op(() => undefined),
     session, people, notices, threads, calendar, transport, fees, attendance, diary, audit, admin,
+    auth, consent, push, import: imports, reminders,
     /** test hook */
     _storage: () => storage,
   };
@@ -556,14 +578,22 @@ export function pickBackend(win, name) {
   }
 }
 
-const hasWindow = typeof window !== 'undefined'; // Node (tests) never touches Node's experimental Web Storage
-const local = hasWindow ? pickBackend(window, 'localStorage') : { backend: memoryBackend(), persistent: false, reason: 'not running in a browser' };
-const sess = hasWindow ? pickBackend(window, 'sessionStorage') : { backend: memoryBackend() };
+function createDemoApi() {
+  const hasWindow = typeof window !== 'undefined'; // Node (tests) never touches Node's experimental Web Storage
+  const local = hasWindow ? pickBackend(window, 'localStorage') : { backend: memoryBackend(), persistent: false, reason: 'not running in a browser' };
+  const sess = hasWindow ? pickBackend(window, 'sessionStorage') : { backend: memoryBackend() };
+  return createApi({
+    backend: local.backend,
+    sessionBackend: sess.backend,
+    persistent: local.persistent,
+    persistenceNote: local.reason,
+    eventTarget: hasWindow ? window : null,
+  });
+}
 
-export const api = createApi({
-  backend: local.backend,
-  sessionBackend: sess.backend,
-  persistent: local.persistent,
-  persistenceNote: local.reason,
-  eventTarget: hasWindow ? window : null,
-});
+// Mode is bound to the entry HTML: only app/index.html defines __APP_CONFIG__ (before this module loads).
+// The demo never loads remote.js or supabase-js; the real app never loads the seed.
+const APP_CONFIG = globalThis.__APP_CONFIG__;
+export const api = APP_CONFIG
+  ? await (await import('./remote.js')).createRemoteApi(APP_CONFIG, { createSurface, ApiError, toApiError, op })
+  : createDemoApi();

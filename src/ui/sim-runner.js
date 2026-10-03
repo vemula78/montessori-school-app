@@ -2,6 +2,22 @@
 // Both feed api.transport.recordPosition.
 import { api } from '../api/index.js';
 import { notifyQuota } from './components.js';
+import { isRealMode } from './mode.js';
+
+// Real app only: GPS fixes are sent over the network, so they are thinned before sending and queued (in order)
+// while the phone is offline. The demo records straight into browser storage and is unchanged.
+const REAL = isRealMode();
+const SEND_EVERY_MS = 3000, SEND_EVERY_M = 5, HEARTBEAT_MS = 20000, QUEUE_CAP = 500, RETRY_MS = 5000;
+const queue = [];
+let retryTimer = null;
+let lastSent = null; // {lat,lng,at}
+const metres = (a, b) => {
+  const R = 6371000, rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
+const isNetworkError = (e) => e?.code === 'NETWORK' || e?.code === 'OFFLINE' || e?.code === 'UNAVAILABLE' || e?.name === 'TypeError' || /failed to fetch|networkerror|load failed|network request failed/i.test(e?.message || '');
 
 const state = {
   mode: 'idle', // 'idle' | 'sim' | 'gps'
@@ -15,11 +31,13 @@ const state = {
   wakeLock: null,
   gps: { status: 'idle', message: '', lastFixTs: null, accuracy: null, fixes: 0 }, // idle|waiting|ok|denied|unavailable|timeout|insecure|unsupported
   lastError: null,
+  // real app only: online = last send worked and the browser says it is online; queued = fixes waiting to be sent
+  online: typeof navigator === 'undefined' ? true : navigator.onLine !== false, queued: 0, dropped: 0, sent: 0,
 };
 const listeners = new Set();
 const emit = () => listeners.forEach((f) => { try { f(snapshot()); } catch { /* listener failure must not stop the runner */ } });
 
-export const snapshot = () => ({ ...state, gps: { ...state.gps }, timer: undefined });
+export const snapshot = () => ({ ...state, gps: { ...state.gps }, timer: undefined, queued: queue.length });
 export function onState(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 export const isRunning = () => state.mode !== 'idle';
 export const runningTripId = () => state.tripId;
@@ -54,8 +72,64 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.mode !== 'idle' && !state.wakeLock) acquireWakeLock().then(emit);
 });
 
-// Returns true only if the fix was recorded. On any failure the run is stopped and the error surfaced -
-// the runner never advances past a fix that was not stored, and never records as a different persona.
+// ---- real app: thin, queue and flush ------------------------------------------------
+function scheduleRetry() {
+  if (retryTimer || !queue.length) return;
+  retryTimer = setTimeout(() => { retryTimer = null; flush(); }, RETRY_MS);
+}
+
+/** Send queued fixes oldest-first. Stops at the first network failure (fix stays queued); any other failure ends the run. */
+let inFlight = null;
+/** One flush at a time; a caller that arrives meanwhile waits for the running one (so "queue empty" really means sent). */
+function flush() {
+  if (!inFlight) inFlight = doFlush().finally(() => { inFlight = null; });
+  return inFlight;
+}
+async function doFlush() {
+  if (!queue.length) return;
+  try {
+    while (queue.length) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) { state.online = false; break; }
+      const fix = queue[0];
+      try {
+        const r = await api.transport.recordPosition(state.tripId, fix);
+        queue.shift();
+        if (r && r.rejected) state.lastError = `A position was refused by the server (${r.rejected}) and skipped.`; else state.lastError = null;
+        state.sent += 1; state.online = true;
+      } catch (e) {
+        if (isNetworkError(e)) { state.online = false; break; }
+        notifyQuota(e);
+        queue.length = 0;
+        stop(`${e?.code ? e.code + ': ' : ''}${e?.message || String(e)}`);
+        break;
+      }
+    }
+  } finally { emit(); scheduleRetry(); }
+}
+if (typeof window !== 'undefined' && REAL) {
+  window.addEventListener('online', () => { state.online = true; emit(); flush(); });
+  window.addEventListener('offline', () => { state.online = false; emit(); });
+}
+
+async function feedReal(pos) {
+  if (state.mode === 'gps' && lastSent) {
+    const dt = Date.parse(pos.ts) - lastSent.at;
+    const moved = metres(lastSent, pos);
+    // too soon, or too close to the last sent fix - unless it has been quiet for a while (so parents see the bus is alive)
+    if (dt < HEARTBEAT_MS && (dt < SEND_EVERY_MS || moved < SEND_EVERY_M)) return true;
+  }
+  lastSent = { lat: pos.lat, lng: pos.lng, at: Date.parse(pos.ts) || Date.now() };
+  queue.push(pos);
+  if (queue.length > QUEUE_CAP) { queue.shift(); state.dropped += 1; } // oldest goes first; the newest positions matter most
+  await flush();
+  return state.mode !== 'idle'; // false only when the flush ended the run (fatal error)
+}
+
+/** Best-effort: send what is queued (used before ending a trip). */
+export async function flushNow() { await flush(); return queue.length; }
+
+// Returns true only if the fix was recorded (or, in the real app, safely queued). On any other failure the run is
+// stopped and the error surfaced - the runner never advances past a fix that was not stored, and never records as a different persona.
 async function feed(pos) {
   try {
     if (api.session.current()?.id !== state.personaId) {
@@ -63,6 +137,7 @@ async function feed(pos) {
       err.code = 'NOT_ALLOWED';
       throw err;
     }
+    if (REAL) return await feedReal(pos);
     await api.transport.recordPosition(state.tripId, pos);
     state.lastError = null;
     return true;
@@ -144,6 +219,7 @@ export function stop(reason) {
 
 export function resetAfterTripEnd() {
   stop();
+  queue.length = 0; lastSent = null; state.dropped = 0; state.sent = 0;
   state.tripId = null; state.routeId = null; state.step = 0; state.total = 0;
   state.gps = { status: 'idle', message: '', lastFixTs: null, accuracy: null, fixes: 0 };
   emit();

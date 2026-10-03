@@ -1,0 +1,26 @@
+{
+  "_comment": "Copy to first-run.json (gitignored), replace every value, then: node scripts/first-run-sql.mjs first-run.json > first-run.sql. Money is integer paise.",
+  "school": {
+    "name": "Example Montessori School",
+    "address": "Street, Area, City PIN",
+    "phone": "+91-90000-00001",
+    "weeklyOffs": [0, 6],
+    "invoicePrefix": "INV",
+    "receiptPrefix": "RCP",
+    "refundPrefix": "RFD",
+    "lateFeeRule": null
+  },
+  "academicYears": [
+    { "id": "AY2026-27", "label": "AY 2026-27", "startDate": "2026-06-01", "endDate": "2027-05-31" }
+  ],
+  "currentAcademicYearId": "AY2026-27",
+  "programs": [
+    { "id": "prog-toddler", "name": "Toddler Community", "ageRange": "1.5 to 3 years" },
+    { "id": "prog-primary", "name": "Primary", "ageRange": "3 to 6 years" }
+  ],
+  "staff": [
+    { "id": "stf-principal", "firstName": "Firstname", "lastName": "Surname", "role": "admin", "email": "principal@example.com", "phone": "", "programIds": [] },
+    { "id": "stf-accountant", "firstName": "Firstname", "lastName": "Surname", "role": "accountant", "email": "accounts@example.com", "phone": "", "programIds": [] }
+  ],
+  "routes": []
+}

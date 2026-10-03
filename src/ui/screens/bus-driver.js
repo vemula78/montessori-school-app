@@ -3,6 +3,7 @@ import { secondsSince } from '../../domain/dates.js';
 import { esc, badge, empty, pageHead, ftime, fullName, options, attempt, toast, ago, confirmDialog, DASH } from '../components.js';
 import { createRouteMap } from '../map.js';
 import * as runner from '../sim-runner.js';
+import { isRealMode } from '../mode.js';
 
 const nowISO = () => new Date().toISOString();
 
@@ -15,6 +16,7 @@ export async function render(ctx) {
   const kids = db.students.filter((s) => s.status === 'active' && s.routeId === route.id);
   let trip = await api.transport.activeTrip(route.id);
   const geo = runner.geoSupport();
+  const real = isRealMode();
   let direction = 'pickup';
 
   ctx.el.innerHTML = `${pageHead(route.name, `Bus ${route.busNo} - ${stops.length} stops`)}
@@ -23,16 +25,26 @@ export async function render(ctx) {
     <div class="map" id="d-map" style="margin:14px 0"></div>
     <h2>Stops and children</h2>
     <div id="d-stops" class="stack"></div>
-    <div class="banner" style="margin-top:16px"><strong>How live tracking works in this prototype.</strong> There is no server: the bus position is stored in this browser, so a Parent in a second tab of the same browser sees it. A phone and a separate parent phone cannot see each other until a backend exists.</div>`;
+    ${real
+      ? '<div class="banner" style="margin-top:16px"><strong>How live tracking works.</strong> Each position is sent to the school server and appears on parents\' phones within seconds. Phones pause location updates when the screen locks, so keep this screen on and this app in the foreground for the whole trip.</div>'
+      : '<div class="banner" style="margin-top:16px"><strong>How live tracking works in this prototype.</strong> There is no server: the bus position is stored in this browser, so a Parent in a second tab of the same browser sees it. A phone and a separate parent phone cannot see each other until a backend exists.</div>'}`;
   const mapApi = createRouteMap(ctx.el.querySelector('#d-map'), route);
   ctx.cleanup(() => mapApi.destroy());
 
+  // newest position seen, from the trip document or from the live feed (the feed is ahead of the document in the real app)
+  let liveFix = null;
+  const newest = () => {
+    const doc = trip?.positions?.[trip.positions.length - 1] || null;
+    return liveFix && trip && (!doc || !(Date.parse(doc.ts) > Date.parse(liveFix.ts))) ? liveFix : doc;
+  };
+
   async function refresh() {
     trip = await api.transport.activeTrip(route.id);
+    if (!trip) liveFix = null;
     paintStatus();
     paintControls();
     paintStops();
-    const last = trip?.positions?.[trip.positions.length - 1];
+    const last = newest();
     if (last) mapApi.setBus(last.lat, last.lng, 'BUS');
   }
 
@@ -44,7 +56,7 @@ export async function render(ctx) {
       return;
     }
     const fixes = trip.positions || [];
-    const last = fixes[fixes.length - 1];
+    const last = newest();
     const age = last ? secondsSince(last.ts, nowISO()) : null;
     const mine = s.tripId === trip.id;
     let runnerLine;
@@ -53,12 +65,14 @@ export async function render(ctx) {
     else runnerLine = 'GPS is not running in this tab.';
     const gpsBad = !trip.simulated && mine && ['denied', 'unavailable', 'timeout'].includes(s.gps.status);
     const idle = age != null && age > 20 * 60;
+    const offline = real && mine && (s.online === false || s.queued > 0);
     el.innerHTML = `<div class="card stack">
       <div class="row between"><div class="row"><span class="pulse"></span><strong>Trip active</strong> ${badge(trip.direction === 'pickup' ? 'Morning pickup' : 'Afternoon drop', 'info')}${trip.simulated ? badge('SIMULATED', 'sim') : ''}</div><small>Started ${ftime(trip.startedAt)}</small></div>
       ${gpsBad ? `<div class="banner bad" style="margin:0"><strong>${esc(s.gps.status === 'denied' ? 'Location permission denied' : s.gps.status === 'timeout' ? 'GPS timeout' : 'Position unavailable')}.</strong> ${esc(s.gps.message)}</div>` : ''}
+      ${offline ? `<div class="banner warn" style="margin:0"><strong>${s.online === false ? 'No connection.' : 'Catching up.'}</strong> ${esc(s.queued)} position${s.queued === 1 ? '' : 's'} waiting to be sent${s.online === false ? ' - they will go out, in order, as soon as the phone is back online' : ''}. Parents see the bus where it was last reported.${s.dropped ? ` ${esc(s.dropped)} oldest position${s.dropped === 1 ? ' was' : 's were'} dropped because the wait was too long.` : ''} Do not close this app: waiting positions are lost if it is closed.</div>` : ''}
       ${idle ? '<div class="banner warn" style="margin:0"><strong>No position for over 20 minutes.</strong> End the trip if it is finished.</div>' : ''}
       <div class="grid cols-3">
-        <div class="kpi"><div class="v">${fixes.length}</div><div class="l">positions stored</div></div>
+        <div class="kpi"><div class="v">${real && mine ? esc(s.sent) : fixes.length}</div><div class="l">positions ${real && mine ? 'sent this session' : 'stored'}</div></div>
         <div class="kpi"><div class="v">${age == null ? DASH : ago(age)}</div><div class="l">last position</div></div>
         <div class="kpi"><div class="v">${s.wakeLock ? 'On' : trip.simulated ? DASH : 'Off'}</div><div class="l">screen kept awake</div></div>
       </div>
@@ -130,6 +144,10 @@ export async function render(ctx) {
       await refresh();
     } else if (t.id === 'd-end') {
       if (!(await confirmDialog('End trip', 'End this trip now? Positions stop being recorded.', { okLabel: 'End trip', kind: 'danger' }))) return;
+      if (real) {
+        const left = await runner.flushNow(); // send what is still queued before the trip closes
+        if (left && !(await confirmDialog('Positions not sent', `${left} position${left === 1 ? '' : 's'} could not be sent (no connection). End the trip anyway? They will be lost.`, { okLabel: 'End trip', kind: 'danger' }))) return;
+      }
       runner.resetAfterTripEnd();
       await attempt(() => api.transport.endTrip(trip.id), 'Trip ended');
       await refresh();
@@ -141,6 +159,13 @@ export async function render(ctx) {
 
   const off = runner.onState(() => { paintStatus(); paintControls(); });
   ctx.cleanup(off);
+  // live feed of this route's trip: position fixes move the marker, trip changes (start, end, stop events) reload the screen
+  const offTrip = api.transport.subscribeTrip?.(route.id, (ev) => {
+    if (!ctx.el.isConnected) return;
+    if (ev.type === 'position' && ev.fix) { liveFix = ev.fix; mapApi.setBus(ev.fix.lat, ev.fix.lng, 'BUS'); paintStatus(); }
+    else if (ev.type === 'trip') refresh();
+  });
+  if (offTrip) ctx.cleanup(offTrip);
   ctx.onChange(() => { if (!ctx.el.isConnected) return; refresh(); });
   // keep "last position N s ago" ticking even between commits
   const tick = setInterval(paintStatus, 1000);
