@@ -15,6 +15,7 @@
 //   demoOnly                 true → the demo runs it; the server refuses it (e.g. the mock payment: no money moves)
 //   beforeConsent            true → a parent may run it before giving app_account consent (consent itself, data access);
 //                            every other parent command only sees children with current app_account consent
+//   storedResult(result)     what the server keeps for a replay of this request id (default: the result itself)
 // args is always the positional argument array of the api method.
 
 import { fail, newId } from './ids.js';
@@ -421,9 +422,26 @@ export const COMMANDS = {
         'Consent records are kept as evidence of what was agreed and when (they carry ids, not names).',
         'Audit log entries are kept; they carry ids and amounts, not names.',
       ];
-      for (const r of db.erasureRequests || []) if (r.guardianId === guardianId && r.status === 'open') Object.assign(r, { status: 'done', doneAt: ctx.now, doneBy: ctx.actor.id, erased, retained });
+      // 'cleanup' until the command function (or cron, on a retry) has deleted the sign-ins and scrubbed gateway copies
+      const reqs = (db.erasureRequests || []).filter(r => r.guardianId === guardianId && ['open', 'cleanup'].includes(r.status));
+      if (!reqs.length) { const r = { id: newId('era'), guardianId, requestedAt: ctx.now, requestedBy: ctx.actor.id, status: 'open', doneAt: null, doneBy: null }; db.erasureRequests.push(r); reqs.push(r); }
+      for (const r of reqs) Object.assign(r, { status: 'cleanup', erasedAt: ctx.now, doneBy: ctx.actor.id, erased, retained, pendingUserIds: [...new Set([...(r.pendingUserIds || []), ...revokedUserIds])] });
       appendAudit(db, ctx, { entity: 'guardian', entityId: g.id, action: 'anonymise', summary: `guardian erased (${label}): ${messages} message(s), ${revokedUserIds.length} sign-in(s), ${invitesRevoked} invite(s), ${importRows} import row(s); ledger kept` });
       return { guardianId: g.id, label, revokedUserIds, erased, retained };
+    },
+  },
+  /** Erasure clean-up outcome (command function / cron): done when no server step failed, else kept with the error. */
+  'people.finishErasure': {
+    slice: 'erasure', serverOnly: true, authorize: p => allow(p, 'system'),
+    run(db, [guardianId, { errors = [] } = {}], ctx) {
+      const reqs = (db.erasureRequests || []).filter(r => r.guardianId === guardianId && r.status === 'cleanup');
+      for (const r of reqs) {
+        r.cleanupAttempts = (r.cleanupAttempts || 0) + 1;
+        if (errors.length) { r.lastError = String(errors.join('; ')).slice(0, 500); continue; }
+        Object.assign(r, { status: 'done', doneAt: ctx.now, lastError: null, pendingUserIds: [] });
+      }
+      if (reqs.length) appendAudit(db, ctx, { entity: 'guardian', entityId: guardianId, action: 'erasureCleanup', summary: errors.length ? `clean-up failed (${errors.length} step(s)); retried by cron` : 'sign-ins deleted and gateway copies scrubbed; erasure done' });
+      return { guardianId, requests: reqs.length, done: !errors.length };
     },
   },
 
@@ -471,6 +489,9 @@ export const COMMANDS = {
   },
   'admin.inviteCode': {
     slice: 'account', serverOnly: true, authorize: (p, db, [guardianId]) => { allow(p, 'admin', 'accountant'); if (!byId(db.guardians, guardianId)) fail('NOT_FOUND', 'Guardian not found'); },
+    // the plain code is shown once: the copy kept for a replay of the request id has no code, so a replay neither
+    // re-reveals it nor issues another one (the office issues a new code if the first answer was lost)
+    storedResult: r => ({ ...r, code: null, codeWithheld: true }),
     // ctx.inviteCode / ctx.inviteCodeHash are made by the server (crypto); the plain code is returned once and never stored.
     run(db, [guardianId], ctx) {
       for (const i of db.invites || []) if (i.guardianId === guardianId && !i.redeemedAt && !i.revokedAt) i.revokedAt = ctx.now; // one live code per guardian
@@ -600,12 +621,12 @@ export const SLICES = {
   account: { reads: [...BASE, 'consents', 'invites', 'appUsers', 'erasureRequests'], writes: ['guardians', 'consents', 'invites', 'appUsers', 'erasureRequests'] },
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
   export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
-    'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders'], writes: [] },
+    'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'], writes: [] },
   erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows'],
     writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows'] },
 };
 /** Server-only collections (not part of the Phase 1 Db document). */
-export const SERVER_COLLECTIONS = ['consents', 'invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders'];
+export const SERVER_COLLECTIONS = ['consents', 'invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'];
 
 /**
  * Other slices whose revision must also be checked (and moved) when a command of slice `primary` changes these

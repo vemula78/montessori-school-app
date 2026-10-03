@@ -26,6 +26,7 @@ function fakeSb({ snapshots = [], tables = {} } = {}) {
   const sb = {
     queries,
     setUser(id) { session = id ? { user: { id, email: `${id}@example.com` }, access_token: 't' } : null; },
+    emitAuth(event) { for (const cb of authListeners) cb(event, session); },
     auth: {
       getSession: async () => ({ data: { session } }),
       onAuthStateChange: cb => { authListeners.push(cb); return { data: { subscription: { unsubscribe() {} } } }; },
@@ -41,6 +42,7 @@ function fakeSb({ snapshots = [], tables = {} } = {}) {
         in(c, v) { q.filters.push(['in', c, v]); return b; },
         order(c, o) { q.order = [c, o]; return b; },
         limit(n) { q.limit = n; return b; },
+        range(a, z) { q.range = [a, z]; return b; },
         then(res, rej) { queries.push(q); return Promise.resolve(tables[table] ? tables[table](q) : { data: [], error: null }).then(res, rej); },
       };
       return b;
@@ -153,4 +155,29 @@ test('#37 in the real app "today" is the IST date even on a device in another ti
     console.log(JSON.stringify([before, todayISO(at), tsToLocalDate(at.toISOString())]));`;
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, TZ: 'America/Los_Angeles' }, encoding: 'utf8', cwd: fileURLToPath(new URL('..', import.meta.url)) });
   assert.deepEqual(JSON.parse(out.trim().split('\n').at(-1)), ['2026-10-02', '2026-10-03', '2026-10-03']);
+});
+
+// ---------------------------------------------------------------- fix round 3
+test('N11 the import-batch history is read page by page (no 1000-row cap)', async () => {
+  const all = Array.from({ length: 2345 }, (_, i) => ({ doc: { id: `imb-${String(i).padStart(5, '0')}`, kind: 'fees', status: 'committed', inputRows: 1, createdAt: `2026-10-01T00:00:${String(i % 60).padStart(2, '0')}.000Z` } }));
+  const sb = fakeSb({ snapshots: [async () => ({ data: snapshotOf(ACCOUNTANT), error: null })],
+    tables: { import_batches: q => ({ data: q.range ? all.slice(q.range[0], q.range[1] + 1) : all.slice(0, 1000), error: null }) } });
+  const api = await make(sb);
+  await api.ready();
+  assert.equal((await api.import.batches()).length, 2345);
+});
+
+test('N12 a sign-in as a different user clears the old snapshot at once and loads the new one', async () => {
+  const other = snapshotOf(ACCOUNTANT);
+  const sb = fakeSb({ snapshots: [async () => ({ data: snapshotOf(PARENT), error: null }), async () => ({ data: other, error: null })] });
+  const api = await make(sb);
+  await api.ready();
+  assert.equal(api.session.current().role, 'parent');
+  sb.setUser('u-acct');
+  sb.emitAuth('SIGNED_IN');
+  assert.equal(api.getDb(), null, "the previous user's data is gone immediately");
+  for (let i = 0; i < 20 && !api.getDb(); i++) await new Promise(r => setTimeout(r, 5));
+  assert.equal(api.session.current().role, 'accountant');
+  sb.emitAuth('TOKEN_REFRESHED'); // same user: nothing is cleared
+  assert.ok(api.getDb());
 });

@@ -84,6 +84,8 @@ export async function processEvent(ev: { event: string; payload: any }): Promise
       const run = await runCommand('fees.recordGatewayRefund', [{ refund: rf }], system('gateway'));
       if (run.result.pending) return { result: 'pending', error: run.result.reason };
       if (run.result.skipped) return { result: 'ignored', error: run.result.skipped };
+      // more recorded by hand than the gateway refunded: nothing booked, left as an error for the accountant
+      if (run.result.mismatch) return { result: 'error', error: run.result.mismatch };
       return { result: 'ok', error: null };
     }
     return { result: 'ignored', error: null };

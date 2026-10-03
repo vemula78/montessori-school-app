@@ -5,8 +5,10 @@
 //
 // Every attempt re-reads, in the same snapshot as the data: the caller's app_users link and consents (a retry after
 // a conflict never reuses a stale "unlinked" or "active"), and any request already committed under the caller's
-// request id (a repeated request returns the stored result instead of writing twice). A change is guarded by the
-// revision of every slice that writes the collections it touches, not only the command's own.
+// request id. A repeated id returns the stored result — only after the caller passes the same access checks again,
+// and only for the same arguments (else CONFLICT). A change is guarded by the revision of every slice that writes the
+// collections it touches, and persist re-checks the caller's link inside its transaction (a revoke or role change
+// that commits first refuses the write).
 
 import { COMMANDS, SLICES, execute, personaFor, revKey, guardSlices, consentScopedPersona } from './domain/commands.js';
 import { COLLECTIONS } from './store/schema.js';
@@ -34,6 +36,7 @@ export async function runCommand(name: string, args: unknown[], who: Caller, ext
   const requestId = who.kind === 'user' && !cmd.readOnly && extra.requestId != null ? String(extra.requestId) : null;
   if (requestId !== null && !REQUEST_ID.test(requestId)) throw coded('VALIDATION', 'requestId must be 8–100 letters, digits, - or _');
   const slice = (SLICES as any)[cmd.slice];
+  const digest = requestId ? await sha256Hex(JSON.stringify(args)) : null;
   const hints = {
     ...(cmd.load ? cmd.load(args) : {}), ...(extra.hints || {}),
     ...(who.kind === 'user' ? { callerUserId: who.user.id } : {}), ...(requestId ? { requestId } : {}),
@@ -43,7 +46,6 @@ export async function runCommand(name: string, args: unknown[], who: Caller, ext
     const db = loaded.db;
     const { callerLink: link = null, callerConsents: consents = [], priorRequest = null } = db;
     delete db.callerLink; delete db.callerConsents; delete db.priorRequest;
-    if (requestId && priorRequest) return replay(priorRequest, name, who, attempt);
     if (who.kind === 'user' && link && link.status !== 'active' && !cmd.allowUnlinked) {
       throw coded('NOT_ALLOWED', `Your access to the app is ${link.status}`);
     }
@@ -69,6 +71,11 @@ export async function runCommand(name: string, args: unknown[], who: Caller, ext
       userEmail: who.kind === 'user' ? who.user.email : null,
       ...(extra.ctx || {}),
     };
+    if (requestId && priorRequest) {
+      // a repeat is answered only if the caller may still do this now (revoked, withdrawn or out of scope: refused)
+      if (!cmd.allowUnlinked) { if (!persona) throw coded('NOT_ALLOWED', 'Sign in first'); cmd.authorize(persona, db, args, ctx); }
+      return replay(priorRequest, name, who, attempt, digest);
+    }
     const before = structuredClone(db);
     const result = execute(name, db, args, ctx, persona);
     if (cmd.readOnly) return { result, before, after: db, ctx, attempts: attempt, rev: null };
@@ -78,13 +85,18 @@ export async function runCommand(name: string, args: unknown[], who: Caller, ext
     const guards: Record<string, number> = {};
     for (const s of guardSlices(cmd.slice, touched)) guards[s] = loaded.revs[s] ?? 0;
     if (Object.keys(guards).length) changes.guards = guards;
-    if (requestId && who.kind === 'user') changes.request = { id: requestId, userId: who.user.id, name, result: result ?? null };
+    if (requestId && who.kind === 'user') {
+      const kept = cmd.storedResult && result && !result.failure ? cmd.storedResult(result) : result; // never a one-time secret
+      changes.request = { id: requestId, userId: who.user.id, name, result: kept ?? null, argsDigest: digest };
+    }
+    if (who.kind === 'user' && link && persona) changes.caller = { userId: who.user.id, role: link.role, staffId: link.staffId ?? null, guardianId: link.guardianId ?? null };
     try {
       let rev: number | null = null;
       if (!isEmptyChange(changes)) rev = await rpc('persist', { p_rev_key: key, p_expected: loaded.revs[key] ?? 0, p_changes: changes });
       if (result && result.failure) throw coded(result.failure.code, result.failure.message);
       return { result, before, after: db, ctx, attempts: attempt, rev };
     } catch (e: any) {
+      if (e && e.code === 'PT403') throw coded('NOT_ALLOWED', 'Your access changed while saving; nothing was saved');
       if (e && e.code === 'PT409') {
         if (attempt < MAX_ATTEMPTS) { await sleep(backoff(attempt)); continue; }
         throw coded('CONFLICT', 'Others were saving at the same moment; nothing was saved. Please try again.');
@@ -96,9 +108,15 @@ export async function runCommand(name: string, args: unknown[], who: Caller, ext
   }
 }
 
+async function sha256Hex(text: string) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  return Array.from(d, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** A request id already committed: return what it returned then (or its refusal), never run it again. */
-function replay(prior: any, name: string, who: Caller, attempt: number): RunOutput {
+function replay(prior: any, name: string, who: Caller, attempt: number, digest: string | null): RunOutput {
   if (who.kind !== 'user' || prior.userId !== who.user.id || prior.name !== name) throw coded('VALIDATION', 'This request id was already used for a different request');
+  if (prior.argsDigest && prior.argsDigest !== digest) throw coded('CONFLICT', 'This request id was already used with different details; nothing was saved');
   const r = prior.result;
   if (r && r.failure) throw coded(r.failure.code, r.failure.message);
   return { result: r, before: null, after: null, ctx: null, attempts: attempt, rev: null, replayed: true };

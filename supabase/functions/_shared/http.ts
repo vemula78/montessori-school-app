@@ -20,7 +20,7 @@ export class Coded extends Error {
 export const coded = (code: string, message: string, details?: unknown) => new Coded(code, message, details);
 
 const STATUS: Record<string, number> = {
-  UNAUTHENTICATED: 401, NOT_ALLOWED: 403, NOT_FOUND: 404, CONFLICT: 409, VALIDATION: 422, INVALID_AMOUNT: 422,
+  BAD_REQUEST: 400, UNAUTHENTICATED: 401, NOT_ALLOWED: 403, NOT_FOUND: 404, CONFLICT: 409, VALIDATION: 422, INVALID_AMOUNT: 422,
   OVERPAYMENT_NOT_ALLOWED: 422, INVOICE_LOCKED: 422, NOT_WORKING_DAY: 422, RATE_LIMITED: 429, GATEWAY: 502,
 };
 

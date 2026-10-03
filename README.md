@@ -128,7 +128,8 @@ security_invoker", append-only audit, unique receipt numbers, stale-rev rejectio
   import rows). The principal can export or erase any guardian: name, phone, email, relation, the guardian's own
   messages, their columns in import rows, their sign-ins (deleted), push devices and payer details in stored gateway
   events are erased; fee records, the children's school records, staff messages, consent records and audit rows are
-  kept, and the erasure request records both lists. Exports and invites are audited.
+  kept, and the erasure request records both lists. The request stays `cleanup` until the sign-in deletion and gateway
+  scrubbing succeed (cron-daily retries them), then `done`. Exports and invites are audited.
 
 ### Payments (Razorpay test mode)
 
@@ -233,8 +234,9 @@ Every `api.*` call rejects with `ApiError {code, message}`: the Phase 1 codes (`
 `STORAGE_QUOTA`) plus, in the real app, `UNAUTHENTICATED` (sign in again), `CONFLICT` (too many simultaneous
 writers; nothing saved), `OFFLINE` (the server could not be reached or did not answer in time — nothing may have
 been saved; check and retry), `RATE_LIMITED`, `GATEWAY` (payment provider problem) and `INTERNAL`. Real-app-only
-features called in the demo reject with `NOT_ALLOWED` and a message saying so. In the real app every write carries a
-request id: an unanswered write is retried once with the same id, and the server returns the stored result for a
+features called in the demo reject with `NOT_ALLOWED` and a message saying so. In the real app every `/command` call
+must carry a request id (400 without one), bound to its arguments (409 if reused with others) and replayed only to a
+caller who still has access: an unanswered write is retried once with the same id, and the server returns the stored result for a
 repeated id, so a retry never records a payment or refund twice; a write that was saved is not reported as failed
 when the refetch afterwards fails. Business dates ("today") are IST on every device.
 

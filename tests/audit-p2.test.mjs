@@ -398,7 +398,7 @@ test('#8 erasure scrubs the guardian, their messages, raw import columns and sig
   assert.equal(db.importRows.find(x => x.id === 'imb-1#2').values.Mother, 'Sunita Exampleton');
   assert.ok(db.invites[0].revokedAt, 'an open invite for the guardian is revoked');
   const req = db.erasureRequests[0];
-  assert.equal(req.status, 'done');
+  assert.equal(req.status, 'cleanup', 'done only after the server clean-up (fix round 3, N6)');
   assert.ok(Array.isArray(req.retained) && req.retained.length >= 2, 'what was kept, and why, is recorded');
   assert.ok(req.erased && req.erased.messages === own.length && req.erased.importRows === 1);
   assert.equal(JSON.stringify(db).includes('meena.notrealsen1@example.com'), false, 'the email appears nowhere in the loaded data');

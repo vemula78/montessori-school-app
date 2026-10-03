@@ -6,7 +6,7 @@
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(77);
+select plan(86);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -167,7 +167,10 @@ insert into auth.users (instance_id, id, aud, role, email, encrypted_password, c
 values ('00000000-0000-0000-0000-000000000000', '00000000-0000-4000-8000-0000000000c3', 'authenticated', 'authenticated', 'grd03-test@example.com', '', now(), now());
 insert into public.app_users (user_id, role, guardian_id, status) values ('00000000-0000-4000-8000-0000000000c3', 'parent', 'grd-03', 'active');
 select tests.as_user('00000000-0000-4000-8000-0000000000c3');
-select is((select array_agg(id order by id) from public.students), array['stu-05', 'stu-06'], 'consent_screen_still_lists_the_children');
+select is((select array_agg(student_id order by student_id) from public.student_display), array['stu-05', 'stu-06'], 'consent_screen_still_lists_the_children');
+select is((select count(*)::int from public.students), 0, 'n2_no_student_documents_before_consent');
+select ok((select bool_and((e->>'consentPending')::boolean and not e ? 'dob' and not e ? 'admissionNo' and e->'healthNotes' = 'null'::jsonb)
+  from jsonb_array_elements(public.my_snapshot()->'students') e) and jsonb_array_length(public.my_snapshot()->'students') = 2, 'n2_snapshot_pending_children_are_display_only');
 select is((select count(*)::int from public.invoices) + (select count(*)::int from public.payments) + (select count(*)::int from public.threads)
   + (select count(*)::int from public.student_health) + (select count(*)::int from public.attendance) + (select count(*)::int from public.diary_entries),
   0, 'no_child_data_before_app_account_consent');
@@ -175,6 +178,8 @@ reset role;
 insert into public.consents (id, doc) values ('cns-test-g3', jsonb_build_object('id', 'cns-test-g3', 'guardianId', 'grd-03', 'studentId', 'stu-05', 'purpose', 'app_account', 'version', 'v1', 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-0000000000c3');
 select is((select array_agg(distinct student_id) from public.invoices), array['stu-05'], 'consent_opens_only_the_consented_child');
+select is((select array_agg(id) from public.students), array['stu-05'], 'n2_consent_opens_the_full_record_of_that_child_only');
+select is((select array_agg(e->>'id') from jsonb_array_elements(public.my_snapshot()->'students') e where e ? 'consentPending'), array['stu-06'], 'n2_unconsented_sibling_stays_display_only');
 reset role;
 
 -- #3 a child's boarding/drop-off events are not in trips.doc; a parent sees only their own child's
@@ -212,16 +217,26 @@ select is(public.persist('pgtap-a', 0, '{"guards":{"pgtap-b":0}}'::jsonb), 1::bi
 select is((select rev from app.revs where slice = 'pgtap-b'), 1::bigint, 'persist_moves_the_guarded_slice_too');
 
 -- #20 a request id is committed once
-select lives_ok($$select public.persist('pgtap-r', 0, '{"request":{"id":"req-pgtap-0001","userId":"00000000-0000-4000-8000-000000000001","name":"x","result":{"ok":1}}}'::jsonb)$$, 'request_id_stored');
+select lives_ok($$select public.persist('pgtap-r', 0, '{"request":{"id":"req-pgtap-0001","userId":"00000000-0000-4000-8000-000000000001","name":"x","result":{"ok":1},"argsDigest":"d1"}}'::jsonb)$$, 'request_id_stored');
 select throws_ok($$select public.persist('pgtap-r', 1, '{"request":{"id":"req-pgtap-0001","userId":"00000000-0000-4000-8000-000000000001","name":"x","result":{"ok":2}}}'::jsonb)$$, '23505', null, 'request_id_committed_once');
 select is((select (public.load_slice('{}'::text[], '{"requestId":"req-pgtap-0001"}'::jsonb))->'db'->'priorRequest'->'result'), '{"ok":1}'::jsonb, 'load_slice_returns_the_prior_request');
+select is((select (public.load_slice('{}'::text[], '{"requestId":"req-pgtap-0001"}'::jsonb))->'db'->'priorRequest'->>'argsDigest'), 'd1', 'n8_prior_request_carries_its_args_digest');
 
 -- #28 reminders are claimed once; a failed one is claimed again by the next run
 create temp table rem_inv as select id from public.invoices limit 1;
-select is((select count(*)::int from public.claim_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'sentOn', '2026-10-02', 'text', 't')) from rem_inv))), 1, 'reminder_claimed');
+create temp table claim1 as select * from public.claim_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'sentOn', '2026-10-02', 'text', 't')) from rem_inv));
+select is((select count(*)::int from claim1 where claim_token is not null), 1, 'reminder_claimed');
 select is((select count(*)::int from public.claim_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'sentOn', '2026-10-02', 'text', 't')) from rem_inv))), 0, 'reminder_not_claimed_twice');
-select is(public.finish_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'status', 'failed', 'pushSent', 0, 'error', 'x')) from rem_inv)), 1, 'reminder_marked_failed');
+select is(public.finish_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', invoice_id, 'kind', kind, 'status', 'sent', 'claimToken', gen_random_uuid())) from claim1)), 0, 'n10_another_claims_finish_changes_nothing');
+select is(public.finish_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', invoice_id, 'kind', kind, 'status', 'failed', 'pushSent', 0, 'error', 'x', 'claimToken', claim_token)) from claim1)), 1, 'reminder_marked_failed');
 select is((select count(*)::int from public.claim_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'sentOn', '2026-10-03', 'text', 't')) from rem_inv))), 1, 'failed_reminder_claimed_again');
+
+-- N3 persist refuses a caller whose link was revoked or whose role changed (checked inside the transaction)
+select throws_ok($$select public.persist('pgtap-n3', 0, '{"caller":{"userId":"00000000-0000-4000-8000-000000000002","role":"teacher","staffId":"stf-teacher-pa","guardianId":null}}'::jsonb)$$,
+  'PT403', 'NOT_ALLOWED', 'n3_persist_refuses_a_revoked_caller');
+select throws_ok($$select public.persist('pgtap-n3', 0, '{"caller":{"userId":"00000000-0000-4000-8000-000000000004","role":"admin","staffId":"stf-driver-1","guardianId":null}}'::jsonb)$$,
+  'PT403', 'NOT_ALLOWED', 'n3_persist_refuses_a_changed_role');
+select is(public.persist('pgtap-n3', 0, '{"caller":{"userId":"00000000-0000-4000-8000-000000000004","role":"driver","staffId":"stf-driver-1","guardianId":null}}'::jsonb), 1::bigint, 'n3_persist_accepts_a_current_caller');
 
 -- #42 order slots are counted atomically per user
 select is(array[public.take_order_slot('00000000-0000-4000-8000-0000000000d1', 2), public.take_order_slot('00000000-0000-4000-8000-0000000000d1', 2),

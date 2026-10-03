@@ -44,8 +44,20 @@ export function guardianExport(db, guardianId) {
     pushDevices: (db.pushSubscriptions || []).filter(x => (db.appUsers || []).some(u => u.id === x.userId && u.guardianId === guardianId))
       .map(x => ({ service: hostOf(x.endpoint), createdAt: x.createdAt })),
     paymentOrders: (db.gatewayOrders || []).filter(o => o.guardianId === guardianId || ids.has(o.studentId)),
+    // stored payment-gateway events of this guardian's own payments (as kept; erasure scrubs payer details)
+    gatewayEvents: gatewayEventsFor(db, guardianId),
     importRecords: importRecordsFor(db, kids.map(k => k.admissionNo), g),
   };
+}
+
+function gatewayEventsFor(db, guardianId) {
+  const orders = new Set((db.gatewayOrders || []).filter(o => o.guardianId === guardianId).map(o => o.id));
+  const pays = new Set((db.payments || []).filter(p => p.gatewayOrderId && orders.has(p.gatewayOrderId)).map(p => p.gatewayPaymentId));
+  return (db.gatewayEvents || []).filter(e => {
+    const p = e.payload?.payload || {};
+    const ent = p.payment?.entity || p.refund?.entity || {};
+    return orders.has(ent.order_id) || pays.has(ent.payment_id) || pays.has(ent.id);
+  }).map(e => ({ eventId: e.eventId, event: e.event, receivedAt: e.receivedAt, payload: e.payload }));
 }
 
 const hostOf = url => { try { return new URL(url).host; } catch { return null; } };

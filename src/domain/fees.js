@@ -491,11 +491,22 @@ export function refund(db, args, ctx, { gatewayRefundId = null } = {}) {
     id: newId('rfd'), voucherNumber: nextNumber(db, 'refund', ay.id), paymentId, invoiceId, amountPaise, mode,
     reference: reference ? String(reference) : null, date, reason: why, recordedBy: ctx.actor.id,
   };
-  if (gatewayRefundId) r.gatewayRefundId = gatewayRefundId;
+  tieToGateway(r, gatewayRefundId);
   db.refunds.push(r);
   refreshStatus(db, inv);
   appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${amountPaise} paise against ${pay.receiptNumber} / ${inv.number} — ${why}` });
   return r;
+}
+
+/**
+ * A refund booked from the gateway carries its gateway refund id; one recorded by hand with a gateway refund id
+ * (rfnd_…) as its reference carries it too, marked manual: the webhook then books only what is not yet recorded,
+ * and settlement matching counts both.
+ */
+function tieToGateway(r, gatewayRefundId) {
+  if (gatewayRefundId) { r.gatewayRefundId = gatewayRefundId; return; }
+  const ref = r.reference ? r.reference.trim() : '';
+  if (/^rfnd_[A-Za-z0-9]+$/.test(ref)) { r.gatewayRefundId = ref; r.gatewayRefundManual = true; }
 }
 
 function refundCredit(db, { creditId, paymentId, amountPaise, mode, reference = null, date, reason }, ctx, gatewayRefundId = null) {
@@ -519,7 +530,7 @@ function refundCredit(db, { creditId, paymentId, amountPaise, mode, reference = 
     reference: reference ? String(reference) : null, date, reason: why, recordedBy: ctx.actor.id,
   };
   r.creditIds = consumeCredits(db, rows, amountPaise, c => { c.consumedByRefundId = r.id; }).map(c => c.id);
-  if (gatewayRefundId) r.gatewayRefundId = gatewayRefundId;
+  tieToGateway(r, gatewayRefundId);
   db.refunds.push(r);
   appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${amountPaise} paise of unused credit from ${pay.receiptNumber} — ${why}` });
   return r;

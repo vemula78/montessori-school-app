@@ -101,15 +101,23 @@ export function recordGatewayPayment(db, { order, payment: rp, gatewayMode }, ct
  */
 export function recordGatewayRefund(db, { refund: rr }, ctx) {
   if (!rr || typeof rr.id !== 'string' || !rr.id) fail('VALIDATION', 'Gateway refund id missing');
-  // a refund recorded by hand with the gateway refund id as its reference is the same money (finding 17)
-  const done = db.refunds.filter(r => r.gatewayRefundId === rr.id || r.reference === rr.id);
-  if (done.length) return { pending: false, created: false, refunds: done };
+  const prior = db.refunds.filter(r => r.gatewayRefundId === rr.id || r.reference === rr.id);
+  // the gateway's own booking of this refund exists: replay
+  if (prior.some(r => r.gatewayRefundId === rr.id && Number.isInteger(r.gatewayRefundPart))) return { pending: false, created: false, refunds: prior };
   // only a refund the gateway has processed moves money: 'pending' waits for refund.processed, 'failed' never books
   if (rr.status !== 'processed') return { pending: false, created: false, refunds: [], skipped: `refund ${rr.id} is ${rr.status || 'of unknown status'} at the gateway; booked only once processed` };
   const pay = db.payments.find(p => p.gatewayPaymentId === rr.payment_id);
   if (!pay) return { pending: true, created: false, refunds: [], reason: `payment ${rr.payment_id} is not in the ledger yet` };
   assertPaise(rr.amount);
   if (rr.amount <= 0) fail('INVALID_AMOUNT', 'Refund amount must be greater than zero');
+  // recorded by hand already (reference = gateway refund id): book only the rest; more than the gateway refund is flagged
+  const manualPaise = sumPaise(prior.map(r => r.amountPaise));
+  if (manualPaise > rr.amount) {
+    appendAudit(db, ctx, { entity: 'refund', entityId: rr.id, action: 'gatewayRefundMismatch', summary: `${rr.id}: ${manualPaise} paise recorded by hand, gateway refunded ${rr.amount} paise; nothing booked` });
+    return { pending: false, created: false, refunds: prior, mismatch: `${manualPaise} paise recorded by hand is more than the ${rr.amount} paise the gateway refunded` };
+  }
+  if (manualPaise === rr.amount) return { pending: false, created: false, refunds: prior };
+  const amount = rr.amount - manualPaise;
   const date = gatewayDate(rr.created_at);
   const reason = `Refund made on the payment gateway (${rr.id})`;
   const refunded = (paymentId, invoiceId) => sumPaise(db.refunds.filter(r => r.paymentId === paymentId && r.invoiceId === invoiceId).map(r => r.amountPaise));
@@ -141,8 +149,8 @@ export function recordGatewayRefund(db, { refund: rr }, ctx) {
     }
   }
   const room = sumPaise(parts.map(x => x.room)) + unusedCredit + sumPaise(viaCredit.map(x => x.room));
-  if (rr.amount > room) fail('INVALID_AMOUNT', `Gateway refund ${rr.amount} paise exceeds what ${pay.receiptNumber} can still return (${room} paise); record it manually after checking`);
-  let left = rr.amount;
+  if (amount > room) fail('INVALID_AMOUNT', `Gateway refund ${amount} paise exceeds what ${pay.receiptNumber} can still return (${room} paise); record it manually after checking`);
+  let left = amount;
   const out = [];
   const take = (paymentId, invoiceId, amt) => {
     const r = refund(db, { paymentId, invoiceId, amountPaise: amt, mode: 'online', reference: rr.id, date, reason }, ctx, { gatewayRefundId: rr.id });

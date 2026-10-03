@@ -30,6 +30,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   let stopNudges = null;
   let gen = 0;        // bumped whenever the signed-in user changes: older snapshot responses are dropped
   let seq = 0, applied = 0; // refresh order: an older response never overwrites a newer one
+  let shownUserId = null;   // whose data the snapshot holds
   const newRequestId = () => (globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
   const info = () => ({
@@ -53,6 +54,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     if (myGen !== gen || !still || still.id !== user.id || mySeq < applied) return snap;
     applied = mySeq;
     email = user.email || null;
+    shownUserId = user.id;
     snap = next;
     if (snap.status === 'active' && !stopNudges) stopNudges = subscribeNudges(sb, () => refresh().catch(e => console.error(e)));
     emit();
@@ -179,6 +181,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     }),
     signOut: op(async () => {
       gen++;
+      shownUserId = null;
       if (stopNudges) { stopNudges(); stopNudges = null; }
       await sb.auth.signOut();
       snap = SIGNED_OUT();
@@ -229,9 +232,14 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     commit: cmd('import.commit'),
     batches: op(async () => {
       allow(me(), 'admin', 'accountant');
-      const { data, error } = await sb.from('import_batches').select('doc');
-      if (error) throw new ApiError('OFFLINE', error.message);
-      return (data || []).map(r => r.doc).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+      const data = [];
+      for (let from = 0; ; from += 1000) { // the API answers at most 1000 rows per request: read every page
+        const r = await sb.from('import_batches').select('doc').order('id').range(from, from + 999);
+        if (r.error) throw new ApiError('OFFLINE', r.error.message);
+        data.push(...(r.data || []));
+        if ((r.data || []).length < 1000) break;
+      }
+      return data.map(r => r.doc).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
         .map(b => ({ id: b.id, kind: b.kind, status: b.status, inputRows: b.inputRows, createdAt: b.createdAt, createdBy: b.createdBy, result: b.result }));
     }),
   };
@@ -270,9 +278,18 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
 
   const onFocus = () => { if (document.visibilityState === 'visible' && snap.status === 'active') refresh().catch(e => console.error(toApiError(e))); };
   if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onFocus);
-  // a user switch is caught by refresh() comparing the session user before and after; a sign-out bumps gen
-  sb.auth.onAuthStateChange(event => {
-    if (event === 'SIGNED_OUT') { gen++; if (stopNudges) { stopNudges(); stopNudges = null; } snap = SIGNED_OUT(); emit(); }
+  // a sign-out, or a session that now belongs to another user (SIGNED_IN / USER_UPDATED from another tab or client),
+  // drops the snapshot at once; another user's data is then loaded fresh
+  sb.auth.onAuthStateChange((event, session) => {
+    const uid = session && session.user ? session.user.id : null;
+    const switched = uid && shownUserId && uid !== shownUserId;
+    if (event !== 'SIGNED_OUT' && !switched) return;
+    gen++;
+    if (stopNudges) { stopNudges(); stopNudges = null; }
+    shownUserId = null; email = null;
+    snap = SIGNED_OUT();
+    emit();
+    if (switched) refresh().catch(e => console.error(toApiError(e)));
   });
 
   const api = {

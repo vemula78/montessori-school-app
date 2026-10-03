@@ -1,6 +1,7 @@
 // Shared helpers for the local Supabase tests (node, no dependencies). Reads keys from `supabase status`;
 // signs fake users in with an admin-generated email OTP (no inbox needed); calls functions and PostgREST.
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readEnvFile } from '../scripts/mock-razorpay.mjs';
@@ -43,7 +44,8 @@ export async function signIn(email) {
 }
 
 export const fn = (name, body, token, extraHeaders = {}) => http('POST', `${local().fns}/${name}`, { body, headers: { apikey: local().anon, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extraHeaders } });
-export const command = (token, name, ...args) => fn('command', { name, args }, token);
+// every /command call carries a request id (required by the server); a fresh one per call, as the browser does per action
+export const command = (token, name, ...args) => fn('command', { name, args, requestId: `t-${randomUUID()}` }, token);
 export const rpcAs = (token, name, args = {}) => http('POST', `${local().url}/rest/v1/rpc/${name}`, { body: args, headers: { apikey: local().anon, Authorization: `Bearer ${token}` } });
 export const restAs = (token, path) => http('GET', `${local().url}/rest/v1/${path}`, { headers: { apikey: local().anon, Authorization: `Bearer ${token}` } });
 

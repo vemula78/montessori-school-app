@@ -10,6 +10,7 @@
 //   5. prune trip positions older than 30 days
 //   6. count expired, unredeemed invites (they already fail redemption on expiry)
 //   7. prune command request ids (7 days) and order attempts (2 days)
+//   8. retry erasure clean-up (sign-in deletion, gateway scrubbing) for requests still in 'cleanup'
 
 import { CORS, errorResponse, json, coded } from '../_shared/http.ts';
 import { rest, restAll, restCount, rpc } from '../_shared/db.ts';
@@ -17,6 +18,7 @@ import { runCommand } from '../_shared/persist.ts';
 import { system } from '../_shared/authz.ts';
 import { deliver } from '../_shared/push.ts';
 import { settleEvent } from '../_shared/gateway.ts';
+import { finishErasure } from '../_shared/erasure.ts';
 import { timingSafeEqual } from '../_shared/razorpay.js';
 import { SLICES } from '../_shared/domain/commands.js';
 import { remindersDue, lateFeesDueList } from '../_shared/domain/reminders.js';
@@ -25,7 +27,7 @@ import { byId } from '../_shared/domain/people.js';
 
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
 const TRIP_MAX_MS = 3 * 3600_000, STALE_MS = 20 * 60_000, POSITIONS_DAYS = 30, MAX_EVENT_ATTEMPTS = 10, STRANDED_MS = 10 * 60_000;
-const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned'];
+const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup'];
 
 async function step<T>(report: Record<string, unknown>, only: Set<string>, name: string, fn: () => Promise<T>) {
   if (!only.has(name)) return;
@@ -53,6 +55,9 @@ Deno.serve(async (req) => {
       const due = remindersDue(db, today, sent);
       const claimed: any[] = due.length ? await rpc('claim_reminders', { p_rows: due.map((r: any) => ({ invoiceId: r.invoiceId, kind: r.kind, sentOn: today, text: r.text })) }) : [];
       const mine = new Set(claimed.map((r: any) => `${r.invoice_id}|${r.kind}`));
+      // the claim token: finish_reminders changes only this run's claim (not one another run has taken over)
+      const tokens = new Map(claimed.map((r: any) => [`${r.invoice_id}|${r.kind}`, r.claim_token]));
+      const tokenOf = (r: any) => tokens.get(`${r.invoiceId}|${r.kind}`);
       const toSend = due.filter((r: any) => mine.has(`${r.invoiceId}|${r.kind}`));
       const messages = toSend.map((r: any) => ({ guardianIds: byId(db.students, r.studentId)?.guardianIds || [], studentIds: [r.studentId], purposes: ['push'],
         payload: { title: 'Fee reminder', body: r.text, url: '#/parent/fees', tag: `rem-${r.invoiceId}-${r.kind}` } }));
@@ -61,10 +66,10 @@ Deno.serve(async (req) => {
         push = await deliver(messages);
         // sent = every subscribed device took it (or nobody has push for this child: the in-app list is the reminder);
         // any transient failure → failed, retried next run
-        outcome = toSend.map((r: any, i: number) => ({ invoiceId: r.invoiceId, kind: r.kind, status: push.perMessage[i].failed ? 'failed' : 'sent',
+        outcome = toSend.map((r: any, i: number) => ({ invoiceId: r.invoiceId, kind: r.kind, claimToken: tokenOf(r), status: push.perMessage[i].failed ? 'failed' : 'sent',
           pushSent: push.perMessage[i].sent, error: push.perMessage[i].failed ? `${push.perMessage[i].failed} device(s) failed` : null }));
       } catch (e: any) {
-        outcome = toSend.map((r: any) => ({ invoiceId: r.invoiceId, kind: r.kind, status: 'failed', pushSent: 0, error: String(e?.message || e).slice(0, 300) }));
+        outcome = toSend.map((r: any) => ({ invoiceId: r.invoiceId, kind: r.kind, claimToken: tokenOf(r), status: 'failed', pushSent: 0, error: String(e?.message || e).slice(0, 300) }));
       }
       const finished = toSend.length ? await rpc('finish_reminders', { p_rows: outcome }) : 0;
       const lateFees = lateFeesDueList(db, today);
@@ -111,6 +116,15 @@ Deno.serve(async (req) => {
     });
 
     await step(report, only, 'requestLogsPruned', () => rpc('prune_request_logs', {}));
+
+    await step(report, only, 'erasureCleanup', async () => {
+      const open = (await restAll('erasure_requests?select=doc&order=id')).map((r: any) => r.doc).filter((d: any) => d.status === 'cleanup');
+      const byGuardian = new Map<string, Set<string>>();
+      for (const d of open) { if (!byGuardian.has(d.guardianId)) byGuardian.set(d.guardianId, new Set()); for (const u of d.pendingUserIds || []) byGuardian.get(d.guardianId)!.add(u); }
+      let done = 0, failed = 0;
+      for (const [gid, users] of byGuardian) { const r = await finishErasure(gid, [...users]); if (r.requestDone) done++; else failed++; }
+      return { pending: byGuardian.size, done, failed };
+    });
 
     return json({ ok: true, report });
   } catch (e) {
