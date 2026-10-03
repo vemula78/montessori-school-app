@@ -106,7 +106,7 @@ export function renderShell(root, { school, personas, current, real = false }) {
   root.innerHTML = `
   <div class="shell ${touch ? 'touch' : 'staff'}">
     <header class="topbar no-print">
-      <a class="brand" href="#/home"><span class="logo" aria-hidden="true">A</span><span class="name">${esc(school?.name || 'School')}</span></a>
+      <a class="brand" href="#/home"><span class="logo" aria-hidden="true">K</span><span class="name">${esc(school?.name || 'School')}</span></a>
       <span class="spacer"></span>
       ${personaBlock(personas, current, real)}
     </header>

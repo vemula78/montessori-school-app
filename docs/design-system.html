@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kinfolk design system</title>
+  <link rel="stylesheet" href="../app.css">
+  <style>
+    .sw { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .sw div { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--paper); font-size: .8rem; }
+    .sw i { display: block; height: 56px; }
+    .sw p { margin: 0; padding: 6px 9px; }
+    .sw code { background: none; padding: 0; }
+  </style>
+</head>
+<body>
+<main class="main stack">
+  <div class="brand"><span class="logo" aria-hidden="true">K</span><span class="name">Kinfolk Montessori School</span></div>
+  <h1>Design system</h1>
+  <p class="muted">Every swatch and component below is drawn by the app's own <code>app.css</code>. See <code>docs/DESIGN-SYSTEM.md</code> for roles and contrast.</p>
+
+  <h2>Colour</h2>
+  <div class="sw" id="sw"></div>
+
+  <h2>Type</h2>
+  <div class="card stack">
+    <h1>Fostering self-directed learning</h1>
+    <h2>Section heading (h2)</h2>
+    <h3>Card heading (h3)</h3>
+    <p>Body text in Nunito. Fees of <span class="num">&#8377;45,000.00</span> are due on 10-Oct-2026. <a href="#">A link</a>.</p>
+    <small>Small, secondary text.</small>
+  </div>
+
+  <h2>Buttons and chips</h2>
+  <div class="row">
+    <button class="btn primary">Pay fees</button><button class="btn">Secondary</button><button class="btn sky">Track bus</button>
+    <button class="btn sage">Mark present</button><button class="btn danger">Cancel receipt</button><button class="btn" disabled>Disabled</button>
+  </div>
+  <div class="row"><button class="chip on">All</button><button class="chip">Toddler</button><button class="chip">Pre-Primary</button></div>
+  <div class="seg"><a aria-current="page">Today</a><a>Week</a><a>Month</a></div>
+
+  <h2>Badges and banners</h2>
+  <div class="row"><span class="badge ok">Paid</span><span class="badge warn">Due soon</span><span class="badge bad">Overdue</span><span class="badge info">Event</span><span class="badge clay">New</span><span class="badge mute">Draft</span></div>
+  <div class="banner">Information: the bus left school at 15:05.</div>
+  <div class="banner ok">Payment received. Receipt R-0079.</div>
+  <div class="banner warn">Term 3 fees are due in 3 days.</div>
+  <div class="banner bad">This receipt was cancelled.</div>
+
+  <h2>Cards and figures</h2>
+  <div class="grid cols-4">
+    <div class="kpi"><div class="l">Collected</div><div class="v">&#8377;12,40,000</div></div>
+    <div class="kpi good"><div class="l">Present today</div><div class="v">22 / 24</div></div>
+    <div class="kpi bad"><div class="l">Overdue</div><div class="v">&#8377;90,000</div></div>
+  </div>
+  <div class="card clay"><h3>Highlighted card</h3><p>Used for the one thing a parent should act on.</p></div>
+
+  <h2>Form</h2>
+  <div class="card">
+    <label class="field"><span class="lbl">Child's name</span><input value="Sample Child"></label>
+    <label class="check"><input type="checkbox" checked> I have read the privacy notice</label>
+    <div class="att-opts"><label><input type="radio" name="a" checked><span class="p">P</span></label><label><input type="radio" name="a"><span class="a">A</span></label><label><input type="radio" name="a"><span class="l">L</span></label></div>
+  </div>
+</main>
+<script>
+  // swatches read the live token values, so this page can't drift from app.css
+  const tokens = ['cream', 'paper', 'ink', 'ink-soft', 'clay', 'clay-hover', 'clay-soft', 'sage', 'sage-ink', 'sage-soft', 'mustard', 'mustard-ink', 'mustard-soft',
+    'sky', 'sky-ink', 'sky-soft', 'berry', 'berry-soft', 'bark', 'peach', 'line', 'tint'];
+  const css = getComputedStyle(document.documentElement);
+  const box = document.getElementById('sw');
+  for (const t of tokens) {
+    const d = document.createElement('div');
+    const i = document.createElement('i'); i.style.background = `var(--${t})`;
+    const p = document.createElement('p'); p.innerHTML = '<code></code><br><span class="muted"></span>';
+    p.querySelector('code').textContent = `--${t}`;
+    p.querySelector('span').textContent = css.getPropertyValue(`--${t}`).trim();
+    d.append(i, p); box.append(d);
+  }
+</script>
+</body>
+</html>

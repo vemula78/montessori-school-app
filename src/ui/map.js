@@ -22,7 +22,7 @@ export function createRouteMap(el, route, opts = {}) {
   const pts = routePoints(route);
   let bounds = null;
   if (pts.length) {
-    const line = L.polyline(pts, { color: '#4F7CAC', weight: 5, opacity: 0.85 }).addTo(map);
+    const line = L.polyline(pts, { color: '#2F6585', weight: 5, opacity: 0.85 }).addTo(map);
     bounds = line.getBounds();
   }
   for (const s of sortedStops(route)) {
@@ -53,7 +53,7 @@ export function createRouteMap(el, route, opts = {}) {
   };
 }
 
-const FLEET_COLORS = ['#4F7CAC', '#B3472F', '#5F8A74', '#9B2C4B'];
+const FLEET_COLORS = ['#2F6585', '#355C2E', '#86592B', '#A8442C'];
 // All routes on one map. Returns {setBuses([{id,lat,lng,label}]), destroy()}.
 export function createFleetMap(el, routes) {
   if (!hasLeaflet()) {

@@ -66,7 +66,6 @@ else {
 // ---------------- 2. published tree grep ----------------
 // Real names are stored only as SHA-256 of the lowercase word, so this public script doesn't name them.
 const FORBIDDEN_WORD_HASHES = new Map([
-  ['784188a352754ca5de0c6c9a3079ec99201d39aa3244853d9b00e970e85b189e', 'real school name'],
   ['4f6d6bb749acd85c1e90243e0e83f0c4920e9b0e7aa04d840d3ea6b13ab0fe8a', 'vendor domain'],
   ['0e38d696338a0dc70f865c8cfc82a89fa2eb278d4608b14117f84dca175c655b', 'hospital name'],
 ]);

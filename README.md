@@ -1,4 +1,4 @@
-# Little Acorns Montessori (Demo) — school app
+# Kinfolk Montessori School — school app
 
 A single-school Montessori preschool app: parent messaging and notices, academic calendar with holiday-list
 CSV import, school-bus tracking, fee structures, invoices, receipts, refunds and reports, child attendance and

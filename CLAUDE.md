@@ -49,9 +49,10 @@ Local sign-ins are `principal@ teacher-pa@ accountant@ driver1@ parent-siblings@
 - Money is integer paise (`assertPaise`); display via `formatPaise` (Indian grouping). Percentages in basis points.
 - Dates are `YYYY-MM-DD` strings parsed by regex; `Date.parse(` / `new Date(<string>)` in `src/domain` fails a lint test. Server code computes IST business dates with `dateInZone(ms, 330)` (Deno runs in UTC).
 - Imports/transforms report counts that add up (`inputRows = ok + quarantined + duplicate`, holidays `= imported + skippedDuplicate + rejected`); rejected rows carry line + reason.
+- Colours and fonts come only from the `:root` tokens in `app.css` (the Kinfolk design system, `docs/DESIGN-SYSTEM.md`); add a token there, with its contrast, before using a new colour.
 - Every interpolated value in UI templates goes through `esc()` (`src/ui/components.js`), numbers included.
 - `fetch(` is allowed only in `src/api/remote*.js` and `src/api/supabase/**`. The only external script is Razorpay Checkout, loaded only on the real app's pay screen; supabase-js and Leaflet are vendored.
-- **Fake data only, public repo**: seed surnames must come from `FAKE_SURNAMES`, phones `+91-90000-00NNN`, emails `@example.com`. The real school's and the previous vendor's names must never appear in tracked files — the scan checks them by SHA-256 hash, so don't add them in plain text anywhere (including tests, comments, import-mapping presets).
+- **Fake data only, public repo**: seed surnames must come from `FAKE_SURNAMES`, phones `+91-90000-00NNN`, emails `@example.com`. The previous vendor's name and domain must never appear in tracked files — the scan checks them by SHA-256 hash, so don't add them in plain text anywhere (including tests, comments, import-mapping presets). The school's own name, Kinfolk Montessori School, is used openly (owner's decision, 03-Oct-2026); the demo's people, addresses and money stay fake.
 - Local-only, gitignored planning records: `PLAN.md`, `PLAN-PHASE2.md`, `PLAN-REVIEW-LOG.md` (append-only audit/disposition log), `school-app-feature-list.md`. Keep them out of git; they contain local paths and real names.
 
 ## Deploy

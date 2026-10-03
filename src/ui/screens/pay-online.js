@@ -141,7 +141,7 @@ export async function payOnline(ctx, student, invoices) {
     name: ctx.db?.school?.name || 'School fees',
     description: `School fees - ${student.firstName}`,
     prefill: order.prefill || {},
-    theme: { color: '#B3472F' },
+    theme: { color: '#355C2E' },
     modal: { confirm_close: true, ondismiss: () => { checkOrder(ctx, order.orderId, { quiet: true }); } }, // closed the window: it may still have gone through
     handler: async (resp) => {
       try {
