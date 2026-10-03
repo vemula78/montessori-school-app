@@ -1,10 +1,12 @@
 -- pgTAP: access model, RLS matrix and ledger guards. Run: supabase db reset && supabase test db
 -- Uses the generated seed (fake data): grd-01 = parent-siblings (stu-01 Primary A on route-1, stu-02 Primary B),
 -- grd-02 = parent-bus (stu-03 Toddler on route-1, stu-04 Primary A), grd-05 (stu-09 on route-2).
+-- Migration 0003 (audit fixes) is covered from "audit fixes" below: auth confirmation, per-child consent, child trip
+-- events, notice/calendar scoping, cross-slice revision guards, request ids, reminder claims, order slots.
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(46);
+select plan(77);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -32,6 +34,7 @@ insert into auth.users (instance_id, id, aud, role, email, encrypted_password, c
 values ('00000000-0000-0000-0000-000000000000', '00000000-0000-4000-8000-0000000000aa', 'authenticated', 'authenticated', 'route2-parent@example.com', '', now(), now());
 insert into public.app_users (user_id, role, guardian_id, status) values ('00000000-0000-4000-8000-0000000000aa', 'parent', 'grd-05', 'active');
 insert into public.consents (id, doc) values ('cns-test-r2', jsonb_build_object('id', 'cns-test-r2', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'bus_live', 'version', 'v1', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-r2a', jsonb_build_object('id', 'cns-test-r2a', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'app_account', 'version', 'v1', 'withdrawnAt', null));
 
 -- ---------------------------------------------------------------- anon
 set local role anon;
@@ -66,6 +69,12 @@ select is((select array_agg(id order by id) from public.students), array['stu-01
 select is((select count(distinct program_id)::int from public.students), 2, 'parent_sibling_guardian_sees_both_children: two programs');
 select is((select count(*)::int from public.trip_positions), 0, 'parent_positions_require_bus_live_consent: none without consent');
 select is((select count(*)::int from public.trips), 0, 'parent_positions_require_bus_live_consent: no trips without consent');
+reset role;
+-- #7 an old-version bus consent for the child, or a current one for a sibling, does not open the bus
+insert into public.consents (id, doc) values ('cns-test-g1-old', jsonb_build_object('id', 'cns-test-g1-old', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', 'v0', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-g1-sib', jsonb_build_object('id', 'cns-test-g1-sib', 'guardianId', 'grd-01', 'studentId', 'stu-02', 'purpose', 'bus_live', 'version', 'v1', 'withdrawnAt', null));
+select tests.as_user('00000000-0000-4000-8000-000000000005');
+select is((select count(*)::int from public.trips), 0, 'bus_consent_is_per_child_and_version: old version or sibling consent opens nothing');
 reset role;
 insert into public.consents (id, doc) values ('cns-test-g1', jsonb_build_object('id', 'cns-test-g1', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', 'v1', 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-000000000005');
@@ -137,6 +146,89 @@ select throws_ok($$insert into public.payments (id, doc) select 'pay-dup', doc |
 select is(public.persist('pgtap-slice', 0, '{}'::jsonb), 1::bigint, 'persist accepts the current rev');
 select throws_ok($$select public.persist('pgtap-slice', 0, '{}'::jsonb)$$, 'PT409', 'CONFLICT', 'persist_rejects_stale_rev');
 select is((select count(*)::int from cron.job where jobname = 'cron-daily' and schedule = '30 2 * * *'), 1, 'cron_job_registered');
+
+-- ================================================================ audit fixes (migration 0003)
+-- #1 a staff email gets its role only once the mailbox is confirmed; a password set before that is void
+insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
+values ('00000000-0000-0000-0000-000000000000', '00000000-0000-4000-8000-0000000000b1', 'authenticated', 'authenticated', 'teacher-pb@example.com',
+        extensions.crypt('chosen-by-someone-else', extensions.gen_salt('bf')), now(), now());
+select is((select count(*)::int from public.app_users where user_id = '00000000-0000-4000-8000-0000000000b1'), 0, 'auth_unconfirmed_staff_email_gets_no_role');
+update auth.users set email_confirmed_at = now() where id = '00000000-0000-4000-8000-0000000000b1';
+select is((select role from public.app_users where user_id = '00000000-0000-4000-8000-0000000000b1'), 'teacher', 'auth_confirming_the_mailbox_links_the_staff_role');
+select ok((select encrypted_password <> extensions.crypt('chosen-by-someone-else', encrypted_password) from auth.users where id = '00000000-0000-4000-8000-0000000000b1'),
+  'auth_a_password_set_before_confirmation_no_longer_works');
+update auth.users set email_confirmed_at = now() + interval '1 minute' where id = '00000000-0000-4000-8000-0000000000b1';
+select is((select count(*)::int from public.app_users where user_id = '00000000-0000-4000-8000-0000000000b1'), 1, 'auth_links_at_most_once');
+select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user'], 'still_no_other_security_definer_function');
+
+-- #6 a linked parent without app_account consent sees the children's names (consent screen) and nothing else
+insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
+values ('00000000-0000-0000-0000-000000000000', '00000000-0000-4000-8000-0000000000c3', 'authenticated', 'authenticated', 'grd03-test@example.com', '', now(), now());
+insert into public.app_users (user_id, role, guardian_id, status) values ('00000000-0000-4000-8000-0000000000c3', 'parent', 'grd-03', 'active');
+select tests.as_user('00000000-0000-4000-8000-0000000000c3');
+select is((select array_agg(id order by id) from public.students), array['stu-05', 'stu-06'], 'consent_screen_still_lists_the_children');
+select is((select count(*)::int from public.invoices) + (select count(*)::int from public.payments) + (select count(*)::int from public.threads)
+  + (select count(*)::int from public.student_health) + (select count(*)::int from public.attendance) + (select count(*)::int from public.diary_entries),
+  0, 'no_child_data_before_app_account_consent');
+reset role;
+insert into public.consents (id, doc) values ('cns-test-g3', jsonb_build_object('id', 'cns-test-g3', 'guardianId', 'grd-03', 'studentId', 'stu-05', 'purpose', 'app_account', 'version', 'v1', 'withdrawnAt', null));
+select tests.as_user('00000000-0000-4000-8000-0000000000c3');
+select is((select array_agg(distinct student_id) from public.invoices), array['stu-05'], 'consent_opens_only_the_consented_child');
+reset role;
+
+-- #3 a child's boarding/drop-off events are not in trips.doc; a parent sees only their own child's
+select tests.as_user('00000000-0000-4000-8000-000000000006');
+select ok((select count(*) from public.trips) > 0 and (select bool_and(not doc ? 'childEvents') from public.trips), 'trip_docs_carry_no_child_events');
+select is((select array_agg(distinct student_id) from public.trip_child_events), array['stu-03'], 'parent_sees_only_own_child_trip_events');
+select is((select count(*)::int from jsonb_array_elements(public.my_snapshot()->'trips') t, jsonb_array_elements(t->'childEvents') e where e->>'studentId' <> 'stu-03'), 0,
+  'snapshot_trip_events_are_own_child_only');
+reset role;
+create temp table all_child_events as select count(*) n from public.trip_child_events te join public.trips t on t.id = te.trip_id where t.route_id = 'route-1';
+grant select on all_child_events to authenticated;
+select tests.as_user('00000000-0000-4000-8000-000000000004');
+select is((select count(*) from public.trip_child_events), (select n from all_child_events), 'driver_sees_every_child_event_of_own_route');
+reset role;
+
+-- #29 notices: a parent gets only their own child in a targeted audience; a teacher no sibling outside their program
+select tests.as_user('00000000-0000-4000-8000-0000000000aa');
+select ok((select count(*) from public.notices where doc->'audience'->>'scope' = 'students') = 1
+  and not exists (select 1 from public.notices where coalesce((doc->'audience') ? 'studentIds', false)), 'notice_docs_carry_no_student_lists');
+select is((select array_agg(student_id) from public.notice_students), array['stu-09'], 'parent_sees_only_own_child_in_a_notice_audience');
+select is((select jsonb_agg(x) from jsonb_array_elements(public.my_snapshot()->'notices') n, jsonb_array_elements_text(n->'audience'->'studentIds') x), '["stu-09"]'::jsonb,
+  'snapshot_notice_audience_is_own_child_only');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000002');
+select is((select count(*)::int from public.notice_receipt_students where student_id = 'stu-02'), 0, 'teacher_sees_no_sibling_outside_own_program_in_receipts');
+select is((select count(*)::int from public.calendar_events where doc->'programIds' = '["prog-toddler"]'::jsonb), 0, 'teacher_sees_no_other_programs_calendar_events');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000004');
+select is((select count(*)::int from public.calendar_events where jsonb_array_length(doc->'programIds') > 0), 0, 'driver_sees_school_wide_calendar_events_only');
+reset role;
+
+-- #13 a change is checked against (and moves) every slice revision it is guarded by
+select throws_ok($$select public.persist('pgtap-a', 0, '{"guards":{"pgtap-b":5}}'::jsonb)$$, 'PT409', 'CONFLICT', 'persist_rejects_a_stale_guard_revision');
+select is(public.persist('pgtap-a', 0, '{"guards":{"pgtap-b":0}}'::jsonb), 1::bigint, 'persist_accepts_current_guards');
+select is((select rev from app.revs where slice = 'pgtap-b'), 1::bigint, 'persist_moves_the_guarded_slice_too');
+
+-- #20 a request id is committed once
+select lives_ok($$select public.persist('pgtap-r', 0, '{"request":{"id":"req-pgtap-0001","userId":"00000000-0000-4000-8000-000000000001","name":"x","result":{"ok":1}}}'::jsonb)$$, 'request_id_stored');
+select throws_ok($$select public.persist('pgtap-r', 1, '{"request":{"id":"req-pgtap-0001","userId":"00000000-0000-4000-8000-000000000001","name":"x","result":{"ok":2}}}'::jsonb)$$, '23505', null, 'request_id_committed_once');
+select is((select (public.load_slice('{}'::text[], '{"requestId":"req-pgtap-0001"}'::jsonb))->'db'->'priorRequest'->'result'), '{"ok":1}'::jsonb, 'load_slice_returns_the_prior_request');
+
+-- #28 reminders are claimed once; a failed one is claimed again by the next run
+create temp table rem_inv as select id from public.invoices limit 1;
+select is((select count(*)::int from public.claim_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'sentOn', '2026-10-02', 'text', 't')) from rem_inv))), 1, 'reminder_claimed');
+select is((select count(*)::int from public.claim_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'sentOn', '2026-10-02', 'text', 't')) from rem_inv))), 0, 'reminder_not_claimed_twice');
+select is(public.finish_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'status', 'failed', 'pushSent', 0, 'error', 'x')) from rem_inv)), 1, 'reminder_marked_failed');
+select is((select count(*)::int from public.claim_reminders((select jsonb_build_array(jsonb_build_object('invoiceId', id, 'kind', '+14', 'sentOn', '2026-10-03', 'text', 't')) from rem_inv))), 1, 'failed_reminder_claimed_again');
+
+-- #42 order slots are counted atomically per user
+select is(array[public.take_order_slot('00000000-0000-4000-8000-0000000000d1', 2), public.take_order_slot('00000000-0000-4000-8000-0000000000d1', 2),
+  public.take_order_slot('00000000-0000-4000-8000-0000000000d1', 2)], array[true, true, false], 'order_slots_limited');
+
+-- #38 stale trips are ended within 15 minutes
+select is((select count(*)::int from cron.job where jobname = 'cron-trips' and schedule = '*/15 * * * *'), 1, 'cron_trips_job_registered');
 
 select * from finish();
 rollback;

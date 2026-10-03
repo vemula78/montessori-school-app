@@ -65,9 +65,9 @@ You need:
 
 ## Step 3. Sign-in by emailed code
 
-Parents and staff sign in with a 6-digit code sent by email (no passwords).
+Parents and staff sign in with a 6-digit code sent by email (no passwords). The app never uses password sign-up.
 
-1. **Authentication > Providers > Email**: switch it **on**; switch **Confirm email OFF**; set **Email OTP expiration** to **600** seconds; Save.
+1. **Authentication > Providers > Email**: switch it **on**; leave **Confirm email ON** (do **not** switch it off: with it off, anyone could create an account with a staff member's email address without proving they own the mailbox, and be given that staff role); set **Email OTP expiration** to **600** seconds; Save.
 2. **Authentication > Email Templates**: there are two templates to change, **Magic Link** and **Confirm signup**. In **both**, replace the body so it contains the code, for example:
 
    ```
@@ -110,7 +110,7 @@ supabase db diff --linked
    select vault.create_secret('https://<ref>.supabase.co/functions/v1','functions_url');
    select vault.create_secret('<same value as CRON_SECRET>','cron_secret');
    ```
-   Run each line once only. Later, **Database > Cron Jobs** should list `cron-daily` (08:00 India time every day).
+   Run each line once only. Later, **Database > Cron Jobs** should list `cron-daily` (08:00 India time every day) and `cron-trips` (every 15 minutes). `supabase db push` (step 4) creates both; they use the same two Vault values.
 
 ## Step 6. Razorpay (online fee payments) in TEST mode
 
@@ -138,6 +138,8 @@ In Terminal, put your own values in place of the `<...>` parts (one command; kee
 supabase secrets set RAZORPAY_KEY_ID=<key id> RAZORPAY_KEY_SECRET=<key secret> RAZORPAY_WEBHOOK_SECRET=<webhook secret> APP_GATEWAY_MODE=test VAPID_PUBLIC_KEY=<vapid public> VAPID_PRIVATE_KEY=<vapid private> VAPID_SUBJECT=mailto:<the school's email> CRON_SECRET=<the same CRON_SECRET as step 5>
 supabase functions deploy
 ```
+
+**Do not set `PUSH_TEST_ORIGINS` in the cloud.** It is for local tests only and loosens a safety check on notification addresses; leave it unset.
 
 **Do not set `RAZORPAY_API_BASE` in the cloud.** It exists only for testing on a developer's Mac against a pretend payment server; in the cloud the real Razorpay address must be used, so leave it unset.
 
@@ -190,7 +192,8 @@ Android phones: open in Chrome and use **Install app** (or just allow notificati
 
 Do these only when the school has decided to go ahead. Do not skip any.
 
-- [ ] **Have the school's legal adviser read the privacy notice** (`src/ui/privacy.js`, version v1) and the retention periods in it (fees 8 years, messages/diary/attendance 1 year after leaving, bus positions 30 days). Change the text and the version if they ask; every parent then sees the new version.
+- [ ] **Have the school's legal adviser read the privacy notice** (`src/ui/privacy.js`, version v1) and the retention periods in it (fees 8 years, messages/diary/attendance 1 year after leaving, bus positions 30 days). The notice currently labels them a **draft schedule**; remove that label only once the school has decided the periods and the app enforces them (next item). A new notice version needs **three changes made together**: (1) `PRIVACY_VERSION` in `src/ui/privacy.js`; (2) `CONSENT_VERSION` in `src/domain/commands.js`, followed by `npm run sync-domain` (it refreshes the copy the server functions use); (3) a **new migration file** in `supabase/migrations/` containing `create or replace function app.consent_version() returns text language sql immutable set search_path = pg_catalog as $$ select 'v2'::text $$;` (with the new version in place of `v2`). If any of the three is missed, consents are refused or the database treats new consents as not current. Then run `npm test` (a test fails if the first two differ), `supabase db push` and `supabase functions deploy`. Every parent then sees the new version.
+- [ ] **Retention enforcement must be implemented before any real data is loaded.** The periods in the notice are not yet enforced: only bus positions are deleted automatically; nothing removes messages, diary notes, attendance or fee records, and the data has no recorded leaving date to count "1 year after leaving" from. Get the school's decision on the periods, have the developer implement and test the deletion job (and the leaving date), then update the notice.
 - [ ] **Upgrade Supabase to the Pro plan** (Project Settings > Billing; about 25 US dollars a month). The Free plan **pauses after 7 days of inactivity (school holidays!) and keeps no backups**.
 - [ ] **Backups:** after upgrading, check **Database > Backups** shows daily backups; keep a monthly `supabase db dump` copy on the school's computer.
 - [ ] **Razorpay KYC:** complete the account activation (the trust/society registration, PAN, bank proof). Then in Terminal repeat `supabase secrets set` with the **live** key id and secret, a **live-mode webhook** (the same URL and events, created while Test Mode is off), and `APP_GATEWAY_MODE=live`; run `supabase functions deploy`; change `gatewayMode` in `app/config.js` to `'live'` and push.

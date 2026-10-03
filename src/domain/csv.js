@@ -47,19 +47,24 @@ export const normHeader = h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')
 /**
  * CSV with a header row → {headers, rows:[{line, values:{header: string}}], problems:[{line, reason}]}.
  * Values are trimmed. Duplicate or empty header names are made unique ('Phone', 'Phone (2)', 'Column 3').
- * An unterminated quoted field is reported in problems and kept as a row with `problem` set, never dropped.
+ * An unterminated quoted field, or a row with more fields than headers, is reported in problems and kept as a row
+ * with `problem` set (the importers quarantine it), never dropped.
  */
 export function parseCsvObjects(text) {
   const records = parseCsv(text);
   if (!records.length) return { headers: [], rows: [], problems: [] };
   const [head, ...rest] = records;
-  const seen = new Map();
-  const headers = head.fields.map((f, i) => {
-    let h = String(f).trim() || `Column ${i + 1}`;
-    const n = (seen.get(h) || 0) + 1;
-    seen.set(h, n);
-    if (n > 1) h = `${h} (${n})`;
-    return h;
+  // a generated name ('Phone (2)') must never equal a literal header, or one column would overwrite another
+  const raw = head.fields.map((f, i) => String(f).trim() || `Column ${i + 1}`);
+  const used = new Set();
+  const literal = new Set(raw);
+  const headers = raw.map(h => {
+    if (!used.has(h)) { used.add(h); return h; }
+    let n = 2;
+    while (used.has(`${h} (${n})`) || literal.has(`${h} (${n})`)) n++;
+    const g = `${h} (${n})`;
+    used.add(g);
+    return g;
   });
   const rows = [], problems = [];
   if (head.unterminated) problems.push({ line: head.line, reason: 'unterminated quoted field in the header row' });
@@ -73,7 +78,11 @@ export function parseCsvObjects(text) {
       continue;
     }
     if (r.fields.length > headers.length && r.fields.slice(headers.length).some(f => f.trim() !== '')) {
-      problems.push({ line: r.line, reason: `${r.fields.length} fields but ${headers.length} headers; extra fields ignored` });
+      // e.g. an unquoted "1,000": the values no longer line up with the headers, so the row is quarantined
+      const reason = `${r.fields.length} fields but ${headers.length} headers (an unquoted comma?)`;
+      problems.push({ line: r.line, reason });
+      rows.push({ line: r.line, values, problem: reason });
+      continue;
     }
     rows.push({ line: r.line, values });
   }

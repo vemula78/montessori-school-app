@@ -36,6 +36,7 @@ export async function render(ctx) {
   const mapApi = createRouteMap(ctx.el.querySelector('#b-map'), route, { myStopId: view.stop?.id });
   ctx.cleanup(() => mapApi.destroy());
 
+  let reloadFailedAt = null; // set while the latest re-read failed: what is on screen may be out of date
   let liveFix = null; // newest fix from the live feed (ahead of the snapshot in the real app)
   function paint() {
     const trip = view.trip;
@@ -56,7 +57,8 @@ export async function render(ctx) {
         </div>
         ${stale ? '<div class="banner warn" style="margin:0"><strong>No recent bus updates.</strong> The last position is more than 45 seconds old - the driver\'s phone may be offline or the screen locked. The marker shows the last known position.</div>' : ''}
         ${trip.simulated ? '<small>This is a simulated trip for demonstration - not a real bus.</small>' : ''}</div>`;
-    ctx.el.querySelector('#b-status').innerHTML = (liveOff ? '<div class="banner warn"><strong>Live bus location is switched off.</strong> You chose not to receive it. You can turn it on in <a href="#/settings">Settings</a> (privacy choices).</div>' : '') + main;
+    const offline = reloadFailedAt ? `<div class="banner warn" role="status"><strong>Could not refresh the bus status.</strong> You may be offline. Refreshing has failed since ${ftime(reloadFailedAt)}, so what you see may be out of date; we keep trying.</div>` : '';
+    ctx.el.querySelector('#b-status').innerHTML = offline + (liveOff ? '<div class="banner warn"><strong>Live bus location is switched off.</strong> You chose not to receive it. You can turn it on in <a href="#/settings">Settings</a> (privacy choices).</div>' : '') + main;
     if (fix && !liveOff) mapApi.setBus(fix.lat, fix.lng, 'BUS');
     const evs = (view.events || []).slice().sort((a, b) => (a.ts < b.ts ? 1 : -1));
     ctx.el.querySelector('#b-events').innerHTML = liveOff ? empty('Bus updates are off', 'Turn on live bus location in Settings to see boarding and arrival updates here.') : evs.length
@@ -65,7 +67,7 @@ export async function render(ctx) {
   }
 
   async function reload() {
-    try { view = (await api.transport.parentView(kid.id)) || view; } catch { /* keep last view */ }
+    try { view = (await api.transport.parentView(kid.id)) || view; reloadFailedAt = null; } catch { reloadFailedAt = reloadFailedAt || nowISO(); /* keep the last view, but say so */ }
     if (ctx.el.isConnected) paint();
   }
   paint();

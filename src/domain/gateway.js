@@ -101,37 +101,72 @@ export function recordGatewayPayment(db, { order, payment: rp, gatewayMode }, ct
  */
 export function recordGatewayRefund(db, { refund: rr }, ctx) {
   if (!rr || typeof rr.id !== 'string' || !rr.id) fail('VALIDATION', 'Gateway refund id missing');
-  const done = db.refunds.filter(r => r.gatewayRefundId === rr.id);
+  // a refund recorded by hand with the gateway refund id as its reference is the same money (finding 17)
+  const done = db.refunds.filter(r => r.gatewayRefundId === rr.id || r.reference === rr.id);
   if (done.length) return { pending: false, created: false, refunds: done };
+  // only a refund the gateway has processed moves money: 'pending' waits for refund.processed, 'failed' never books
+  if (rr.status !== 'processed') return { pending: false, created: false, refunds: [], skipped: `refund ${rr.id} is ${rr.status || 'of unknown status'} at the gateway; booked only once processed` };
   const pay = db.payments.find(p => p.gatewayPaymentId === rr.payment_id);
   if (!pay) return { pending: true, created: false, refunds: [], reason: `payment ${rr.payment_id} is not in the ledger yet` };
   assertPaise(rr.amount);
   if (rr.amount <= 0) fail('INVALID_AMOUNT', 'Refund amount must be greater than zero');
   const date = gatewayDate(rr.created_at);
   const reason = `Refund made on the payment gateway (${rr.id})`;
-  const refunded = (invoiceId) => sumPaise(db.refunds.filter(r => r.paymentId === pay.id && r.invoiceId === invoiceId).map(r => r.amountPaise));
-  const parts = pay.allocations
-    .map(a => ({ invoiceId: a.invoiceId, room: a.amountPaise - refunded(a.invoiceId) }))
+  const refunded = (paymentId, invoiceId) => sumPaise(db.refunds.filter(r => r.paymentId === paymentId && r.invoiceId === invoiceId).map(r => r.amountPaise));
+  const roomOf = p => p.allocations
+    .map(a => ({ paymentId: p.id, invoiceId: a.invoiceId, room: a.amountPaise - refunded(p.id, a.invoiceId) }))
     .filter(x => x.room > 0)
     .sort((a, b) => b.room - a.room || (a.invoiceId < b.invoiceId ? -1 : 1));
+  const parts = roomOf(pay);
   const unusedCredit = sumPaise(db.credits.filter(c => c.sourcePaymentId === pay.id && !c.consumedByPaymentId && !c.consumedByRefundId).map(c => c.amountPaise));
-  const room = sumPaise(parts.map(x => x.room)) + unusedCredit;
+  // credit from this capture that a later 'credit' payment applied to other invoices (finding 19): that application
+  // is reversed against the credit payment's allocations, up to what it took from this capture
+  const viaCredit = [];
+  const byConsumer = new Map();
+  for (const c of db.credits) {
+    if (c.sourcePaymentId !== pay.id || !c.consumedByPaymentId) continue;
+    const p2 = byId(db.payments, c.consumedByPaymentId);
+    if (!p2 || p2.status !== 'valid') continue;
+    byConsumer.set(p2.id, (byConsumer.get(p2.id) || 0) + c.amountPaise);
+  }
+  for (const [p2id, took] of byConsumer) {
+    const p2 = byId(db.payments, p2id);
+    const already = sumPaise(db.refunds.filter(r => r.paymentId === p2id && r.gatewaySourcePaymentId === pay.id).map(r => r.amountPaise));
+    let cap = took - already;
+    for (const x of roomOf(p2)) {
+      if (cap <= 0) break;
+      const amt = Math.min(cap, x.room);
+      viaCredit.push({ ...x, room: amt, viaReceipt: p2.receiptNumber });
+      cap -= amt;
+    }
+  }
+  const room = sumPaise(parts.map(x => x.room)) + unusedCredit + sumPaise(viaCredit.map(x => x.room));
   if (rr.amount > room) fail('INVALID_AMOUNT', `Gateway refund ${rr.amount} paise exceeds what ${pay.receiptNumber} can still return (${room} paise); record it manually after checking`);
   let left = rr.amount;
   const out = [];
-  const take = (invoiceId, amt) => {
-    const r = refund(db, { paymentId: pay.id, invoiceId, amountPaise: amt, mode: 'online', reference: rr.id, date, reason }, ctx);
-    r.gatewayRefundId = rr.id;
+  const take = (paymentId, invoiceId, amt) => {
+    const r = refund(db, { paymentId, invoiceId, amountPaise: amt, mode: 'online', reference: rr.id, date, reason }, ctx, { gatewayRefundId: rr.id });
     r.gatewayRefundPart = out.length;
+    if (paymentId !== pay.id) r.gatewaySourcePaymentId = pay.id;
     out.push(r);
   };
   for (const x of parts) {
     if (left <= 0) break;
     const amt = Math.min(left, x.room);
-    take(x.invoiceId, amt);
+    take(pay.id, x.invoiceId, amt);
     left -= amt;
   }
-  if (left > 0) take(null, left);
+  if (left > 0 && unusedCredit > 0) {
+    const amt = Math.min(left, unusedCredit);
+    take(pay.id, null, amt);
+    left -= amt;
+  }
+  for (const x of viaCredit) {
+    if (left <= 0) break;
+    const amt = Math.min(left, x.room);
+    take(x.paymentId, x.invoiceId, amt);
+    left -= amt;
+  }
   return { pending: false, created: true, refunds: out };
 }
 
@@ -172,13 +207,15 @@ export function parseSettlementCsv(text) {
     return { inputRows: rows.length, lines, rejected };
   }
   const money = (r, k) => (col[k] && r.values[col[k]] !== '' ? rupeesToPaise(r.values[col[k]]) : null);
+  // fee/tax: an absent column or empty cell is zero; anything present but not an amount is an error (never zero)
+  const optional = (r, k) => (col[k] && r.values[col[k]] !== '' ? rupeesToPaise(r.values[col[k]]) : 0);
   for (const r of rows) {
     if (r.problem) { rejected.push({ line: r.line, reason: r.problem }); continue; }
     const v = r.values;
     const entityId = v[col.entityId];
     const settlementId = v[col.settlementId];
     const type = (col.type ? v[col.type] : '') || (entityId.startsWith('rfnd_') ? 'refund' : entityId.startsWith('pay_') ? 'payment' : '');
-    const gross = money(r, 'gross'), fee = money(r, 'fee') ?? 0, tax = money(r, 'tax') ?? 0;
+    const gross = money(r, 'gross'), fee = optional(r, 'fee'), tax = optional(r, 'tax');
     let net = money(r, 'net');
     if (!entityId) { rejected.push({ line: r.line, reason: 'entity id is empty' }); continue; }
     if (!settlementId) { rejected.push({ line: r.line, reason: 'settlement id is empty (not settled yet?)' }); continue; }
@@ -195,19 +232,35 @@ export function parseSettlementCsv(text) {
   return { inputRows: rows.length, lines, rejected };
 }
 
-/** Idempotent merge of parsed lines into the stored ones (key = settlementId + entityId). */
+/**
+ * Idempotent merge of parsed lines into the stored ones (key = settlementId + entityId).
+ * Same key with the same figures → duplicate; same key with different figures (vs a stored line, or between lines
+ * of this file) → every such line rejected with the reason: a corrected export must not be silently ignored.
+ * imported + duplicate + rejected.length === parsed.lines.length.
+ */
 export function mergeSettlementLines(stored, parsed) {
   const key = l => `${l.settlementId}|${l.entityId}`;
-  const have = new Set(stored.map(key));
-  const added = [];
+  const sig = l => JSON.stringify([l.type, l.grossPaise, l.feePaise, l.taxPaise, l.netPaise, l.utr ?? null, l.settledOn ?? null]);
+  const have = new Map(stored.map(l => [key(l), l]));
+  const groups = new Map();
+  for (const l of parsed.lines) { const k = key(l); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(l); }
+  const added = [], rejected = [];
   let duplicate = 0;
-  for (const l of parsed.lines) {
-    const k = key(l);
-    if (have.has(k)) { duplicate++; continue; }
-    have.add(k);
-    added.push({ ...l, id: k });
+  for (const [k, ls] of groups) {
+    const old = have.get(k);
+    if (ls.some(l => sig(l) !== sig(ls[0]))) {
+      const lines = ls.map(l => l.line).join(', ');
+      for (const l of ls) rejected.push({ line: l.line, reason: `lines ${lines} give different figures for ${l.entityId} in settlement ${l.settlementId}` });
+      continue;
+    }
+    if (old && sig(old) !== sig(ls[0])) {
+      for (const l of ls) rejected.push({ line: l.line, reason: `${l.entityId} in settlement ${l.settlementId} was already imported with different figures (line ${old.line ?? '?'} of an earlier file); check with the payment provider` });
+      continue;
+    }
+    if (!old) added.push({ ...ls[0], id: k });
+    duplicate += old ? ls.length : ls.length - 1;
   }
-  return { added, imported: added.length, duplicate };
+  return { added, imported: added.length, duplicate, rejected };
 }
 
 /**
@@ -227,11 +280,13 @@ export function settlementReport(db, lines, { from, to } = {}) {
     const ls = (byEntity.get(p.gatewayPaymentId) || []).filter(l => l.type !== 'refund');
     const student = byId(db.students, p.studentId);
     if (!ls.length) { unmatchedLedger.push({ kind: 'payment', paymentId: p.id, receiptNumber: p.receiptNumber, gatewayPaymentId: p.gatewayPaymentId, paidOn: p.paidOn, amountPaise: p.amountPaise, status: p.status, reason: 'not in any imported settlement (not settled yet, or report not imported)' }); continue; }
+    // one capture is settled once: several lines (e.g. under two settlement ids) are all flagged, never two good matches
+    const many = ls.length > 1 ? `this payment appears in ${ls.length} settlement lines (${ls.map(l => l.settlementId).join(', ')})` : null;
     for (const l of ls) {
       used.add(l);
       rows.push({ kind: 'payment', paymentId: p.id, receiptNumber: p.receiptNumber, studentName: fullName(student), paidOn: p.paidOn, ledgerPaise: p.amountPaise, status: p.status,
         settlementId: l.settlementId, utr: l.utr, settledOn: l.settledOn, grossPaise: l.grossPaise, feePaise: l.feePaise, taxPaise: l.taxPaise, netPaise: l.netPaise,
-        amountMatches: l.grossPaise === p.amountPaise });
+        amountMatches: !many && l.grossPaise === p.amountPaise, reason: many || (l.grossPaise === p.amountPaise ? null : 'settled amount differs from the ledger') });
     }
   }
   const refundGroups = new Map();
@@ -240,21 +295,30 @@ export function settlementReport(db, lines, { from, to } = {}) {
     const ledgerPaise = sumPaise(rs.map(r => r.amountPaise));
     const ls = (byEntity.get(gid) || []);
     if (!ls.length) { unmatchedLedger.push({ kind: 'refund', gatewayRefundId: gid, voucherNumbers: rs.map(r => r.voucherNumber), amountPaise: ledgerPaise, reason: 'refund not in any imported settlement' }); continue; }
+    const many = ls.length > 1 ? `this refund appears in ${ls.length} settlement lines` : null;
     for (const l of ls) {
       used.add(l);
       rows.push({ kind: 'refund', gatewayRefundId: gid, voucherNumbers: rs.map(r => r.voucherNumber), ledgerPaise, settlementId: l.settlementId, utr: l.utr, settledOn: l.settledOn,
-        grossPaise: l.grossPaise, feePaise: l.feePaise, taxPaise: l.taxPaise, netPaise: l.netPaise, amountMatches: l.grossPaise === ledgerPaise });
+        grossPaise: l.grossPaise, feePaise: l.feePaise, taxPaise: l.taxPaise, netPaise: l.netPaise, amountMatches: !many && l.grossPaise === ledgerPaise,
+        reason: many || (l.grossPaise === ledgerPaise ? null : 'refunded amount differs from the ledger') });
     }
   }
   const unmatchedSettlement = lines.filter(l => !used.has(l)).map(l => ({ ...l, reason: l.type === 'payment' || l.type === 'refund' ? `no ${l.type} with this gateway id in the ledger${from || to ? ' for the chosen dates' : ''}` : `line type "${l.type || 'unknown'}" is not matched to receipts` }));
   const sum = (arr, k) => arr.reduce((s, x) => s + x[k], 0);
-  const identityMismatches = lines.filter(l => l.grossPaise !== l.netPaise + l.feePaise + l.taxPaise && l.type !== 'refund')
-    .map(l => ({ line: l.line, entityId: l.entityId, grossPaise: l.grossPaise, netPaise: l.netPaise, feePaise: l.feePaise, taxPaise: l.taxPaise }));
+  // payment line: gross = net credited + fee + tax.  refund line: net debited = refunded amount + fee + tax.
+  // (Unverified against a real export — see parseSettlementCsv.)
+  const balanced = l => (l.type === 'refund' ? l.netPaise === l.grossPaise + l.feePaise + l.taxPaise : l.grossPaise === l.netPaise + l.feePaise + l.taxPaise);
+  const identityMismatches = lines.filter(l => !balanced(l))
+    .map(l => ({ line: l.line, entityId: l.entityId, type: l.type, grossPaise: l.grossPaise, netPaise: l.netPaise, feePaise: l.feePaise, taxPaise: l.taxPaise }));
   const payLines = lines.filter(l => l.type !== 'refund');
+  const refundLines = lines.filter(l => l.type === 'refund');
+  const refundDebitPaise = sum(refundLines, 'netPaise');
   const totals = {
     ledgerPayments: pays.length, ledgerPaise: sum(pays, 'amountPaise'),
     settlementLines: lines.length, matchedRows: rows.length, unmatchedLedger: unmatchedLedger.length, unmatchedSettlement: unmatchedSettlement.length,
-    grossPaise: sum(payLines, 'grossPaise'), feePaise: sum(payLines, 'feePaise'), taxPaise: sum(payLines, 'taxPaise'), netPaise: sum(payLines, 'netPaise'),
+    grossPaise: sum(payLines, 'grossPaise'), feePaise: sum(payLines, 'feePaise'), taxPaise: sum(payLines, 'taxPaise'),
+    paymentNetPaise: sum(payLines, 'netPaise'), refundGrossPaise: sum(refundLines, 'grossPaise'), refundDebitPaise,
+    netPaise: sum(payLines, 'netPaise') - refundDebitPaise, // net to bank: payment credits less refund debits
     identityOk: identityMismatches.length === 0, identityMismatches,
     amountMismatches: rows.filter(r => !r.amountMatches).length,
   };

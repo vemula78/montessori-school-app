@@ -97,13 +97,16 @@ an iPhone — is **[docs/GO-LIVE.md](docs/GO-LIVE.md)**. This section is the tec
 
 `anon`: nothing. `authenticated`: SELECT only, by role — admin all; accountant all but health notes; teacher own
 programs' children, their guardians, threads, attendance, diary, no fees, no trips; driver own routes' children
-(no health notes), own trips, nothing else; parent own guardian row, own children and their invoices/payments/
-refunds/credits, own notices/threads, own children's routes, and trips/positions of those routes **only with live
-`bus_live` consent**. The one client write is `push_subscriptions` (own rows). Only `public.my_snapshot()` is
+(no health notes), own trips, nothing else; parent own guardian row and own children's names, and — **per child, only
+with current `app_account` consent** — their invoices/payments/refunds/credits, notices/threads, attendance/diary and
+routes, and trips/positions of those routes **only for a child with live `bus_live` consent**. Children's
+boarding/drop-off events live in `trip_child_events` (a parent sees only their own child's), the student lists of
+targeted notices and receipts in `notice_students` / `notice_receipt_students`, and calendar events by program
+(migration `0003_audit_fixes.sql`). The one client write is `push_subscriptions` (own rows). Only `public.my_snapshot()` is
 executable by users; `load_slice`/`persist` are service-role only; the only SECURITY DEFINER function is the
-sign-up trigger that links a new auth user to a staff record by exact email. pgTAP (`supabase/tests/rls.test.sql`)
-asserts all of this, plus "no other definer functions", "no views without security_invoker", append-only audit,
-unique receipt numbers, stale-rev rejection and the cron job.
+auth trigger that links a sign-in to a staff record by exact email **once the mailbox is confirmed**. pgTAP
+(`supabase/tests/rls.test.sql`) asserts all of this, plus "no other definer functions", "no views without
+security_invoker", append-only audit, unique receipt numbers, stale-rev rejection and the cron jobs.
 
 ### Sign-in, linking, consent (DPDP)
 
@@ -111,27 +114,41 @@ unique receipt numbers, stale-rev rejection and the cron job.
   `api.auth.status()` → `state: 'signedOut' | 'unlinked' | 'pending' | 'active' | 'revoked' | 'withdrawn' | 'demo'`.
 - **Parents** link with a single-use **invite code** (principal/accountant issue it; stored as SHA-256 only;
   14-day expiry; bound to one guardian; the redeemer must also enter one child's date of birth; failed attempts are
-  audited and limited to 5 per hour). **Staff** are linked automatically when they first sign in with the email on
-  their staff record. Revoking a user or withdrawing app consent cuts access on the next request.
+  audited and limited to 5 per hour per sign-in, and a code locks after 5 wrong dates of birth from any sign-ins).
+  **Staff** are linked automatically when they first confirm the email on their staff record (email confirmation must
+  stay ON: `enable_confirmations` locally, "Confirm email" in the dashboard); a password set on that address before it
+  was confirmed is voided at confirmation. Revoking a user or withdrawing app consent cuts access on the next request.
 - **Consent** per (guardian, child, purpose, notice version) for `app_account` (required), `push`, `bus_live`, with the
   SHA-256 of the notice text the parent saw and the evidence `invite_code+child_dob+email_otp`. Withdrawal is live
   (RLS evaluates consent at query time); withdrawing `app_account` disables the account and opens an erasure request.
-  A parent can download their own data (`api.admin.dataExport(ownGuardianId)`); the principal can export or
-  anonymise any guardian (ledger numbers and amounts are retained). Exports and invites are audited.
+  Until `app_account` is given for a child the server neither returns that child's data nor runs parent commands for
+  them (only consent itself, invite redemption and the data export). A parent can download their own data
+  (`api.admin.dataExport(ownGuardianId)`: children, fees, messages, attendance, diary, the children's boarding/drop-off
+  events, sign-in links, invites, erasure requests, reminders, push devices (service only), payment orders and raw
+  import rows). The principal can export or erase any guardian: name, phone, email, relation, the guardian's own
+  messages, their columns in import rows, their sign-ins (deleted), push devices and payer details in stored gateway
+  events are erased; fee records, the children's school records, staff messages, consent records and audit rows are
+  kept, and the erasure request records both lists. Exports and invites are audited.
 
 ### Payments (Razorpay test mode)
 
 `pay-create-order` computes the amount from current invoice balances (a client amount can only lower it, ≥ ₹100;
-≤ 10 orders per user per hour) → Razorpay Checkout (the one external script, loaded only on the real app's pay screen)
+≤ 10 order attempts per user per hour, counted atomically before the gateway call; a unique receipt per order) → Razorpay Checkout (the one external script, loaded only on the real app's pay screen)
 → `pay-verify` (HMAC of `order_id|payment_id`, constant-time; amount re-read from Razorpay) → the single idempotent
 ledger step `fees.recordGatewayPayment` (allocation recomputed at capture; anything not owed becomes credit; a
 captured amount that differs from the order is recorded and flagged). The webhook (`rzp-webhook`, signature over
 the raw body, each event id stored once so replays are no-ops) and `pay-status` (on tab focus, if the browser closed
 before verify) use the same step, so a capture is never recorded twice. Dashboard refunds arrive as `refund.*`
-events and are split across the payment's allocations (largest first) then its credit; a refund that arrives before
-its capture is held `pending` and applied when the capture lands. Receipts of test-mode payments are stamped
-**TEST MODE — NO MONEY MOVED**. Settlement reports (CSV from the Razorpay dashboard) are imported idempotently and
-joined to the ledger with unmatched rows listed on both sides and `Σ gross = Σ net + Σ fee + Σ tax` checked.
+events and are booked only once the gateway has **processed** them (pending waits, failed never books), split across
+the payment's allocations (largest first), then its unused credit, then invoices that its credit was later applied to;
+a refund that arrives before its capture is held `pending` and applied when the capture lands; a refund already
+recorded by hand with the `rfnd_…` id as reference is not booked again (and vice versa). A gateway capture cannot be
+cancelled in the app — the money goes back only as a refund. An event stored but never processed is picked up by
+its redelivery or by the daily job. Receipts of test-mode payments are stamped
+**TEST MODE — NO MONEY MOVED**; the demo's mock payment is refused by the server. Settlement reports (CSV from the
+Razorpay dashboard) are imported idempotently (a line that conflicts with a stored one is rejected, not skipped) and
+joined to the ledger with unmatched rows listed on both sides, a payment settled more than once flagged, payment
+lines checked `gross = net + fee + tax`, refund lines `debit = refund + fee + tax`, and net to bank after refunds.
 The payment functions refuse to work if the key prefix (`rzp_test_` / `rzp_live_`) disagrees with `APP_GATEWAY_MODE`.
 
 ### Live bus, alerts, daily job
@@ -140,14 +157,18 @@ The payment functions refuse to work if the key prefix (`rzp_test_` / `rzp_live_
   **on the server** by the Phase 1 hysteresis code. Parents receive positions and trip events through Realtime
   `postgres_changes`, authorized by RLS per subscriber (tested: a parent of another route, or one who withdrew
   `bus_live`, receives nothing).
-- **Web Push** (VAPID, aes128gcm) after each commit to guardians with `push` consent: bus nearing/arrived at their
-  child's stop, boarded/dropped/absent, payment received, important notices, fee reminders. A subscription answering
-  404/410 or failing 5 times is deleted. iOS needs the app added to the Home Screen (16.4+).
+- **Web Push** (VAPID, aes128gcm) after each commit to guardians with `push` consent **for the child concerned, at
+  the current notice version** (plus `bus_live` for bus events): bus nearing/arrived at their child's stop,
+  boarded/dropped/absent, payment received, important notices, fee reminders. Only https endpoints of the known push
+  services are contacted (no redirects, 10 s timeout); any other subscription is deleted, as is one answering 404/410
+  or failing 5 times. iOS needs the app added to the Home Screen (16.4+).
 - **`cron-daily`** (pg_cron 08:00 IST → pg_net, secret from Vault): fee reminders at T−3, due day, +7, +14 of the
-  effective due date (deduped; in-app list = `api.reminders.list()`), the late-fees-due list (computed, **never
-  applied automatically**; the accountant applies them in one batch with `api.fees.applyLateFees`), retries of
-  gateway events that errored or are pending, ending trips left running > 3 h (and counting trips with no fix for
-  20 min), pruning positions older than 30 days, and counting expired invites (expired codes are refused at redemption).
+  effective due date (claimed atomically, marked sent only after delivery, a failed push retried by the next run; in-app
+  list = `api.reminders.list()`), the late-fees-due list (computed, **never applied automatically**; the accountant
+  applies them in one batch with `api.fees.applyLateFees`), retries of gateway events that errored, are pending or were
+  left unprocessed, ending trips left running > 3 h (also every 15 minutes: job `cron-trips`, body
+  `{"steps":["trips"]}`), counting trips with no fix for 20 min, pruning positions older than 30 days, counting expired
+  invites, and pruning request ids (7 days). Every list is read page by page (no 1000-row cap).
 - Phone limits: a web app cannot track in the background and iOS pauses it when the screen locks — keep the screen
   on (Wake Lock), dashboard-mounted phone, app installed. A native Android driver app or a ₹2–3k GPS tracker is a
   Phase 3 option.
@@ -157,8 +178,11 @@ The payment functions refuse to work if the key prefix (`rzp_test_` / `rzp_live_
 CSV (Excel → Save As CSV): the browser parses (`api.import.parseCsv`), the user maps columns (suggested by
 `api.import.suggestMapping`), then `stage → preview → commit`. Children rows are checked strictly (dates day-first,
 phones normalised to `+91…`, programs must exist, stops resolved by name), duplicates by admission number against
-the app and within the file (a conflicting duplicate is quarantined, never guessed), siblings share one guardian
-(matched by phone/email; a name clash is quarantined). Fees rows become one **"Opening balance (carried from previous
+the app and within the file (a conflicting duplicate is quarantined, never guessed; an existing child whose status,
+transport or guardians differ is a conflict, not a duplicate), siblings share one guardian (matched by phone/email;
+every phone/email of a guardian must point at the same person, a name clash is quarantined, and a newly seen phone or
+email of a matched guardian is kept as an alias and saved where the guardian had none). A row with more fields than
+headers (an unquoted comma) is quarantined. Opening balances are keyed by student, academic year and installment. Fees rows become one **"Opening balance (carried from previous
 system)"** invoice per student per installment; historical receipts are not recreated. Every report carries
 `inputRows = ok + quarantined + duplicate` and `Σ opening balances imported = Σ source outstanding`; re-importing the
 same file marks every imported row `duplicate (batch …)`. Mapping presets use generic names only.
@@ -176,7 +200,8 @@ node scripts/first-run-sql.mjs first-run.json > first-run.sql
 ```
 
 The generator validates everything with the app's own checks before printing SQL; the SQL goes through
-`public.persist()` like every other write and links the principal's sign-in if it already exists. Fee structures,
+`public.persist()` like every other write and links any staff sign-in that already exists (confirmed mailbox only).
+Every staff member, drivers included, needs an email: it is how they sign in. Fee structures,
 families and opening balances are then added in the app (or by CSV import).
 
 ### Develop and test locally (Docker / Colima, Supabase CLI)
@@ -185,6 +210,7 @@ families and opening balances are then added in the app (or by CSV import).
 supabase start                                   # first time pulls the images
 supabase db reset                                # migrations + generated seed (6 fake sign-ins, see below)
 node scripts/mock-razorpay.mjs --write-env       # once: invents LOCAL test secrets in supabase/.env.local (gitignored)
+                                                 # (an older .env.local needs PUSH_TEST_ORIGINS=<RAZORPAY_API_BASE> added)
 npm run functions                                # supabase functions serve --env-file supabase/.env.local
 supabase test db                                 # pgTAP: RLS matrix and ledger guards
 npm run test:supabase                            # Edge Function HTTP tests + realtime test (starts the mock gateway)
@@ -207,7 +233,10 @@ Every `api.*` call rejects with `ApiError {code, message}`: the Phase 1 codes (`
 `STORAGE_QUOTA`) plus, in the real app, `UNAUTHENTICATED` (sign in again), `CONFLICT` (too many simultaneous
 writers; nothing saved), `OFFLINE` (the server could not be reached or did not answer in time — nothing may have
 been saved; check and retry), `RATE_LIMITED`, `GATEWAY` (payment provider problem) and `INTERNAL`. Real-app-only
-features called in the demo reject with `NOT_ALLOWED` and a message saying so.
+features called in the demo reject with `NOT_ALLOWED` and a message saying so. In the real app every write carries a
+request id: an unanswered write is retried once with the same id, and the server returns the stored result for a
+repeated id, so a retry never records a payment or refund twice; a write that was saved is not reported as failed
+when the refetch afterwards fails. Business dates ("today") are IST on every device.
 
 ### Dependencies
 
@@ -235,7 +264,8 @@ a key or secret (JWTs, Supabase secret keys, Razorpay key + secret, private keys
 The real app minimises data (no Aadhaar, no photos, no addresses — stop names only; health notes visible to the
 principal, the child's teacher and parents only; staff phones to the principal only; positions are the bus's and are
 kept 30 days), records consent per purpose, audits every write, and supports access (export) and erasure
-(anonymisation keeping the legally retained fee ledger). Retention defaults (fee ledger 8 years; messages, diary,
+(erasure of the guardian's details, messages, sign-ins, devices and raw import/gateway copies, keeping the legally
+retained fee ledger; what is kept is recorded on the request). Retention defaults (fee ledger 8 years; messages, diary,
 attendance 1 year after a child leaves; positions 30 days; audit log for the life of the system) and the DPDP Rules
 timeline must be confirmed by the school's legal adviser.
 

@@ -17,12 +17,16 @@ export const REMINDER_STAGES = [
 ];
 const CATCH_UP_DAYS = 6; // a stage older than this (and superseded by nothing) is not sent late
 
-export function reminderText(db, inv, kind, eff, balancePaise) {
+/** today: the day the reminder is sent; a due-day reminder caught up on a later day names the due date instead of "today". */
+export function reminderText(db, inv, kind, eff, balancePaise, today = eff) {
   const s = byId(db.students, inv.studentId);
   const who = s ? s.firstName : 'your child';
   const amount = formatPaise(balancePaise);
   if (kind === 'T-3') return `Fee reminder: ${amount} for ${who} (${inv.installmentName}, ${inv.number}) is due on ${formatDate(eff)}.`;
-  if (kind === 'due') return `Fee due today: ${amount} for ${who} (${inv.installmentName}, ${inv.number}).`;
+  if (kind === 'due') {
+    if (compareISO(today, eff) > 0) return `Fee was due on ${formatDate(eff)}: ${amount} for ${who} (${inv.installmentName}, ${inv.number}) is unpaid.`;
+    return `Fee due today: ${amount} for ${who} (${inv.installmentName}, ${inv.number}).`;
+  }
   return `Fee overdue since ${formatDate(eff)}: ${amount} for ${who} (${inv.installmentName}, ${inv.number}). Please pay or contact the school office.`;
 }
 
@@ -43,7 +47,7 @@ export function remindersDue(db, today, sent = new Set()) {
     const stageDate = addDays(eff, stage.offset);
     if (compareISO(addDays(stageDate, CATCH_UP_DAYS), today) < 0) continue;
     if (sent.has(`${inv.id}|${stage.kind}`)) continue;
-    out.push({ invoiceId: inv.id, studentId: inv.studentId, kind: stage.kind, effectiveDueDate: eff, balancePaise: bal, text: reminderText(db, inv, stage.kind, eff, bal) });
+    out.push({ invoiceId: inv.id, studentId: inv.studentId, kind: stage.kind, effectiveDueDate: eff, balancePaise: bal, text: reminderText(db, inv, stage.kind, eff, bal, today) });
   }
   return out;
 }

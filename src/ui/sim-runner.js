@@ -90,10 +90,16 @@ async function doFlush() {
   try {
     while (queue.length) {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) { state.online = false; break; }
-      const fix = queue[0];
+      const item = queue[0];
+      // a fix is only ever sent under the trip and sign-in it was captured under; anything else is dropped, never re-targeted
+      if (item.tripId !== state.tripId || item.personaId !== state.personaId || api.session.current()?.id !== item.personaId) {
+        queue.shift(); state.dropped += 1;
+        state.lastError = 'Positions recorded under another trip or sign-in were discarded, not sent.';
+        continue;
+      }
       try {
-        const r = await api.transport.recordPosition(state.tripId, fix);
-        queue.shift();
+        const r = await api.transport.recordPosition(item.tripId, item.fix);
+        if (queue[0] === item) queue.shift();
         if (r && r.rejected) state.lastError = `A position was refused by the server (${r.rejected}) and skipped.`; else state.lastError = null;
         state.sent += 1; state.online = true;
       } catch (e) {
@@ -119,7 +125,7 @@ async function feedReal(pos) {
     if (dt < HEARTBEAT_MS && (dt < SEND_EVERY_MS || moved < SEND_EVERY_M)) return true;
   }
   lastSent = { lat: pos.lat, lng: pos.lng, at: Date.parse(pos.ts) || Date.now() };
-  queue.push(pos);
+  queue.push({ tripId: state.tripId, personaId: state.personaId, fix: pos });
   if (queue.length > QUEUE_CAP) { queue.shift(); state.dropped += 1; } // oldest goes first; the newest positions matter most
   await flush();
   return state.mode !== 'idle'; // false only when the flush ended the run (fatal error)
@@ -209,6 +215,9 @@ export function stop(reason) {
   if (reason) state.lastError = reason;
   if (state.timer) clearTimeout(state.timer);
   state.timer = null;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  queue.length = 0; // unsent fixes belong to the run that is ending
   if (state.watchId != null) { try { navigator.geolocation.clearWatch(state.watchId); } catch { /* ignore */ } }
   state.watchId = null;
   releaseWakeLock();

@@ -95,7 +95,15 @@ export function endTrip(db, tripId, ctx) {
   return trip;
 }
 
-export function recordPosition(db, tripId, { lat, lng, accuracy, ts }) {
+/** A fix may be at most this far ahead of the server clock (phone clocks drift a little; hours mean a wrong clock). */
+export const MAX_FUTURE_MS = 2 * 60000;
+
+/**
+ * ctx (optional): {now} — the server's time; a fix stamped more than MAX_FUTURE_MS after it is refused.
+ * A refused fix (future, duplicate, out of order, before the start) changes nothing: a network retry of a fix that
+ * was already recorded is a no-op and does not disturb the consecutive-fix counters.
+ */
+export function recordPosition(db, tripId, { lat, lng, accuracy, ts }, ctx = null) {
   const trip = mustGet(db, 'trips', tripId, 'Trip');
   if (trip.status !== 'active') fail('VALIDATION', 'Trip has ended');
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) fail('VALIDATION', 'Invalid coordinates');
@@ -104,8 +112,10 @@ export function recordPosition(db, tripId, { lat, lng, accuracy, ts }) {
   if (ms === null) fail('VALIDATION', 'Invalid timestamp');
   const route = mustGet(db, 'routes', trip.routeId, 'Route');
   if (!trip.tracker) trip.tracker = {};
-  // Duplicate (cached), out-of-order and pre-start fixes are refused before event derivation.
-  const reject = reason => { resetHysteresis(trip.tracker); return { trip, newEvents: [], rejected: reason }; };
+  // Future, duplicate (cached/retried), out-of-order and pre-start fixes are refused before event derivation.
+  const reject = reason => ({ trip, newEvents: [], rejected: reason });
+  const nowMs = ctx && ctx.now ? tsToMs(ctx.now) : null;
+  if (nowMs !== null && ms > nowMs + MAX_FUTURE_MS) return reject('in the future by the server clock (check the phone clock)');
   if (ms < tsToMs(trip.startedAt)) return reject('before the trip started');
   const lastTs = trip.lastFixTs || (trip.positions.length ? trip.positions[trip.positions.length - 1].ts : null);
   if (lastTs && ms <= tsToMs(lastTs)) return reject('not newer than the last fix');

@@ -150,6 +150,17 @@ const guardianKeys = g => [g.phone && `p:${g.phone}`, g.email && `e:${g.email}`]
 const existingGuardianKeys = g => [normalisePhone(g.phone) && `p:${normalisePhone(g.phone)}`, g.email && `e:${String(g.email).toLowerCase()}`].filter(Boolean);
 const sameName = (a, b) => normHeader(`${a.firstName}${a.lastName}`) === normHeader(`${b.firstName}${b.lastName}`);
 
+/** What an import row would change on an existing child (same name/DOB/program): status, transport, guardians. */
+function childDifferences(db, s, t) {
+  const out = [];
+  if (s.status !== t.status) out.push('status');
+  if ((s.routeId || null) !== t.routeId || (s.stopId || null) !== t.stopId) out.push('transport (route/stop)');
+  const have = (s.guardianIds || []).map(id => byId(db.guardians, id)).filter(Boolean);
+  const matches = g => have.some(e => sameName(e, g) && guardianKeys(g).some(k => existingGuardianKeys(e).includes(k)));
+  if (have.length !== t.guardians.length || !t.guardians.every(matches)) out.push('guardians');
+  return out;
+}
+
 // ---------------------------------------------------------------- fees
 
 function feeTarget(db, get) {
@@ -199,10 +210,13 @@ export function validateRows(db, { kind, mapping, rows }, { today, batchId = nul
     if (kind === 'children') {
       const s = db.students.find(x => x.admissionNo === r.target.admissionNo);
       if (!s) continue;
-      if (sameChild(s, r.target)) Object.assign(r, { status: 'duplicate', reason: `duplicate (${batchOf(s)})` });
-      else Object.assign(r, { status: 'quarantined', reason: `conflict: admission number ${r.target.admissionNo} already belongs to a child with different details` });
+      if (!sameChild(s, r.target)) { Object.assign(r, { status: 'quarantined', reason: `conflict: admission number ${r.target.admissionNo} already belongs to a child with different details` }); continue; }
+      // same child: a duplicate only if nothing the import would set has changed; otherwise say what differs
+      const diffs = childDifferences(db, s, r.target);
+      if (!diffs.length) Object.assign(r, { status: 'duplicate', reason: `duplicate (${batchOf(s)})` });
+      else Object.assign(r, { status: 'quarantined', reason: `conflict: ${r.target.admissionNo} is already in the app with a different ${diffs.join(', ')}; change the child in the app instead` });
     } else {
-      const inv = db.invoices.find(x => x.source === 'import' && x.studentId === r.target.studentId && x.installmentName === openingName(r.target.installment) && x.status !== 'cancelled');
+      const inv = db.invoices.find(x => x.source === 'import' && x.studentId === r.target.studentId && x.academicYearId === r.target.academicYearId && x.installmentName === openingName(r.target.installment) && x.status !== 'cancelled');
       if (!inv) continue;
       const amt = sumPaise(inv.lines.map(l => l.amountPaise));
       if (amt === r.target.outstandingPaise && inv.dueDate === r.target.dueDate) Object.assign(r, { status: 'duplicate', reason: `duplicate (${batchOf(inv)})` });
@@ -212,7 +226,7 @@ export function validateRows(db, { kind, mapping, rows }, { today, batchId = nul
   // duplicates within the file: identical repeats → duplicate; differing repeats → all quarantined
   const groups = new Map();
   for (const r of ok()) {
-    const k = kind === 'children' ? r.target.admissionNo : `${r.target.studentId}|${r.target.installment}`;
+    const k = kind === 'children' ? r.target.admissionNo : `${r.target.studentId}|${r.target.academicYearId}|${r.target.installment}`;
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(r);
   }
@@ -229,21 +243,28 @@ export function validateRows(db, { kind, mapping, rows }, { today, batchId = nul
   // guardians: merge siblings within the file and with existing guardians (phone/email); a name clash is quarantined
   let guardiansNew = 0, guardiansMerged = 0;
   if (kind === 'children') {
+    // Every key (phone, email) of a guardian must point at the same person; each guardian is registered before the
+    // next one (also the second guardian of the same row) is checked, and a newly seen phone/email of a matched
+    // guardian becomes an alias of that guardian. A quarantined row registers nothing.
     const known = new Map(); // key → {name, ref}
-    for (const g of db.guardians) for (const k of existingGuardianKeys(g)) known.set(k, { name: g, ref: { existingId: g.id } });
+    for (const g of db.guardians) { const ref = { existingId: g.id }; for (const k of existingGuardianKeys(g)) known.set(k, { name: g, ref }); }
+    const refId = ref => (ref.existingId ? `x:${ref.existingId}` : `f:${ref.fileKey}`);
     const fileRefs = new Set();
     for (const r of ok()) {
-      const refs = [];
+      const refs = [], added = [];
       let clash = null;
       for (const g of r.target.guardians) {
-        const hit = guardianKeys(g).map(k => known.get(k)).find(Boolean);
+        const hits = guardianKeys(g).map(k => known.get(k)).filter(Boolean);
+        if (new Set(hits.map(h => refId(h.ref))).size > 1) { clash = `guardian ${g.firstName}'s phone and email belong to two different guardians`; break; }
+        const hit = hits[0];
         if (hit && !sameName(hit.name, g)) { clash = `guardian ${g.firstName} shares a phone/email with ${hit.ref.existingId ? 'an existing guardian' : 'another guardian in this file'} under a different name`; break; }
-        refs.push(hit ? hit.ref : null);
+        const ref = hit ? hit.ref : { fileKey: guardianKeys(g)[0] };
+        for (const k of guardianKeys(g)) if (!known.has(k)) { known.set(k, { name: hit ? hit.name : g, ref }); added.push(k); }
+        refs.push(ref);
       }
-      if (clash) { Object.assign(r, { status: 'quarantined', reason: `conflict: ${clash}` }); continue; }
+      if (clash) { for (const k of added) known.delete(k); Object.assign(r, { status: 'quarantined', reason: `conflict: ${clash}` }); continue; }
       r.target.guardians.forEach((g, i) => {
-        let ref = refs[i];
-        if (!ref) { ref = { fileKey: guardianKeys(g)[0] }; for (const k of guardianKeys(g)) known.set(k, { name: g, ref }); }
+        const ref = refs[i];
         g.ref = ref;
         if (ref.existingId) { guardiansMerged++; }
         else if (fileRefs.has(ref.fileKey)) guardiansMerged++;
@@ -260,12 +281,13 @@ export function validateRows(db, { kind, mapping, rows }, { today, batchId = nul
 
 /**
  * Apply the 'ok' rows of a validation. Re-validates first (the preview may be stale).
- * @returns {{inputRows, ok, quarantined, duplicate, created:{students, guardians, invoices}, merged:{guardians}, openingBalancePaise, sourceOutstandingPaise, rows}}
+ * @returns {{inputRows, ok, quarantined, duplicate, created:{students, guardians, invoices}, merged:{guardians}, updated:{guardianContacts}, openingBalancePaise, sourceOutstandingPaise, rows}}
  */
 export function applyRows(db, { kind, mapping, rows }, batchId, ctx) {
   const v = validateRows(db, { kind, mapping, rows }, { today: ctx.today, batchId });
   const created = { students: 0, guardians: 0, invoices: 0 };
   const merged = { guardians: 0 };
+  const updated = { guardianContacts: 0 };
   let openingBalancePaise = 0;
   if (kind === 'children') {
     const fileGuardian = new Map(); // fileKey → guardian id
@@ -276,8 +298,13 @@ export function applyRows(db, { kind, mapping, rows }, batchId, ctx) {
       const gids = [];
       for (const g of t.guardians) {
         let gid = g.ref.existingId || fileGuardian.get(g.ref.fileKey);
-        if (gid) merged.guardians++;
-        else {
+        if (gid) {
+          merged.guardians++;
+          // a phone/email first seen on this row is saved where the guardian has none (never overwritten)
+          const gd = byId(db.guardians, gid);
+          if (!gd.phone && g.phone) { gd.phone = g.phone; updated.guardianContacts++; }
+          if (!gd.email && g.email) { gd.email = g.email; updated.guardianContacts++; }
+        } else {
           gid = newId('grd');
           fileGuardian.set(g.ref.fileKey, gid);
           db.guardians.push({ id: gid, firstName: g.firstName, lastName: g.lastName, relation: g.relation, phone: g.phone || '', email: g.email || '', studentIds: [], source: 'import', importBatchId: batchId });
@@ -308,10 +335,10 @@ export function applyRows(db, { kind, mapping, rows }, batchId, ctx) {
     if (openingBalancePaise !== v.sourceOutstandingPaise) fail('VALIDATION', 'Opening balances do not reconcile with the source outstanding');
   }
   const result = { batchId, kind, inputRows: v.counts.inputRows, ok: v.counts.ok, quarantined: v.counts.quarantined, duplicate: v.counts.duplicate,
-    created, merged, openingBalancePaise, sourceOutstandingPaise: v.sourceOutstandingPaise,
+    created, merged, updated, openingBalancePaise, sourceOutstandingPaise: v.sourceOutstandingPaise,
     rows: v.rows.map(r => ({ rowNo: r.rowNo, line: r.line, status: r.status, reason: r.reason })) };
   appendAudit(db, ctx, { entity: 'import', entityId: batchId || '-', action: 'commit',
-    summary: `${kind}: input ${result.inputRows}, ok ${result.ok}, quarantined ${result.quarantined}, duplicate ${result.duplicate}; created students ${created.students}, guardians ${created.guardians}, invoices ${created.invoices}; merged guardians ${merged.guardians}; opening balances ${openingBalancePaise} paise` });
+    summary: `${kind}: input ${result.inputRows}, ok ${result.ok}, quarantined ${result.quarantined}, duplicate ${result.duplicate}; created students ${created.students}, guardians ${created.guardians}, invoices ${created.invoices}; merged guardians ${merged.guardians} (contacts added ${updated.guardianContacts}); opening balances ${openingBalancePaise} paise` });
   return result;
 }
 
@@ -348,6 +375,35 @@ export function commitBatch(db, batchId, ctx) {
   const r = applyRows(db, { kind: b.kind, mapping: b.mapping, rows: batchRows(db, batchId) }, batchId, ctx);
   Object.assign(b, { status: 'committed', committedAt: ctx.now, committedBy: ctx.actor.id, result: { ...r, rows: undefined } });
   return r;
+}
+
+/**
+ * Erasure: blank one guardian's columns (name, relation, phone, email) in staged/committed children import rows.
+ * A guardian slot matches by phone or email, or by name on a row of one of their children (admissionNos).
+ * @returns {number} rows changed
+ */
+export function redactGuardianInImportRows(db, { firstName, lastName, phone, email }, admissionNos) {
+  const myPhone = normalisePhone(phone);
+  const myEmail = String(email || '').trim().toLowerCase();
+  let changed = 0;
+  for (const r of db.importRows || []) {
+    const b = byId(db.importBatches || [], r.batchId);
+    if (!b || b.kind !== 'children' || !r.values) continue;
+    const m = b.mapping || {};
+    const val = f => (m[f] ? String(r.values[m[f]] ?? '').trim() : '');
+    let hit = false;
+    for (const n of [1, 2]) {
+      const nm = splitName(val(`guardian${n}Name`));
+      const same = (myPhone && normalisePhone(val(`guardian${n}Phone`)) === myPhone)
+        || (myEmail && val(`guardian${n}Email`).toLowerCase() === myEmail)
+        || (nm && sameName(nm, { firstName, lastName }) && admissionNos.includes(val('admissionNo')));
+      if (!same) continue;
+      for (const f of ['Name', 'Relation', 'Phone', 'Email']) if (m[`guardian${n}${f}`] && m[`guardian${n}${f}`] in r.values) r.values[m[`guardian${n}${f}`]] = '';
+      hit = true;
+    }
+    if (hit) changed++;
+  }
+  return changed;
 }
 
 export const batchList = db => [...db.importBatches].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))

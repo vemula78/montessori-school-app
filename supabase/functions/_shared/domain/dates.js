@@ -62,8 +62,19 @@ export function formatDate(iso) {
   return `${pad2(p.d)}-${MONTHS[p.m - 1]}-${p.y}`;
 }
 
-/** Local calendar date of `now` (local getters, not toISOString). */
+// The real app's business dates are the school's (IST), whatever zone the device is in: the real-app api sets this
+// once (setBusinessZone(IST_OFFSET_MIN)); the demo leaves it null (device-local dates). Server code never relies
+// on it: it calls dateInZone explicitly.
+let businessOffsetMin = null;
+/** offsetMinutes east of UTC for todayISO/tsToLocalDate, or null for the device's own zone. */
+export function setBusinessZone(offsetMinutes) {
+  if (offsetMinutes !== null && !Number.isFinite(offsetMinutes)) throw new TypeError('setBusinessZone needs minutes east of UTC or null');
+  businessOffsetMin = offsetMinutes;
+}
+
+/** Calendar date of `now`: in the business zone when one is set, else local getters (not toISOString). */
 export function todayISO(now = new Date()) {
+  if (businessOffsetMin !== null) return dateInZone(now.getTime(), businessOffsetMin);
   return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
 }
 
@@ -121,7 +132,7 @@ export function dateInZone(ms, offsetMinutes) {
 }
 export const IST_OFFSET_MIN = 330;
 
-/** Local calendar date of a timestamp. */
+/** Calendar date of a timestamp (business zone when set, else local). */
 export function tsToLocalDate(tsIso) {
   return todayISO(new Date(mustMs(tsIso)));
 }

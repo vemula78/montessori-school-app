@@ -158,8 +158,13 @@ async function drawAdmin(ctx, host) {
       const r = await attempt(() => api.admin.dataExport(x.dataset.exportG));
       if (r.ok) { downloadText(`family-data_${todayISO()}.json`, r.value, 'application/json'); toast('Downloaded'); }
     } else if (er) {
-      if (!(await confirmDialog('Erase personal details', 'Replace this parent’s name, phone and email with placeholders? This cannot be undone. Fee numbers and amounts are kept.', { okLabel: 'Erase', kind: 'danger' }))) return;
-      if ((await attempt(() => api.admin.anonymiseGuardian(er.dataset.erase), 'Personal details erased')).ok) ctx.rerender();
+      if (!(await confirmDialog('Erase personal details', 'Erase this parent’s name, phone, email, their own messages and their sign-in? This cannot be undone. Fee numbers and amounts, and the children’s school records, are kept.', { okLabel: 'Erase', kind: 'danger' }))) return;
+      const r = await attempt(() => api.admin.anonymiseGuardian(er.dataset.erase));
+      if (!r.ok) return;
+      // the sign-in and gateway copies are removed after the erasure is saved; a failure there is shown, and erasing again retries it
+      const errs = r.value?.server?.errors || [];
+      toast(errs.length ? `Details erased, but ${errs.length} clean-up step(s) failed: ${errs.join('; ')}. Erase again to retry.` : 'Personal details erased', errs.length ? 'bad' : undefined);
+      ctx.rerender();
     }
   });
 }

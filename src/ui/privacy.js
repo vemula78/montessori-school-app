@@ -37,8 +37,10 @@ export const SECTIONS = [
   { h: 'Online payments', p: [
     'If you pay fees online, the payment is handled by a payment provider (Razorpay). The school receives the amount, the payment reference and the result - never your card, UPI or bank details.',
   ] },
-  { h: 'Where it is kept, and for how long', p: [
-    'Data is stored on cloud servers in India (Mumbai). Fee records are kept for 8 years because the law requires it. Messages, diary notes and attendance are kept for 1 year after your child leaves the school. Bus positions are deleted after 30 days. An audit log of who changed what is kept for the life of the system.',
+  { h: 'Where it is kept, and for how long (draft retention schedule)', p: [
+    'Data is stored on cloud servers in India (Mumbai).',
+    'DRAFT: the retention periods below are a proposed schedule. They are pending the school’s decision, and the app does not yet enforce them automatically (only bus positions are deleted automatically today). Do not rely on them until the school confirms the final schedule.',
+    'Proposed: fee records are kept for 8 years because the law requires it. Messages, diary notes and attendance are kept for 1 year after your child leaves the school. Bus positions are deleted after 30 days. An audit log of who changed what is kept for the life of the system.',
   ] },
   { h: 'Your rights', p: [
     'You may see and download your information (Settings > Download my data), ask the school to correct it, and withdraw any optional consent at any time. Withdrawing the account consent closes your access; fee records the law requires the school to keep are retained, with your personal details erased on request.',

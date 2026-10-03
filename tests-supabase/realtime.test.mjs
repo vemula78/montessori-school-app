@@ -35,7 +35,7 @@ before(async () => {
   // parent B: a fresh sign-in linked (by the service role, as a redeemed invite would) to the route-2 family, with bus_live consent
   parentB = await signIn(`route2-${randomBytes(3).toString('hex')}@example.com`);
   await rest('POST', 'app_users', { user_id: parentB.userId, role: 'parent', guardian_id: 'grd-05', status: 'active' }, 'return=minimal');
-  await rest('POST', 'consents?on_conflict=id', { id: 'cns-rt-grd-05', doc: { id: 'cns-rt-grd-05', guardianId: 'grd-05', studentId: 'stu-09', purpose: 'bus_live', version: 'v1', withdrawnAt: null } }, 'resolution=merge-duplicates,return=minimal');
+  for (const purpose of ['app_account', 'bus_live']) await rest('POST', 'consents?on_conflict=id', { id: `cns-rt-grd-05-${purpose}`, doc: { id: `cns-rt-grd-05-${purpose}`, guardianId: 'grd-05', studentId: 'stu-09', purpose, version: 'v1', withdrawnAt: null } }, 'resolution=merge-duplicates,return=minimal');
   // parent A must have live consent at the start
   const g = await command(parentA.token, 'consent.give', { purposes: ['app_account', 'push', 'bus_live'], version: 'v1' });
   assert.equal(g.status, 200, JSON.stringify(g.data));

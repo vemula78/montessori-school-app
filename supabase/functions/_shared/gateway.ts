@@ -5,7 +5,7 @@
 import { checkKeyMode, razorpayClient } from './razorpay.js';
 import { runCommand } from './persist.ts';
 import { system } from './authz.ts';
-import { rest } from './db.ts';
+import { rest, restAll } from './db.ts';
 import { coded } from './http.ts';
 import { fanOut } from './push.ts';
 
@@ -76,11 +76,14 @@ export async function processEvent(ev: { event: string; payload: any }): Promise
       }
       return { result: 'ok', error: null };
     }
-    if (ev.event === 'refund.created' || ev.event === 'refund.processed') {
+    if (ev.event === 'refund.created' || ev.event === 'refund.processed' || ev.event === 'refund.failed') {
       const rf = p.refund?.entity;
       if (!rf) return { result: 'ignored', error: 'no refund in the event' };
+      // money is booked only for a processed refund; a pending one waits for refund.processed, a failed one never books
+      if (ev.event === 'refund.failed' || rf.status === 'failed') return { result: 'ignored', error: `refund ${rf.id} failed at the gateway; nothing booked` };
       const run = await runCommand('fees.recordGatewayRefund', [{ refund: rf }], system('gateway'));
       if (run.result.pending) return { result: 'pending', error: run.result.reason };
+      if (run.result.skipped) return { result: 'ignored', error: run.result.skipped };
       return { result: 'ok', error: null };
     }
     return { result: 'ignored', error: null };
@@ -97,7 +100,7 @@ export async function settleEvent(row: any) {
 }
 
 async function retryPendingRefunds(rzpPaymentId: string) {
-  const rows = await rest(`gateway_events?result=eq.pending&event=like.refund.*&select=*`);
+  const rows = await restAll(`gateway_events?result=eq.pending&event=like.refund.*&select=*&order=event_id`);
   for (const row of rows || []) {
     if (row.payload?.payload?.refund?.entity?.payment_id === rzpPaymentId) await settleEvent(row);
   }

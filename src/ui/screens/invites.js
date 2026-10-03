@@ -1,12 +1,13 @@
 // Invite codes (real app): the principal or accountant issues a single-use code per family; the parent redeems it
 // together with a child's date of birth after the first email sign-in. Codes are shown once and printed as slips.
 import { esc, fdate, badge, banner, empty, pageHead, confirmDialog, openModal, attempt, toast, errMessage, indexBy, fullName, DASH } from '../components.js';
-import { addSlip, slipCount } from './invites-print.js';
+import { addSlip, slipCount, claimSlips } from './invites-print.js';
 
-const live = (inv) => inv && !inv.redeemedAt && !inv.revokedAt && Date.parse(inv.expiresAt) > Date.now();
+const live = (inv) => inv && !inv.redeemedAt && !inv.revokedAt && inv.status !== 'locked' && Date.parse(inv.expiresAt) > Date.now();
 
 export async function render(ctx) {
   const { api, persona } = ctx;
+  claimSlips(persona.id);
   let guardians, students, invites;
   try {
     [guardians, students, invites] = await Promise.all([api.people.guardians(), api.people.students(), api.admin.invites()]);
@@ -15,6 +16,7 @@ export async function render(ctx) {
     return;
   }
   // who is already signed in and linked (the principal can list sign-ins; fee staff cannot, and see invites only)
+  // only the principal can list sign-ins (for the "Remove access" button); whether a redeemed code is still linked comes with the invite
   let users = [];
   if (persona.role === 'admin') { try { users = await api.admin.users(); } catch { users = []; } }
   const linkedUser = new Map(users.filter((u) => u.guardianId && u.status === 'active').map((u) => [u.guardianId, u]));
@@ -29,16 +31,18 @@ export async function render(ctx) {
     .map((g) => ({ g, names: childNames(g), inv: latest.get(g.id) || null }))
     .filter((r) => !q || fullName(r.g).toLowerCase().includes(q) || r.names.some((n) => n.toLowerCase().includes(q)))
     .sort((a, b) => fullName(a.g).localeCompare(fullName(b.g)));
-  const status = (r) => (r.inv?.redeemedAt || linkedUser.has(r.g.id) ? 'linked' : live(r.inv) ? 'issued' : r.inv ? 'lapsed' : 'none');
+  // 'removed' = the code was used but that sign-in is no longer active (revoked, withdrawn...): the family can be invited again.
+  // A locked code (too many wrong dates of birth) is not live, so it reads as lapsed.
+  const status = (r) => (r.inv?.redeemedAt ? (r.inv.redeemedUserStatus === 'active' ? 'linked' : 'removed') : live(r.inv) ? 'issued' : r.inv ? 'lapsed' : 'none');
   const counts = { linked: 0, issued: 0, lapsed: 0, none: 0 };
-  rows.forEach((r) => { counts[status(r)]++; });
+  rows.forEach((r) => { const st = status(r); counts[st === 'removed' ? 'lapsed' : st]++; });
   const needing = rows.filter((r) => ['none', 'lapsed'].includes(status(r)));
 
   ctx.el.innerHTML = `${pageHead('Invite codes', 'One single-use code per family. Parents link their email with the code and a child’s date of birth.', `${slipCount() ? `<a class="btn" href="#/print/invites">Print slips (${esc(slipCount())})</a>` : ''}`)}
     <div class="grid cols-4" style="margin-bottom:12px">
       <div class="kpi good"><div class="v">${esc(counts.linked)}</div><div class="l">families linked</div></div>
       <div class="kpi"><div class="v">${esc(counts.issued)}</div><div class="l">code issued, waiting</div></div>
-      <div class="kpi ${counts.lapsed ? 'bad' : ''}"><div class="v">${esc(counts.lapsed)}</div><div class="l">code expired or revoked</div></div>
+      <div class="kpi ${counts.lapsed ? 'bad' : ''}"><div class="v">${esc(counts.lapsed)}</div><div class="l">code expired, revoked or access removed</div></div>
       <div class="kpi"><div class="v">${esc(counts.none)}</div><div class="l">no code yet</div></div>
     </div>
     <div class="row" style="margin-bottom:10px">
@@ -49,9 +53,9 @@ export async function render(ctx) {
     ${rows.length ? `<ul class="list card-list" style="margin-top:10px">
       ${rows.map((r) => {
         const st = status(r);
-        const badgeHtml = st === 'linked' ? badge('Linked', 'ok') + (r.inv?.redeemedAt ? ` <small>${fdate(String(r.inv.redeemedAt).slice(0, 10))}</small>` : '') : st === 'issued' ? badge('Code issued', 'info') + ` <small>expires ${fdate(String(r.inv.expiresAt).slice(0, 10))}</small>` : st === 'lapsed' ? badge(r.inv.revokedAt ? 'Revoked' : 'Expired', 'bad') : badge('No code', 'mute');
+        const badgeHtml = st === 'linked' ? badge('Linked', 'ok') + (r.inv?.redeemedAt ? ` <small>${fdate(String(r.inv.redeemedAt).slice(0, 10))}</small>` : '') : st === 'issued' ? badge('Code issued', 'info') + ` <small>expires ${fdate(String(r.inv.expiresAt).slice(0, 10))}</small>` : st === 'removed' ? badge(r.inv.redeemedUserStatus === 'revoked' ? 'Access removed' : 'Not linked', 'bad') : st === 'lapsed' ? badge(r.inv.revokedAt ? 'Revoked' : 'Expired', 'bad') : badge('No code', 'mute');
         return `<li><div class="row between"><div class="grow-text"><div class="item-title">${esc(fullName(r.g))} <small>${esc(r.g.relation || '')}</small></div><small>${esc(r.names.join(', ') || DASH)}</small><div style="margin-top:4px">${badgeHtml}</div></div>
-          <div class="row"><button class="btn sm${st === 'none' || st === 'lapsed' ? ' primary' : ''}" data-issue="${esc(r.g.id)}"${st === 'linked' ? ' disabled title="Already linked"' : ''}>${st === 'issued' ? 'Issue a new code' : 'Issue code'}</button>
+          <div class="row"><button class="btn sm${st === 'none' || st === 'lapsed' || st === 'removed' ? ' primary' : ''}" data-issue="${esc(r.g.id)}"${st === 'linked' ? ' disabled title="Already linked"' : ''}>${st === 'issued' ? 'Issue a new code' : 'Issue code'}</button>
             ${st === 'linked' && linkedUser.has(r.g.id) && persona.role === 'admin' ? `<button class="btn sm ghost" data-revoke="${esc(linkedUser.get(r.g.id).id)}" data-name="${esc(fullName(r.g))}">Remove access</button>` : ''}</div></div></li>`;
       }).join('')}</ul>` : empty(guardians.length ? 'No families match' : 'No families yet', guardians.length ? '' : 'Import the children list first (Import data).')}`;
 

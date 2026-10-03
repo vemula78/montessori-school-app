@@ -9,6 +9,7 @@ import { renderLogin, renderBlocked } from './login.js';
 import { renderInvite } from './invite.js';
 import { renderConsent } from './consent.js';
 import * as push from './push.js';
+import { clearSlips } from './screens/invites-print.js';
 
 const REAL = isRealMode();
 
@@ -190,6 +191,7 @@ let gateOk = false;
 async function signOutNow() {
   if (runner.isRunning()) runner.stop('Trip recording stopped because you signed out.');
   await attempt(() => api.auth.signOut());
+  clearSlips(); // issued invite codes are shown once and must not outlive the sign-in that issued them
   gateOk = false; shell = null; shellFor = null; token += 1; runCleanups();
   document.title = 'School app';
   location.hash = '';
@@ -206,6 +208,7 @@ async function gate() {
   let st;
   try { st = await api.auth.status(); } catch (e) { renderBlocked(root, 'unavailable', { error: e, onRetry: retry, onSignOut: signOutNow }); return false; }
   if (my !== token) return false;
+  if (st.state !== 'active') clearSlips(); // signed out (also by expiry) or not usable: nothing issued earlier stays in memory
   const again = () => { gateOk = false; renderRoute(); };
   switch (st.state) {
     case 'signedOut': renderLogin(root, { onDone: again }); return false;
@@ -248,6 +251,13 @@ async function renderRoute({ keepScroll = false } = {}) {
     ensureShell(persona);
     markActive(root, path);
     shell.screen.innerHTML = `<div class="stack">${empty('Not part of the demo', 'This page exists only in the real school app.')}<a class="btn" href="#/home">Go home</a></div>`;
+    return;
+  }
+
+  // a bare (print) page must pass the same role check as any other screen before it draws anything
+  if (m?.route.bare && !((!REAL && m.route.demoRoles) || m.route.roles).includes(persona.role)) {
+    shell = null; shellFor = null;
+    root.innerHTML = `<div class="main"><div class="stack">${empty('Not available for this persona', `The ${persona.label} persona cannot open this page.`)}<a class="btn" href="#/home">Go home</a></div></div>`;
     return;
   }
 

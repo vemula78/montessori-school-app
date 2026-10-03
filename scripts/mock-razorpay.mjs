@@ -13,9 +13,11 @@
 // Test controls (no auth; local only):
 //   POST /__mock/pay {orderId, amount?, status?:'captured'|'failed', createdAt?}
 //        → {payment, signature}  (signature = HMAC(order|payment, key secret), as Checkout returns it)
-//   POST /__mock/refund {paymentId, amount, createdAt?} → refund entity
+//   POST /__mock/refund {paymentId, amount, createdAt?, status?:'processed'|'pending'|'failed'} → refund entity
 //   GET  /__mock/push-log               → recorded push deliveries [{path, headers, bytes}]
-//   POST /push/<anything>               → 201 and recorded;  POST /push/gone/<…> → 410 (subscription expired)
+//   POST /push/<anything>               → 201 and recorded;  POST /push/gone/<…> → 410 (subscription expired);
+//   POST /push/fail/<…> → 500 (a transient push-service failure)
+// Orders enforce Razorpay's contract that `receipt` is unique.
 // Edge functions reach this server from Docker (Colima) at http://host.lima.internal:<port>
 // (fallback http://host.docker.internal:<port>), set as RAZORPAY_API_BASE in supabase/.env.local.
 
@@ -56,6 +58,8 @@ export function writeEnvFile({ force = false, host = 'host.lima.internal' } = {}
     `VAPID_PUBLIC_KEY=${v.publicKey}`,
     `VAPID_PRIVATE_KEY=${v.privateKey}`,
     'VAPID_SUBJECT=mailto:office@example.com',
+    // push deliveries go only to known push services; this local mock origin is the one exception (tests only)
+    `PUSH_TEST_ORIGINS=http://${host}:${MOCK_PORT}`,
   ];
   writeFileSync(ENV_FILE, `${lines.join('\n')}\n`, { mode: 0o600 });
   return { written: true, file: ENV_FILE };
@@ -81,7 +85,7 @@ export function startMock({ port = MOCK_PORT, env = readEnvFile() } = {}) {
       const path = url.pathname;
       if (path.startsWith('/push/')) {
         pushLog.push({ path, headers: { ...req.headers }, bytes: raw.length });
-        return send(res, path.startsWith('/push/gone/') ? 410 : 201, {});
+        return send(res, path.startsWith('/push/gone/') ? 410 : path.startsWith('/push/fail/') ? 500 : 201, {});
       }
       if (path === '/__mock/push-log') return send(res, 200, pushLog);
       if (path === '/__mock/pay' && req.method === 'POST') {
@@ -99,7 +103,7 @@ export function startMock({ port = MOCK_PORT, env = readEnvFile() } = {}) {
       if (path === '/__mock/refund' && req.method === 'POST') {
         const p = payments.get(body.paymentId);
         if (!p) return rzpError(res, 404, 'payment not found');
-        const r = { id: `rfnd_${alnum(14)}`, entity: 'refund', amount: body.amount, currency: 'INR', payment_id: p.id, status: 'processed', created_at: body.createdAt ?? now() };
+        const r = { id: `rfnd_${alnum(14)}`, entity: 'refund', amount: body.amount, currency: 'INR', payment_id: p.id, status: body.status || 'processed', created_at: body.createdAt ?? now() };
         refunds.set(r.id, r);
         return send(res, 200, r);
       }
@@ -107,6 +111,7 @@ export function startMock({ port = MOCK_PORT, env = readEnvFile() } = {}) {
       if (path === '/v1/orders' && req.method === 'POST') {
         if (!Number.isSafeInteger(body.amount) || body.amount < 100) return rzpError(res, 400, 'amount must be an integer ≥ 100 paise');
         if (body.currency !== 'INR') return rzpError(res, 400, 'currency must be INR');
+        if (body.receipt != null && [...orders.values()].some(o => o.receipt === body.receipt)) return rzpError(res, 400, 'receipt must be unique for every order');
         const o = { id: `order_${alnum(14)}`, entity: 'order', amount: body.amount, amount_paid: 0, currency: 'INR', receipt: body.receipt ?? null,
           status: 'created', attempts: 0, notes: body.notes || {}, created_at: now() };
         orders.set(o.id, o);

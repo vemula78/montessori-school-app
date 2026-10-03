@@ -222,5 +222,5 @@ test('cron-daily: secret required; runs every step and reports counts', async ()
   for (const k of ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites']) assert.ok(rep[k] && !rep[k].error, `${k}: ${JSON.stringify(rep[k])}`);
   assert.ok(rep.reminders.invoicesChecked > 0);
   const again = await fn('cron-daily', {}, null, { 'X-Cron-Secret': env().CRON_SECRET });
-  assert.equal(again.data.report.reminders.remindersRecorded, 0, 'reminders are deduped');
+  assert.equal(again.data.report.reminders.claimed, 0, 'reminders are deduped');
 });

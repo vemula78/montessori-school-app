@@ -3,6 +3,8 @@
 import { esc, fdate, empty, DASH } from '../components.js';
 
 const slips = [];
+const STAFF = ['admin', 'accountant']; // same as the route table: this bare page must not depend on the router having checked
+let owner = null; // the signed-in person who issued the slips in memory
 
 /** Remember an issued code so it can be printed. {guardianName, children:[firstName], code, expiresAt} */
 export function addSlip(s) {
@@ -11,9 +13,18 @@ export function addSlip(s) {
   slips.push(s);
 }
 export const slipCount = () => slips.length;
-export const clearSlips = () => { slips.length = 0; };
+export const clearSlips = () => { slips.length = 0; owner = null; };
+/** Slips belong to the person who issued them: anyone else asking for them (or counting them) starts with none. */
+export function claimSlips(personaId) {
+  if (owner !== personaId) { slips.length = 0; owner = personaId; }
+}
 
 export async function render(ctx) {
+  if (!STAFF.includes(ctx.persona?.role)) {
+    ctx.el.innerHTML = `${empty('Not available for this persona', 'Invite slips can be printed only by the principal or the accountant.')}<p><a class="btn" href="#/home">Go home</a></p>`;
+    return;
+  }
+  claimSlips(ctx.persona.id);
   const school = ctx.db?.school?.name || 'School';
   const url = location.href.split('#')[0];
   if (!slips.length) {

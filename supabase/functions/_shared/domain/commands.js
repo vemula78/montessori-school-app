@@ -12,6 +12,9 @@
 //   serverOnly               true → the demo api refuses it (needs tables that only exist server-side)
 //   readOnly                 true → the server runs it but never persists (e.g. import.preview)
 //   allowUnlinked            true → may run for a signed-in user without an app_users link
+//   demoOnly                 true → the demo runs it; the server refuses it (e.g. the mock payment: no money moves)
+//   beforeConsent            true → a parent may run it before giving app_account consent (consent itself, data access);
+//                            every other parent command only sees children with current app_account consent
 // args is always the positional argument array of the api method.
 
 import { fail, newId } from './ids.js';
@@ -33,6 +36,8 @@ export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
 export const CONSENT_PURPOSES = ['app_account', 'push', 'bus_live'];
 export const CONSENT_VERSION = 'v1';
+export const MAX_INVITE_FAILURES = 5; // wrong dates of birth per invite code, across all accounts
+export const ERASED_MESSAGE = '[message erased at the guardian\'s request]';
 
 // ---------------------------------------------------------------- personas
 
@@ -224,9 +229,9 @@ export const COMMANDS = {
   'transport.recordPosition': {
     slice: 'transport', load: ([tripId]) => ({ tripId }),
     authorize: (p, db, [tripId]) => { allow(p, 'admin', 'driver'); driverTrip(p, db, tripId); },
-    run(db, [tripId, fix]) {
-      const r = T.recordPosition(db, tripId, fix || {});
-      // rejected: why a fix was refused (duplicate/out-of-order)
+    run(db, [tripId, fix], ctx) {
+      const r = T.recordPosition(db, tripId, fix || {}, ctx);
+      // rejected: why a fix was refused (future/duplicate/out-of-order)
       return { trip: tripOut(db, r.trip), newEvents: r.newEvents, rejected: r.rejected ?? null };
     },
   },
@@ -263,7 +268,7 @@ export const COMMANDS = {
   'fees.cancelPayment': { slice: 'ledger', authorize: fin, run: (db, [id, reason], ctx) => F.cancelPayment(db, id, reason, ctx) },
   'fees.refund': { slice: 'ledger', authorize: fin, run: (db, [a], ctx) => F.refund(db, a || {}, ctx) },
   'fees.mockOnlinePayment': {
-    slice: 'ledger',
+    slice: 'ledger', demoOnly: true, // records a payment with no money moving: never reachable in the real app
     authorize: (p, db, [{ studentId } = {}]) => { allow(p, 'admin', 'accountant', 'parent'); mustSee(p, db, studentId); },
     run: (db, [{ studentId, invoiceIds } = {}], ctx, p) => F.mockOnlinePayment(db, { studentId, invoiceIds, guardianId: p.role === 'parent' ? p.guardianId : null }, ctx),
   },
@@ -339,7 +344,7 @@ export const COMMANDS = {
       const parsed = G.parseSettlementCsv(text);
       const m = G.mergeSettlementLines(db.settlementLines, parsed);
       db.settlementLines.push(...m.added);
-      const res = { inputRows: parsed.inputRows, imported: m.imported, duplicate: m.duplicate, rejected: parsed.rejected };
+      const res = { inputRows: parsed.inputRows, imported: m.imported, duplicate: m.duplicate, rejected: [...parsed.rejected, ...m.rejected].sort((a, b) => a.line - b.line) };
       if (res.imported + res.duplicate + res.rejected.length !== res.inputRows) fail('VALIDATION', 'Settlement import counts do not reconcile');
       appendAudit(db, ctx, { entity: 'settlement', entityId: '-', action: 'import', summary: `input ${res.inputRows}, imported ${res.imported}, duplicate ${res.duplicate}, rejected ${res.rejected.length}` });
       return res;
@@ -380,23 +385,51 @@ export const COMMANDS = {
       return { ...s, name: fullName(s) };
     },
   },
-  /** DPDP erasure: names/phone/email replaced, ledger numbers and amounts kept (fee records are retained). */
+  /**
+   * DPDP erasure of a guardian. Erased: the guardian's name/phone/email/relation, the messages they wrote, their
+   * sign-in links (revoked here; the command function then deletes the sign-in itself, its push devices and the
+   * payer details in stored gateway events), their open invites, and their columns in raw import rows.
+   * Retained (and recorded on the request, with the reason): fee records, the children's school records, staff
+   * messages, consent records and audit rows. Re-running it retries the server steps.
+   */
   'people.anonymiseGuardian': {
-    slice: 'ledger', serverOnly: true, authorize: p => allow(p, 'admin'),
+    slice: 'erasure', serverOnly: true, authorize: p => allow(p, 'admin'), load: () => ({ importRowsAll: true }),
     run(db, [guardianId], ctx) {
       const g = byId(db.guardians, guardianId);
       if (!g) fail('NOT_FOUND', 'Guardian not found');
-      const n = db.guardians.filter(x => /^Erased-\d+$/.test(x.firstName)).length + 1;
-      Object.assign(g, { firstName: `Erased-${n}`, lastName: '', phone: '', email: '' });
-      for (const r of db.erasureRequests || []) if (r.guardianId === guardianId && r.status === 'open') Object.assign(r, { status: 'done', doneAt: ctx.now, doneBy: ctx.actor.id });
-      appendAudit(db, ctx, { entity: 'guardian', entityId: g.id, action: 'anonymise', summary: `guardian personal details erased (Erased-${n}); ledger kept` });
-      return { guardianId: g.id, label: `Erased-${n}` };
+      const was = /^Erased-\d+$/.test(g.firstName);
+      const n = was ? Number(g.firstName.slice(7)) : db.guardians.filter(x => /^Erased-\d+$/.test(x.firstName)).length + 1;
+      const label = `Erased-${n}`;
+      const kids = childrenOf(db, g.id);
+      const prior = { firstName: g.firstName, lastName: g.lastName, phone: g.phone, email: g.email };
+      Object.assign(g, { firstName: label, lastName: '', phone: '', email: '', relation: '' });
+      const threadIds = new Set(db.threads.filter(t => t.guardianId === g.id).map(t => t.id));
+      let messages = 0;
+      for (const m of db.messages) {
+        if (threadIds.has(m.threadId) && m.senderRole === 'parent' && m.senderId === g.id && m.body !== ERASED_MESSAGE) { m.body = ERASED_MESSAGE; messages++; }
+      }
+      const revokedUserIds = [];
+      for (const u of db.appUsers || []) if (u.guardianId === g.id) { u.status = 'revoked'; revokedUserIds.push(u.id); }
+      let invitesRevoked = 0;
+      for (const i of db.invites || []) if (i.guardianId === g.id && !i.redeemedAt && !i.revokedAt) { i.revokedAt = ctx.now; invitesRevoked++; }
+      const importRows = was ? 0 : I.redactGuardianInImportRows(db, prior, kids.map(k => k.admissionNo));
+      const erased = { guardianDetails: true, messages, signIns: revokedUserIds.length, invitesRevoked, importRows };
+      const retained = [
+        `Fee records (invoices, payments, refunds, receipts) are kept as the law requires; the payer now shows as ${label}.`,
+        "The children's own school records (enrolment, attendance, diary, fees) stay under the school's retention schedule.",
+        "Messages written by school staff in this guardian's conversations are kept; the guardian's own messages were erased.",
+        'Consent records are kept as evidence of what was agreed and when (they carry ids, not names).',
+        'Audit log entries are kept; they carry ids and amounts, not names.',
+      ];
+      for (const r of db.erasureRequests || []) if (r.guardianId === guardianId && r.status === 'open') Object.assign(r, { status: 'done', doneAt: ctx.now, doneBy: ctx.actor.id, erased, retained });
+      appendAudit(db, ctx, { entity: 'guardian', entityId: g.id, action: 'anonymise', summary: `guardian erased (${label}): ${messages} message(s), ${revokedUserIds.length} sign-in(s), ${invitesRevoked} invite(s), ${importRows} import row(s); ledger kept` });
+      return { guardianId: g.id, label, revokedUserIds, erased, retained };
     },
   },
 
   // ---- account: consent, invites (server only: these tables do not exist in the demo document)
   'consent.give': {
-    slice: 'account', serverOnly: true, authorize: p => allow(p, 'parent'),
+    slice: 'account', serverOnly: true, beforeConsent: true, authorize: p => allow(p, 'parent'),
     /** give({purposes, version, textHash?}) — textHash: optional SHA-256 hex of the notice text the parent saw. */
     run(db, [{ purposes, version, textHash = null } = {}], ctx, p) {
       if (version !== CONSENT_VERSION) fail('VALIDATION', `Unknown privacy notice version: ${version}`);
@@ -423,7 +456,7 @@ export const COMMANDS = {
     },
   },
   'consent.withdraw': {
-    slice: 'account', serverOnly: true, authorize: p => allow(p, 'parent'),
+    slice: 'account', serverOnly: true, beforeConsent: true, authorize: p => allow(p, 'parent'),
     run(db, [purpose], ctx, p) {
       if (!CONSENT_PURPOSES.includes(purpose)) fail('VALIDATION', `Unknown purpose: ${purpose}`);
       let n = 0;
@@ -450,11 +483,17 @@ export const COMMANDS = {
   },
   'admin.invites': {
     slice: 'account', serverOnly: true, readOnly: true, authorize: p => allow(p, 'admin', 'accountant'),
-    run: (db, args, ctx) => (db.invites || []).map(i => ({
-      id: i.id, guardianId: i.guardianId, guardianName: fullName(byId(db.guardians, i.guardianId)), createdAt: i.createdAt, createdBy: i.createdBy,
-      expiresAt: i.expiresAt, redeemedAt: i.redeemedAt, revokedAt: i.revokedAt, failedAttempts: i.failedAttempts || 0,
-      status: i.redeemedAt ? 'redeemed' : i.revokedAt ? 'revoked' : tsToMs(i.expiresAt) < tsToMs(ctx.now) ? 'expired' : 'open',
-    })).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
+    // redeemedUserStatus: for a redeemed code, the redeeming sign-in's link status now ('active' | 'revoked' |
+    // 'withdrawn' | 'pending'), or 'missing' when that sign-in no longer links this family; null when not redeemed.
+    run: (db, args, ctx) => (db.invites || []).map(i => {
+      const u = i.redeemedBy ? (db.appUsers || []).find(x => x.id === i.redeemedBy && x.guardianId === i.guardianId) : null;
+      return {
+        id: i.id, guardianId: i.guardianId, guardianName: fullName(byId(db.guardians, i.guardianId)), createdAt: i.createdAt, createdBy: i.createdBy,
+        expiresAt: i.expiresAt, redeemedAt: i.redeemedAt, revokedAt: i.revokedAt, failedAttempts: i.failedAttempts || 0,
+        status: i.redeemedAt ? 'redeemed' : i.revokedAt ? 'revoked' : (i.failedAttempts || 0) >= MAX_INVITE_FAILURES ? 'locked' : tsToMs(i.expiresAt) < tsToMs(ctx.now) ? 'expired' : 'open',
+        redeemedUserStatus: i.redeemedBy ? (u ? u.status : 'missing') : null,
+      };
+    }).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
   },
   'admin.revokeInvite': {
     slice: 'account', serverOnly: true, authorize: p => allow(p, 'admin', 'accountant'),
@@ -477,7 +516,8 @@ export const COMMANDS = {
   },
   /** DPDP access request: a guardian's data as JSON — the principal for anyone, a parent for themself only. Audited. */
   'admin.dataExport': {
-    slice: 'export', serverOnly: true, load: () => ({ attendanceAll: true, diaryAll: true }),
+    slice: 'export', serverOnly: true, beforeConsent: true,
+    load: ([guardianId]) => ({ attendanceAll: true, diaryAll: true, tripsAll: true, importRowsAll: true, exportGuardianId: String(guardianId ?? '') }),
     authorize(p, db, [guardianId]) {
       allow(p, 'admin', 'parent');
       if (p.role === 'parent' && guardianId !== p.guardianId) deny('You can download only your own data');
@@ -504,7 +544,7 @@ export const COMMANDS = {
    * Failed attempts are recorded (and counted) even though the call fails: run returns {failure} instead of throwing.
    */
   'auth.redeemInvite': {
-    slice: 'account', serverOnly: true, allowUnlinked: true,
+    slice: 'account', serverOnly: true, allowUnlinked: true, beforeConsent: true,
     authorize(p, db, args, ctx) {
       if (p) fail('VALIDATION', 'This account is already linked');
       const recent = (db.auditLog || []).filter(r => r.entity === 'invite' && r.action === 'redeemFailed' && r.actorId === ctx.userId).length;
@@ -515,6 +555,8 @@ export const COMMANDS = {
       const inv = (db.invites || []).find(i => i.codeHash === ctx.inviteCodeHash);
       if (!inv || inv.revokedAt) return failure('Invite code not recognised');
       if (inv.redeemedAt) return failure('This invite code has already been used');
+      // per code, whichever accounts tried: guessing dates of birth across many sign-ins does not get past this
+      if ((inv.failedAttempts || 0) >= MAX_INVITE_FAILURES) return failure(`This invite code is locked after ${MAX_INVITE_FAILURES} wrong dates of birth; ask the school office for a new code`);
       if (tsToMs(inv.expiresAt) < tsToMs(ctx.now)) return failure('This invite code has expired; ask the school office for a new one');
       const kids = childrenOf(db, inv.guardianId);
       if (!kids.some(k => k.dob === childDob)) {
@@ -557,10 +599,41 @@ export const SLICES = {
   people: { reads: [...BASE, 'invoices', 'importBatches'], writes: ['importBatches', 'importRows'] },
   account: { reads: [...BASE, 'consents', 'invites', 'appUsers', 'erasureRequests'], writes: ['guardians', 'consents', 'invites', 'appUsers', 'erasureRequests'] },
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
-  export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents'], writes: [] },
+  export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
+    'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders'], writes: [] },
+  erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows'],
+    writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows'] },
 };
 /** Server-only collections (not part of the Phase 1 Db document). */
-export const SERVER_COLLECTIONS = ['consents', 'invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines'];
+export const SERVER_COLLECTIONS = ['consents', 'invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders'];
+
+/**
+ * Other slices whose revision must also be checked (and moved) when a command of slice `primary` changes these
+ * collections: every slice that writes one of them, so two slices can never overwrite each other's copy of the
+ * same row (finding 13). A staff change also moves app_users (role), which the account slice writes.
+ * Transport is guarded per route and shares no collection with any other slice.
+ */
+export function guardSlices(primary, changedCollections) {
+  const changed = new Set(changedCollections);
+  const out = new Set();
+  for (const [name, sl] of Object.entries(SLICES)) {
+    if (name === primary || name === 'transport') continue;
+    if (sl.writes.some(w => changed.has(w))) out.add(name);
+  }
+  if (changed.has('staff') && primary !== 'account') out.add('account');
+  return [...out].sort();
+}
+
+/**
+ * The server-side parent persona for a command: only children whose guardian has current app_account consent for
+ * them (finding 6). Commands marked beforeConsent use the full persona.
+ */
+export function consentScopedPersona(db, p, consents) {
+  const ok = new Set((consents || []).filter(c => c.guardianId === p.guardianId && c.purpose === 'app_account' && c.version === CONSENT_VERSION && !c.withdrawnAt).map(c => c.studentId));
+  const studentIds = p.studentIds.filter(id => ok.has(id));
+  return { ...p, studentIds, activeStudentIds: (p.activeStudentIds || []).filter(id => ok.has(id)),
+    programIds: [...new Set(studentIds.map(id => byId(db.students, id)?.programId).filter(Boolean))] };
+}
 
 /** Revision key: transport is guarded per route so two buses never conflict with each other. */
 export function revKey(name, db, args) {
@@ -581,4 +654,3 @@ export function execute(name, db, args, ctx, p) {
   cmd.authorize(p, db, args, ctx);
   return cmd.run(db, args, ctx, p);
 }
-

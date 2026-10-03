@@ -4,23 +4,33 @@
 //   live    realtime postgres_changes (trip feed + nudges), refetch on tab focus
 // Loaded only when app/index.html defined window.__APP_CONFIG__; the demo never loads this file.
 // It receives createSurface/ApiError from index.js as arguments (no import back: index.js awaits this module).
+// Business dates ("today") are the school's (IST) on every device: setBusinessZone below.
+// Every write carries a request id; a retry of the same write (network failure) can never record it twice, and a
+// write that was saved is never reported as failed because the refetch afterwards failed.
+// A snapshot response is applied only if it is the newest and the signed-in user has not changed meanwhile.
 
-import { todayISO, nowISO } from '../domain/dates.js';
+import { todayISO, nowISO, addDays, setBusinessZone, IST_OFFSET_MIN } from '../domain/dates.js';
 import * as T from '../domain/transport.js';
 import { tripOut, consentStatus, allow, mustRoute, STAFF_SEES_ALL } from '../domain/commands.js';
 import { makeClient, functionCaller } from './supabase/client.js';
 import { fetchSnapshot } from './supabase/snapshot.js';
 import { subscribeNudges, subscribeTripFeed } from './supabase/realtime.js';
 
-export async function createRemoteApi(config, { createSurface, ApiError, toApiError, op }) {
-  const sb = await makeClient(config);
-  const call = functionCaller(sb, config, ApiError);
+/** deps.sb / deps.call: test doubles for the supabase client and the function caller (tests only). */
+export async function createRemoteApi(config, { createSurface, ApiError, toApiError, op, sb: sbTest = null, call: callTest = null }) {
+  setBusinessZone(IST_OFFSET_MIN);
+  const sb = sbTest || await makeClient(config);
+  const call = callTest || functionCaller(sb, config, ApiError);
   const clock = () => new Date();
   const listeners = new Set();
-  let snap = { status: 'signedOut', db: null, persona: null, me: null };
+  const SIGNED_OUT = () => ({ status: 'signedOut', db: null, persona: null, me: null });
+  let snap = SIGNED_OUT();
   let email = null;
   let readyPromise = null;
   let stopNudges = null;
+  let gen = 0;        // bumped whenever the signed-in user changes: older snapshot responses are dropped
+  let seq = 0, applied = 0; // refresh order: an older response never overwrites a newer one
+  const newRequestId = () => (globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
   const info = () => ({
     status: snap.db ? 'ok' : 'missing', mode: 'supabase', authState: snap.status, unsaved: false, writeFailed: false,
@@ -29,12 +39,21 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   });
   const emit = () => { const i = info(); for (const fn of listeners) { try { fn(snap.db, i); } catch (e) { console.error(e); } } };
 
+  const sessionUser = async () => { const { data } = await sb.auth.getSession(); return data && data.session ? data.session.user : null; };
   async function refresh() {
-    const { data } = await sb.auth.getSession();
-    const session = data && data.session;
-    email = session && session.user ? session.user.email : null;
-    if (!session) { snap = { status: 'signedOut', db: null, persona: null, me: null }; emit(); return snap; }
-    snap = await fetchSnapshot(sb, ApiError);
+    const myGen = gen, mySeq = ++seq;
+    const user = await sessionUser();
+    if (!user) {
+      if (myGen === gen && mySeq > applied) { applied = mySeq; email = null; snap = SIGNED_OUT(); emit(); }
+      return snap;
+    }
+    const next = await fetchSnapshot(sb, ApiError);
+    // drop a response that started under another sign-in, or that a newer refresh has already overtaken
+    const still = await sessionUser();
+    if (myGen !== gen || !still || still.id !== user.id || mySeq < applied) return snap;
+    applied = mySeq;
+    email = user.email || null;
+    snap = next;
     if (snap.status === 'active' && !stopNudges) stopNudges = subscribeNudges(sb, () => refresh().catch(e => console.error(e)));
     emit();
     return snap;
@@ -49,8 +68,16 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     return snap.persona;
   }
   const command = async (name, args, { reload = true } = {}) => {
-    const r = await call('command', { name, args });
-    if (reload) await refresh();
+    const body = { name, args, requestId: newRequestId() };
+    let r;
+    try { r = await call('command', body); } catch (e) {
+      // no answer (offline/timeout): the server may or may not have saved it; the same request id makes the retry safe
+      if (!e || e.code !== 'OFFLINE') throw e;
+      r = await call('command', body);
+    }
+    if (reload) {
+      try { await refresh(); } catch (e) { console.error('saved, but the refetch failed:', toApiError(e)); }
+    }
     return r.result;
   };
   const cmd = name => op((...args) => command(name, args));
@@ -59,19 +86,50 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   const surface = createSurface({ db, me, clock, cmd });
   const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers } = surface;
 
+  // ---------------- audit: read from audit_log (RLS: principal, accountant), never from the snapshot ----------------
+  audit.list = op(async ({ entity, entityId, limit = 100 } = {}) => {
+    allow(me(), 'admin', 'accountant');
+    let q = sb.from('audit_log').select('doc').order('ts', { ascending: false }).limit(Math.max(1, Math.min(Number(limit) || 100, 1000)));
+    if (entity) q = q.eq('entity', entity);
+    if (entityId) q = q.eq('doc->>entityId', entityId);
+    const { data, error } = await q;
+    if (error) throw new ApiError('OFFLINE', `Could not load the audit log (${error.message})`);
+    return (data || []).map(r => r.doc);
+  });
+
   // ---------------- transport: positions come from trip_positions, never from the snapshot ----------------
   const tripOfRoute = (d, routeId) => T.activeTripFor(d, routeId)
     || d.trips.filter(t => t.routeId === routeId && t.date === todayISO(clock())).sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))[0] || null;
+  /** The route's trips of yesterday and today as the server has them now (RLS-scoped), with their child events. */
+  async function freshTrips(routeId) {
+    const { data, error } = await sb.from('trips').select('doc').eq('route_id', routeId).gte('date', addDays(todayISO(clock()), -1));
+    if (error) throw new ApiError('OFFLINE', `Could not load the bus status (${error.message})`);
+    const ids = (data || []).map(r => r.doc.id);
+    let evs = [];
+    if (ids.length) {
+      const r = await sb.from('trip_child_events').select('trip_id,seq,doc').in('trip_id', ids).order('seq');
+      if (r.error) throw new ApiError('OFFLINE', `Could not load the bus status (${r.error.message})`);
+      evs = r.data || [];
+    }
+    return (data || []).map(r => ({ ...r.doc, positions: [], childEvents: evs.filter(e => e.trip_id === r.doc.id).map(e => e.doc) }));
+  }
   async function positionsTail(tripId, n = 50) {
     const { data, error } = await sb.from('trip_positions').select('lat,lng,accuracy,ts').eq('trip_id', tripId).order('ts', { ascending: false }).limit(n);
     if (error) throw new ApiError('OFFLINE', `Could not load bus positions (${error.message})`);
     return (data || []).reverse().map(r => ({ lat: r.lat, lng: r.lng, accuracy: r.accuracy, ts: new Date(r.ts).toISOString() }));
   }
+  // re-reads the route's trips every call, so the bus screen's periodic reload notices a trip that started or
+  // ended even when the live feed missed it
   transport.parentView = op(async studentId => {
     const p = me(); const d = db();
     if (!STAFF_SEES_ALL.includes(p.role) && !p.studentIds.includes(studentId)) throw new ApiError('NOT_ALLOWED', 'Not your student');
     const s = d.students.find(x => x.id === studentId);
     if (!s) throw new ApiError('NOT_FOUND', 'Student not found');
+    if (s.routeId) {
+      const fresh = await freshTrips(s.routeId);
+      const ids = new Set(fresh.map(t => t.id));
+      d.trips = [...d.trips.filter(t => !(t.routeId === s.routeId && (ids.has(t.id) || t.date >= addDays(todayISO(clock()), -1)))), ...fresh];
+    }
     const trip = s.routeId ? tripOfRoute(d, s.routeId) : null;
     const positions = trip ? await positionsTail(trip.id) : [];
     const d2 = trip ? { ...d, trips: d.trips.map(t => (t.id === trip.id ? { ...t, positions } : t)) } : d;
@@ -120,15 +178,15 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
       return snap.status === 'signedOut' ? { state: 'signedOut', email: null } : { state: snap.status, email };
     }),
     signOut: op(async () => {
+      gen++;
       if (stopNudges) { stopNudges(); stopNudges = null; }
       await sb.auth.signOut();
-      snap = { status: 'signedOut', db: null, persona: null, me: null };
+      snap = SIGNED_OUT();
       emit();
     }),
     redeemInvite: op(async (code, childDob) => {
-      const r = await call('command', { name: 'auth.redeemInvite', args: [code, childDob] });
-      await refresh();
-      return { guardianId: r.result.guardianId, children: r.result.children };
+      const r = await command('auth.redeemInvite', [code, childDob]);
+      return { guardianId: r.guardianId, children: r.children };
     }),
   };
 
@@ -212,8 +270,9 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
 
   const onFocus = () => { if (document.visibilityState === 'visible' && snap.status === 'active') refresh().catch(e => console.error(toApiError(e))); };
   if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onFocus);
+  // a user switch is caught by refresh() comparing the session user before and after; a sign-out bumps gen
   sb.auth.onAuthStateChange(event => {
-    if (event === 'SIGNED_OUT') { snap = { status: 'signedOut', db: null, persona: null, me: null }; emit(); }
+    if (event === 'SIGNED_OUT') { gen++; if (stopNudges) { stopNudges(); stopNudges = null; } snap = SIGNED_OUT(); emit(); }
   });
 
   const api = {

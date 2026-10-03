@@ -109,15 +109,15 @@ test('order amount: computed from balances; a client amount can only lower it (â
 
 test('gateway refund: split across allocations largest first then credit; out-of-order refund is pending; idempotent', () => {
   const db = seed(); const inv = openInvoice(db); const o = order(db, inv);
-  const pending = G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000001', payment_id: 'pay_TEST000000001', amount: 1000, created_at: NOW.getTime() / 1000 } }, ctx());
+  const pending = G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000001', status: 'processed', payment_id: 'pay_TEST000000001', amount: 1000, created_at: NOW.getTime() / 1000 } }, ctx());
   assert.equal(pending.pending, true);
   G.recordGatewayPayment(db, { order: o, payment: captured(o, { amount: o.amountPaise + 3000 }), gatewayMode: 'test' }, ctx());
   const amount = o.amountPaise + 2000; // all of the allocation + 2000 of the 3000 credit
-  const r = G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000001', payment_id: 'pay_TEST000000001', amount, created_at: NOW.getTime() / 1000 } }, ctx());
+  const r = G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000001', status: 'processed', payment_id: 'pay_TEST000000001', amount, created_at: NOW.getTime() / 1000 } }, ctx());
   assert.equal(r.created, true);
   assert.deepEqual(r.refunds.map(x => [x.invoiceId, x.amountPaise, x.gatewayRefundPart]), [[inv.id, o.amountPaise, 0], [null, 2000, 1]]);
-  assert.equal(G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000001', payment_id: 'pay_TEST000000001', amount, created_at: 0 } }, ctx()).created, false);
-  assert.throws(() => G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000002', payment_id: 'pay_TEST000000001', amount: 5000, created_at: NOW.getTime() / 1000 } }, ctx()), { code: 'INVALID_AMOUNT' });
+  assert.equal(G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000001', status: 'processed', payment_id: 'pay_TEST000000001', amount, created_at: 0 } }, ctx()).created, false);
+  assert.throws(() => G.recordGatewayRefund(db, { refund: { id: 'rfnd_TEST00000002', status: 'processed', payment_id: 'pay_TEST000000001', amount: 5000, created_at: NOW.getTime() / 1000 } }, ctx()), { code: 'INVALID_AMOUNT' });
   assert.ok(reconcile(db).checks.every(c => c.ok));
   assert.equal(validateDb(db).filter(v => v.severity !== 'warning').length, 0);
 });

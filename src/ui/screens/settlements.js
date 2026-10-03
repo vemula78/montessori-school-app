@@ -18,7 +18,7 @@ function reportHtml(rep) {
   const money0 = (v) => (v == null ? DASH : money(v));
   const rows = rep.rows || [];
   return `
-    ${t.identityOk ? banner('ok', 'Every settlement line balances: gross = net + fee + tax.') : banner('bad', `<strong>${esc(t.identityMismatches.length)} settlement line${t.identityMismatches.length === 1 ? '' : 's'} where gross does not equal net + fee + tax:</strong> ${t.identityMismatches.map((m) => `line ${esc(m.line)}`).join(', ')}.`)}
+    ${t.identityOk ? banner('ok', 'Every settlement line balances: payments gross = net + fee + tax; refunds debited = refund + fee + tax.') : banner('bad', `<strong>${esc(t.identityMismatches.length)} settlement line${t.identityMismatches.length === 1 ? '' : 's'} that do not balance (payment: gross = net + fee + tax; refund: debit = refund + fee + tax):</strong> ${t.identityMismatches.map((m) => `line ${esc(m.line)}`).join(', ')}.`)}
     ${t.amountMismatches ? banner('bad', `<strong>${esc(t.amountMismatches)} matched row${t.amountMismatches === 1 ? '' : 's'} where the settled amount differs from the ledger.</strong> See the flagged rows.`) : ''}
     <div class="grid cols-4" style="margin:12px 0">
       <div class="kpi"><div class="v">${esc(t.ledgerPayments)}</div><div class="l">online payments in the ledger</div></div>
@@ -30,13 +30,13 @@ function reportHtml(rep) {
       <div class="kpi"><div class="v">${money0(t.grossPaise)}</div><div class="l">gross settled</div></div>
       <div class="kpi"><div class="v">${money0(t.feePaise)}</div><div class="l">provider fee</div></div>
       <div class="kpi"><div class="v">${money0(t.taxPaise)}</div><div class="l">tax on fee</div></div>
-      <div class="kpi good"><div class="v">${money0(t.netPaise)}</div><div class="l">net to bank</div></div>
+      <div class="kpi good"><div class="v">${money0(t.netPaise)}</div><div class="l">net to bank${t.refundDebitPaise ? ` (after ${money0(t.refundDebitPaise)} refunds)` : ''}</div></div>
     </div>
     <h2>Matched</h2>
     ${rows.length ? `<div class="tablewrap"><table><thead><tr><th>Receipt</th><th>Child</th><th>Paid on</th><th class="r">Ledger</th><th>Settlement</th><th>Settled</th><th class="r">Gross</th><th class="r">Fee</th><th class="r">Tax</th><th class="r">Net</th></tr></thead><tbody>
       ${rows.map((r) => `<tr class="${r.amountMatches ? '' : 'row-bad'}"><td class="nowrap">${r.kind === 'refund' ? badge('Refund', 'warn') + ' ' + esc((r.voucherNumbers || []).join(', ') || DASH) : esc(r.receiptNumber || DASH)}</td><td>${esc(r.studentName || DASH)}</td><td class="nowrap">${r.paidOn ? fdate(r.paidOn) : DASH}</td><td class="r num">${money0(r.ledgerPaise)}</td>
         <td><span class="num">${esc(r.settlementId || DASH)}</span>${r.utr ? `<br><small>UTR ${esc(r.utr)}</small>` : ''}</td><td class="nowrap">${r.settledOn ? fdate(r.settledOn) : DASH}</td>
-        <td class="r num">${money0(r.grossPaise)}</td><td class="r num">${money0(r.feePaise)}</td><td class="r num">${money0(r.taxPaise)}</td><td class="r num">${money0(r.netPaise)}${r.amountMatches ? '' : '<br><small>differs from ledger</small>'}</td></tr>`).join('')}
+        <td class="r num">${money0(r.grossPaise)}</td><td class="r num">${money0(r.feePaise)}</td><td class="r num">${money0(r.taxPaise)}</td><td class="r num">${money0(r.netPaise)}${r.amountMatches ? '' : `<br><small>${esc(r.reason || 'differs from ledger')}</small>`}</td></tr>`).join('')}
       </tbody></table></div>` : empty('Nothing matched yet', 'Import a settlement report above, or widen the dates.')}
     <h2 style="margin-top:20px">In the ledger but not in any settlement (${esc(rep.unmatchedLedger.length)})</h2>
     ${rep.unmatchedLedger.length ? `<div class="tablewrap"><table><thead><tr><th>Receipt / refund</th><th>Paid on</th><th class="r">Amount</th><th>Why listed</th></tr></thead><tbody>

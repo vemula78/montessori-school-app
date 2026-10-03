@@ -439,6 +439,8 @@ export function mockOnlinePayment(db, { studentId, invoiceIds, guardianId = null
 export function cancelPayment(db, paymentId, reason, ctx) {
   const pay = mustGet(db, 'payments', paymentId, 'Payment');
   if (pay.status !== 'valid') fail('VALIDATION', 'Payment is already cancelled');
+  // the payment gateway still holds this money: it goes back only as a refund on the gateway (recorded from its event)
+  if (pay.gatewayPaymentId || pay.mode === 'online') fail('VALIDATION', 'An online payment captured by the payment gateway cannot be cancelled here; refund it on the gateway dashboard (the refund is recorded automatically)');
   const why = requireReason(reason);
   if (db.refunds.some(r => r.paymentId === pay.id)) fail('VALIDATION', 'Payment has refunds; it cannot also be cancelled');
   const ownCredit = db.credits.filter(c => c.sourcePaymentId === pay.id);
@@ -466,9 +468,14 @@ function checkRefundCommon(pay, { mode, date, reason }, ctx) {
  * Refund of unallocated credit: {creditId, …} or {paymentId, invoiceId: null, …} (stored with invoiceId null
  * and the consumed creditIds). Refund date must be on/after the payment date and not after today.
  */
-export function refund(db, args, ctx) {
+export function refund(db, args, ctx, { gatewayRefundId = null } = {}) {
   const { paymentId, invoiceId, amountPaise, mode, reference = null, date, reason } = args;
-  if (args.creditId || (invoiceId === null && paymentId)) return refundCredit(db, args, ctx);
+  // a gateway refund id typed as the reference of a manual refund is the same money as the gateway's own record
+  if (!gatewayRefundId && reference && /^rfnd_[A-Za-z0-9]+$/.test(String(reference).trim())
+      && db.refunds.some(r => r.gatewayRefundId === String(reference).trim() || r.reference === String(reference).trim())) {
+    fail('VALIDATION', `Refund ${String(reference).trim()} is already recorded`);
+  }
+  if (args.creditId || (invoiceId === null && paymentId)) return refundCredit(db, args, ctx, gatewayRefundId);
   const pay = mustGet(db, 'payments', paymentId, 'Payment');
   if (pay.status !== 'valid') fail('VALIDATION', 'Payment is cancelled');
   const inv = mustGet(db, 'invoices', invoiceId, 'Invoice');
@@ -484,13 +491,14 @@ export function refund(db, args, ctx) {
     id: newId('rfd'), voucherNumber: nextNumber(db, 'refund', ay.id), paymentId, invoiceId, amountPaise, mode,
     reference: reference ? String(reference) : null, date, reason: why, recordedBy: ctx.actor.id,
   };
+  if (gatewayRefundId) r.gatewayRefundId = gatewayRefundId;
   db.refunds.push(r);
   refreshStatus(db, inv);
   appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${amountPaise} paise against ${pay.receiptNumber} / ${inv.number} — ${why}` });
   return r;
 }
 
-function refundCredit(db, { creditId, paymentId, amountPaise, mode, reference = null, date, reason }, ctx) {
+function refundCredit(db, { creditId, paymentId, amountPaise, mode, reference = null, date, reason }, ctx, gatewayRefundId = null) {
   let rows;
   if (creditId) {
     const c = mustGet(db, 'credits', creditId, 'Credit');
@@ -511,6 +519,7 @@ function refundCredit(db, { creditId, paymentId, amountPaise, mode, reference = 
     reference: reference ? String(reference) : null, date, reason: why, recordedBy: ctx.actor.id,
   };
   r.creditIds = consumeCredits(db, rows, amountPaise, c => { c.consumedByRefundId = r.id; }).map(c => c.id);
+  if (gatewayRefundId) r.gatewayRefundId = gatewayRefundId;
   db.refunds.push(r);
   appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${amountPaise} paise of unused credit from ${pay.receiptNumber} — ${why}` });
   return r;

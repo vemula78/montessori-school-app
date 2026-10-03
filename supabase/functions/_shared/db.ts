@@ -2,6 +2,7 @@
 // every write is one call to public.persist(), which runs in a single transaction.
 
 import { coded } from './http.ts';
+import { fetchAllPages } from './paging.js';
 
 const URL_ = Deno.env.get('SUPABASE_URL') ?? '';
 const KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -26,6 +27,33 @@ export async function rest(path: string, { method = 'GET', body, prefer }: { met
 }
 
 export const rpc = (fn: string, args: Record<string, unknown>) => rest(`rpc/${fn}`, { method: 'POST', body: args });
+
+/**
+ * Every row of a GET (PostgREST answers at most max_rows = 1000 per request, silently). `path` must carry an
+ * `order=` on a unique column so pages do not overlap.
+ */
+export async function restAll(path: string): Promise<any[]> {
+  if (!/[?&]order=/.test(path)) throw new Error(`restAll needs an order: ${path.split('?')[0]}`);
+  return fetchAllPages((offset: number, limit: number) => rest(`${path}&limit=${limit}&offset=${offset}`), 1000);
+}
+
+/** Rows affected by a PATCH/DELETE (Prefer count=exact; nothing is returned, so no row cap applies). */
+export async function restCount(path: string, { method, body }: { method: string; body?: unknown }): Promise<number> {
+  const res = await fetch(`${URL_}/rest/v1/${path}`, {
+    method, headers: headers({ Prefer: 'return=minimal,count=exact' }), body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) { let d: any = null; try { d = JSON.parse(text); } catch { /* not JSON */ } throw new DbError(res.status, d?.code ?? String(res.status), d?.message ?? text); }
+  const m = /\/(\d+)$/.exec(res.headers.get('content-range') || '');
+  return m ? Number(m[1]) : 0;
+}
+
+/** Delete a sign-in (Auth admin API). A user already gone counts as deleted. */
+export async function deleteAuthUser(userId: string): Promise<void> {
+  const res = await fetch(`${URL_}/auth/v1/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE', headers: headers() });
+  await res.body?.cancel();
+  if (!res.ok && res.status !== 404) throw new Error(`could not delete sign-in (${res.status})`);
+}
 
 /** The signed-in user behind a bearer token (validated by the Auth server, so a signed-out session fails). */
 export async function getUser(token: string): Promise<{ id: string; email: string | null }> {
