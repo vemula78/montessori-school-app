@@ -119,11 +119,20 @@ Deno.serve(async (req) => {
 
     await step(report, only, 'erasureCleanup', async () => {
       const open = (await restAll('erasure_requests?select=doc&order=id')).map((r: any) => r.doc).filter((d: any) => d.status === 'cleanup');
+      // one bad request or one failing guardian must not starve the rest: each is handled and counted on its own
       const byGuardian = new Map<string, Set<string>>();
-      for (const d of open) { if (!byGuardian.has(d.guardianId)) byGuardian.set(d.guardianId, new Set()); for (const u of d.pendingUserIds || []) byGuardian.get(d.guardianId)!.add(u); }
       let done = 0, failed = 0;
-      for (const [gid, users] of byGuardian) { const r = await finishErasure(gid, [...users]); if (r.requestDone) done++; else failed++; }
-      return { pending: byGuardian.size, done, failed };
+      const errors: string[] = [];
+      for (const d of open) {
+        if (typeof d.guardianId !== 'string' || !Array.isArray(d.pendingUserIds || [])) { failed++; errors.push(`${d.id}: malformed request`); continue; }
+        if (!byGuardian.has(d.guardianId)) byGuardian.set(d.guardianId, new Set());
+        for (const u of d.pendingUserIds || []) byGuardian.get(d.guardianId)!.add(u);
+      }
+      for (const [gid, users] of byGuardian) {
+        try { const r = await finishErasure(gid, [...users]); if (r.requestDone) done++; else failed++; }
+        catch (e: any) { failed++; errors.push(`${gid}: ${String(e?.message || e).slice(0, 200)}`); }
+      }
+      return { pending: open.length, done, failed, ...(errors.length ? { errors } : {}) };
     });
 
     return json({ ok: true, report });

@@ -45,6 +45,20 @@ test('N8 the same request id with different arguments is a 409; N7 a replay afte
   assert.equal(psql(`select count(*) from threads where guardian_id = 'grd-13' and doc->>'subject' = 'Hello'`), '1');
 });
 
+test('R3-1 replaying a successful invite redemption after revocation is refused, without names', async () => {
+  const inv = await call(admin, 'admin.inviteCode', ['grd-16'], `p3-${randomUUID()}`);
+  assert.equal(inv.status, 200, JSON.stringify(inv.data));
+  const dob = psql(`select s.doc->>'dob' from students s join student_guardians sg on sg.student_id = s.id where sg.guardian_id = 'grd-16' order by s.id limit 1`);
+  const who = await signIn(`p3-r31-${rand()}@example.com`);
+  const id = `p3-${randomUUID()}`;
+  const ok = await call(who, 'auth.redeemInvite', [inv.data.result.code, dob], id);
+  assert.equal(ok.status, 200, JSON.stringify(ok.data));
+  await rest('PATCH', `app_users?user_id=eq.${who.userId}`, { status: 'revoked' });
+  const replay = await call(who, 'auth.redeemInvite', [inv.data.result.code, dob], id);
+  assert.equal(replay.status, 403, JSON.stringify(replay.data));
+  assert.equal(JSON.stringify(replay.data).includes('children'), false, 'no stored names come back');
+});
+
 test('N9 an invite code is never kept with the request id; a replay neither shows it again nor issues another', async () => {
   const id = `p3-${randomUUID()}`;
   const first = await call(admin, 'admin.inviteCode', ['grd-19'], id);
@@ -66,6 +80,17 @@ test('N6 an erasure request is done only after the clean-up; one left in cleanup
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.ok(r.data.report.erasureCleanup.done >= 1, JSON.stringify(r.data.report));
   assert.equal(psql(`select doc->>'status' from erasure_requests where id = '${id}'`), 'done');
+});
+
+test('R3-3 one failing erasure request does not stop cron finishing the others', async () => {
+  const now = new Date().toISOString(), bad = `era-000-${rand()}`, good = `era-zzz-${rand()}`;
+  await rest('POST', 'erasure_requests', { id: bad, doc: { id: bad, requestedAt: now, status: 'cleanup', pendingUserIds: 5 } }, 'return=minimal');
+  await rest('POST', 'erasure_requests', { id: good, doc: { id: good, guardianId: 'grd-22', requestedAt: now, status: 'cleanup', pendingUserIds: [] } }, 'return=minimal');
+  const r = await cron(['erasureCleanup']);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(psql(`select doc->>'status' from erasure_requests where id = '${good}'`), 'done', JSON.stringify(r.data.report));
+  assert.ok(r.data.report.erasureCleanup.failed >= 1, 'the bad request is counted as failed');
+  assert.equal(psql(`select doc->>'status' from erasure_requests where id = '${bad}'`), 'cleanup', 'the bad one stays for the next run');
 });
 
 test("#9 the data export carries the family's own stored gateway events", async () => {

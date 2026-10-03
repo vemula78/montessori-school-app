@@ -51,6 +51,16 @@ test('N4 a manual refund larger than the gateway refund is flagged, never booked
   assert.ok(f.db.auditLog.some(a => a.action === 'gatewayRefundMismatch'));
 });
 
+test('R3-2 a manual refund with the gateway refund id but on another payment does not reduce the gateway booking', () => {
+  const f = settled();
+  const other = f.db.payments.find(p => p.id !== f.pay.id && p.status === 'valid' && !f.db.refunds.some(r => r.paymentId === p.id) && p.allocations.some(a => a.amountPaise >= 2000));
+  F.refund(f.db, { paymentId: other.id, invoiceId: other.allocations.find(a => a.amountPaise >= 2000).invoiceId, amountPaise: 2000, mode: 'online', reference: 'rfnd_P3', date: '2026-10-02', reason: 'mistyped reference' }, ctx(ACCT));
+  const r = f.hook(10000);
+  assert.equal(r.created, true);
+  const onGatewayPayment = f.db.refunds.filter(x => x.paymentId === f.pay.id).reduce((s, x) => s + x.amountPaise, 0);
+  assert.equal(onGatewayPayment, 10000, 'the full gateway refund is booked against its own payment');
+});
+
 test('N6 erasure leaves the request in cleanup until the server steps succeed; a failure is recorded and retried', () => {
   const db = serverDb();
   db.appUsers.push({ id: 'u-g1', role: 'parent', guardianId: 'grd-01', status: 'active' });

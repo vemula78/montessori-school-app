@@ -74,6 +74,10 @@ export async function runCommand(name: string, args: unknown[], who: Caller, ext
     if (requestId && priorRequest) {
       // a repeat is answered only if the caller may still do this now (revoked, withdrawn or out of scope: refused)
       if (!cmd.allowUnlinked) { if (!persona) throw coded('NOT_ALLOWED', 'Sign in first'); cmd.authorize(persona, db, args, ctx); }
+      // an unlinked command's stored success (an invite redemption names the children) only for a caller still active
+      else if (!(priorRequest.result && priorRequest.result.failure) && !(link && link.status === 'active')) {
+        throw coded('NOT_ALLOWED', `Your access to the app is ${link ? link.status : 'removed'}`);
+      }
       return replay(priorRequest, name, who, attempt, digest);
     }
     const before = structuredClone(db);

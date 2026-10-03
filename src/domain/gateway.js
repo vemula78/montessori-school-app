@@ -111,12 +111,14 @@ export function recordGatewayRefund(db, { refund: rr }, ctx) {
   assertPaise(rr.amount);
   if (rr.amount <= 0) fail('INVALID_AMOUNT', 'Refund amount must be greater than zero');
   // recorded by hand already (reference = gateway refund id): book only the rest; more than the gateway refund is flagged
-  const manualPaise = sumPaise(prior.map(r => r.amountPaise));
+  // only manual rows on this gateway payment count; the same id typed on another payment is not this money
+  const manual = prior.filter(r => r.paymentId === pay.id);
+  const manualPaise = sumPaise(manual.map(r => r.amountPaise));
   if (manualPaise > rr.amount) {
     appendAudit(db, ctx, { entity: 'refund', entityId: rr.id, action: 'gatewayRefundMismatch', summary: `${rr.id}: ${manualPaise} paise recorded by hand, gateway refunded ${rr.amount} paise; nothing booked` });
-    return { pending: false, created: false, refunds: prior, mismatch: `${manualPaise} paise recorded by hand is more than the ${rr.amount} paise the gateway refunded` };
+    return { pending: false, created: false, refunds: manual, mismatch: `${manualPaise} paise recorded by hand is more than the ${rr.amount} paise the gateway refunded` };
   }
-  if (manualPaise === rr.amount) return { pending: false, created: false, refunds: prior };
+  if (manualPaise === rr.amount) return { pending: false, created: false, refunds: manual };
   const amount = rr.amount - manualPaise;
   const date = gatewayDate(rr.created_at);
   const reason = `Refund made on the payment gateway (${rr.id})`;
