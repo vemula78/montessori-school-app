@@ -51,9 +51,9 @@ The website's title face is a licensed web font, and its body face (DM Sans) isn
 
 ## Mark
 
-The school's own logo, a dome with a cabin, trees and mountains above the word KINFOLK, is [`app/icons/kinfolk-logo.jpg`](../app/icons/kinfolk-logo.jpg) (80 × 80 px as supplied, metadata stripped). It is shown at its own colours on white in a rounded square (`.logo` in `app.css`): 38 px in the app bar, 72 px on the sign-in card; never cropped to a circle, never recoloured.
+The school's own logo, a dome with the moon, stars, mountains, pines and a cabin above the word KINFOLK, comes from the school's artwork (`KINFOLK LOGO.pdf`, rendered at full size, 2282 × 1686 px, and trimmed). [`app/icons/kinfolk-logo.png`](../app/icons/kinfolk-logo.png) is that logo centred on white at 512 × 512 px. It is shown in its own colours in a rounded white square (`.logo` in `app.css`): 38 px in the app bar, 72 px on the sign-in card; never cropped to a circle, never recoloured.
 
-The phone home-screen icons (180/192/512 px PNGs rendered from [`app/icons/icon.svg`](../app/icons/icon.svg), a simple sun over hills) still use the placeholder mark: 80 px is too small to enlarge to 512 px without blurring. Replace them from a logo file of at least 512 × 512 px (`magick logo.png -resize 512x512 -background white -gravity center -extent 512x512 icon-512.png`, likewise 192 and 180).
+The phone home-screen icons (`icon-512.png`, `icon-192.png`, `apple-touch-icon.png`) are the same logo on white at 64 % of the width, so it survives the round crop Android applies to maskable icons. To redo them from the artwork: render the PDF with ImageMagick (`magick -density 72 "KINFOLK LOGO.pdf[0]" -background white -alpha remove -fuzz 3% -trim +repage logo.png`), then for each size `magick logo.png -resize <64 % of size> -background white -gravity center -extent <size>x<size> icon-<size>.png`.
 
 ## Learning components
 
