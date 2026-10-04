@@ -7,7 +7,7 @@ export const FAKE_SURNAMES = [
 ];
 
 export const SCHOOL = {
-  name: 'Kinfolk Montessori School',
+  name: 'Kinfolk Montessori School (Demo)',
   address: '14 Acorn Lane, Maple Grove Layout, Bengaluru 560000 (fictional address)',
   phone: '+91-90000-00001',
 };

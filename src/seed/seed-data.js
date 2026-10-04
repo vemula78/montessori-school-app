@@ -102,11 +102,11 @@ function buildRoute(def) {
 
 // ---------------------------------------------------------------- fee data
 const HEADS = [
-  { id: 'fh-tuition', name: 'Tuition fee', kind: 'tuition' },
-  { id: 'fh-materials', name: 'Montessori materials fee', kind: 'materials' },
-  { id: 'fh-transport', name: 'Transport fee', kind: 'transport' },
-  { id: 'fh-admission', name: 'Admission fee', kind: 'admission' },
-  { id: 'fh-latefee', name: 'Late fee', kind: 'lateFee' },
+  { id: 'fh-tuition', name: 'Tuition fee (sample)', kind: 'tuition' },
+  { id: 'fh-materials', name: 'Montessori materials fee (sample)', kind: 'materials' },
+  { id: 'fh-transport', name: 'Transport fee (sample)', kind: 'transport' },
+  { id: 'fh-admission', name: 'Admission fee (sample)', kind: 'admission' },
+  { id: 'fh-latefee', name: 'Late fee (sample)', kind: 'lateFee' },
 ];
 
 const tuitionByProgram = { [AY]: { td: 1650000, pa: 1950000, pb: 2100000 }, [AY_PREV]: { td: 1500000, pa: 1800000, pb: 1950000 } };

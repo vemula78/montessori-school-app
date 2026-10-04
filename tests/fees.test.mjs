@@ -226,7 +226,7 @@ test('stale tab: two Storage instances on one store, committing one after the ot
   const pb = tabB.commit(d => F.recordPayment(d, { studentId: 'C', amountPaise: 2000, mode: 'cash', paidOn: '2026-06-10' }, ctx()));
   assert.notEqual(pa.receiptNumber, pb.receiptNumber);
   assert.deepEqual([pa.receiptNumber, pb.receiptNumber], ['RCP/26-27/0001', 'RCP/26-27/0002']);
-  const stored = JSON.parse(backing.getItem('montessori.db.v1'));
+  const stored = JSON.parse(backing.getItem('montessori.db.v2'));
   assert.equal(stored.counters.receipt['AY2026-27'], 2);
   assert.equal(stored.payments.length, 2); // tab B re-read tab A's write instead of overwriting it
   assert.equal(stored.rev, 2);
@@ -269,5 +269,5 @@ test('KNOWN LIMIT (#1, deferred to backend DB sequence): interleaved commits fro
       return F.recordPayment(d, { studentId: 'A', amountPaise: 1000, mode: 'cash', paidOn: '2026-06-10' }, ctx());
     });
     assert.notEqual(pa.receiptNumber, pb.receiptNumber);
-    assert.equal(JSON.parse(backing.getItem('montessori.db.v1')).payments.length, 2);
+    assert.equal(JSON.parse(backing.getItem('montessori.db.v2')).payments.length, 2);
   });

@@ -5,7 +5,7 @@ import { noticeHtml, PRIVACY_VERSION } from './privacy.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const frame = (inner) => `<div class="auth-wrap"><div class="auth-card stack">
-  <div class="auth-logo" aria-hidden="true"><span class="logo">K</span></div>${inner}</div></div>`;
+  <div class="auth-logo" aria-hidden="true"><span class="logo"></span></div>${inner}</div></div>`;
 
 /** @param {HTMLElement} root @param {{onDone:()=>void, message?:string}} o */
 export function renderLogin(root, { onDone, message }) {

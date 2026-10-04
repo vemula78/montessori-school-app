@@ -259,8 +259,8 @@ not built (DLT registration and per-message cost); phone OTP likewise — the sc
 ## Data protection (DPDP Act 2023)
 
 The repository holds no personal data: every record is fabricated, and `npm run scan` fails if a surname is outside
-the fake allow-list, a phone or email is not in the fake pattern, an Aadhaar-like / mobile-shaped number or a real
-school name appears, a published file other than the real-app api makes a network call, or anything that looks like
+the fake allow-list, a phone or email is not in the fake pattern, an Aadhaar-like / mobile-shaped number or the previous
+vendor's or hospital's name appears, a published file other than the real-app api makes a network call, or anything that looks like
 a key or secret (JWTs, Supabase secret keys, Razorpay key + secret, private keys) or a `.env` file would be committed.
 
 The real app minimises data (no Aadhaar, no photos, no addresses — stop names only; health notes visible to the

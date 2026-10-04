@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <rect width="512" height="512" fill="#355C2E"/>
-  <!-- sun over a hill (kept inside the central 80% so it survives a maskable crop) -->
-  <circle cx="300" cy="206" r="62" fill="#FDD550"/>
-  <path d="M84 372c58-74 128-112 196-112s110 30 148 72v78H84z" fill="#FDF8EE"/>
-  <path d="M84 372c40-30 86-46 138-46 44 0 86 12 128 40l78-34v78H84z" fill="#7C9B60"/>
+  <!-- sun over rolling hills; the sun sits inside the central 80% so a maskable crop keeps it, the hills run to the edges -->
+  <circle cx="300" cy="214" r="66" fill="#FDD550"/>
+  <path d="M0 372C110 300 230 270 340 284s130 36 172 56V512H0z" fill="#FDF8EE"/>
+  <path d="M0 420c130-58 300-70 512-12V512H0z" fill="#7C9B60"/>
 </svg>

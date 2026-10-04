@@ -15,7 +15,9 @@ import { DomainError } from '../domain/ids.js';
 import { appendAudit } from '../domain/audit.js';
 import { validateDb, checkStructure } from '../domain/validate.js';
 
-export const DB_KEY = 'montessori.db.v1';
+// v2: the school was renamed (03-Oct-2026); a fresh key gives every returning demo visitor the new seed.
+export const DB_KEY = 'montessori.db.v2';
+export const OLD_DB_KEYS = ['montessori.db.v1'];
 export const CORRUPT_PREFIX = 'montessori.db.corrupt.';
 export const APPROX_QUOTA_BYTES = 5 * 1024 * 1024;
 
@@ -92,6 +94,7 @@ export class Storage {
   load() {
     const raw = this.backend.getItem(this.key);
     if (raw === null || raw === undefined) {
+      for (const k of this.key === DB_KEY ? OLD_DB_KEYS : []) { try { this.backend.removeItem?.(k); } catch { /* best effort */ } }
       const db = this.seedFn();
       db.rev = 0;
       this.write(db);

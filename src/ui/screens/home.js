@@ -66,7 +66,7 @@ async function parentHome(ctx) {
       <div class="row"><span class="avatar">${esc((k.firstName[0] || '') + (k.lastName[0] || ''))}</span><div class="grow"><div class="item-title">${esc(fullName(k))}</div><small>${esc(progs.get(k.programId)?.name || DASH)}</small></div>${attBadge}</div>
       <div class="grid cols-3">
         <a class="kpi" href="#/diary?student=${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${esc(diaryToday)}</div><div class="l">diary entries today</div></a>
-        <a class="kpi" href="#/fees/student/${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${money(balance)}</div><div class="l">fees due</div></a>
+        <a class="kpi" href="#/fees/student/${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${money(balance)}</div><div class="l">${api.mode === 'demo' ? 'sample fees due' : 'fees due'}</div></a>
         <a class="kpi" href="#/bus" style="text-decoration:none;color:inherit"><div class="v">${k.routeId ? 'Bus' : DASH}</div><div class="l">${k.routeId ? 'tracking' : 'no bus'}</div></a>
       </div></div>`);
   }

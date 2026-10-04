@@ -1,4 +1,5 @@
-// A5 printable receipt (browser "Save as PDF"). Mock online payments carry a stamp.
+// A5 printable receipt (browser "Save as PDF"). Demo, mock and test-mode receipts carry a stamp: the demo is public and
+// uses the real school's name, so a printed demo receipt must never pass for a real one.
 import { esc, money, fdate, fdatetime, empty, notFoundOrThrow, DASH } from '../components.js';
 import { isRealMode } from '../mode.js';
 
@@ -14,7 +15,7 @@ export async function render(ctx) {
       <button class="btn primary" id="r-print">Print / Save as PDF</button>
     </div>
     <article class="receipt" aria-label="Fee receipt ${esc(v.receiptNumber)}">
-      ${v.isTestMode ? '<div class="stamp">TEST MODE &mdash; NO MONEY MOVED</div>' : v.isMock ? '<div class="stamp">MOCK ONLINE PAYMENT &mdash; NO MONEY MOVED</div>' : ''}
+      ${v.isTestMode ? '<div class="stamp">TEST MODE &mdash; NO MONEY MOVED</div>' : !isRealMode() ? '<div class="stamp">DEMO &mdash; NOT A REAL RECEIPT &middot; SAMPLE FEES</div>' : v.isMock ? '<div class="stamp">MOCK ONLINE PAYMENT &mdash; NO MONEY MOVED</div>' : ''}
       ${cancelled ? '<div class="cancelled-mark">CANCELLED</div>' : ''}
       <h1>${esc(v.school.name)}</h1>
       <div class="addr">${esc(v.school.address)}${v.school.phone ? ' &middot; ' + esc(v.school.phone) : ''}</div>
@@ -36,7 +37,7 @@ export async function render(ctx) {
       ${cancelled ? `<p style="margin-top:8px"><strong>Cancelled.</strong> ${esc(v.cancelReason || '')}</p>` : ''}
       ${v.refunds?.length ? `<p style="margin-top:8px;font-size:.88rem">Refunds against this receipt: ${v.refunds.map((r) => `${esc(r.voucherNumber)} ${money(r.amountPaise)} (${fdate(r.date)})`).join('; ')}</p>` : ''}
       <div class="sign"><span>Recorded by ${esc(v.recordedBy)} &middot; ${fdatetime(v.recordedAt)}</span><span>Authorised signatory</span></div>
-      ${isRealMode() && !v.isTestMode ? '' : `<p style="font-size:.72rem;color:var(--ink-soft);margin:10px 0 0">${v.isTestMode ? 'Test payment. Not a real receipt.' : 'Prototype with fake data. Not a real receipt.'}</p>`}
+      ${isRealMode() && !v.isTestMode ? '' : `<p style="font-size:.72rem;color:var(--ink-soft);margin:10px 0 0">${v.isTestMode ? 'Test payment. Not a real receipt.' : 'Prototype with fake data and sample fees. Not a real receipt.'}</p>`}
     </article>`;
   ctx.el.querySelector('#r-print').addEventListener('click', () => window.print());
   ctx.el.querySelector('#r-back').addEventListener('click', () => (history.length > 1 ? history.back() : ctx.go('/fees')));
