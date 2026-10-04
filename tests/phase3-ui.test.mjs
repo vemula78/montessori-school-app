@@ -885,3 +885,14 @@ test('docs: design system lists the learning components; GO-LIVE covers photos, 
   assert.match(go, /v2/);
   assert.match(go, /legal/i);
 });
+
+test('R9 demo photos.consentStatus({programId}) matches the server: unknown programme refused, active children only, scope checked', async () => {
+  const api = await mkApi();
+  asTeacherPA(api);
+  await assert.rejects(() => api.photos.consentStatus({ programId: 'prog-nope' }), /not found/i);
+  await assert.rejects(() => api.photos.consentStatus({ programId: 'prog-toddler' }));
+  const st = await api.photos.consentStatus({ programId: 'prog-primary-a' });
+  const db = api.getDb();
+  const active = db.students.filter(s => s.programId === 'prog-primary-a' && s.status === 'active').map(s => s.id).sort();
+  assert.deepEqual(Object.keys(st).sort(), active);
+});

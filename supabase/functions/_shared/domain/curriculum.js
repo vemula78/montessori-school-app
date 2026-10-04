@@ -91,12 +91,18 @@ const agreesWith = (row, stored) => {
     && (s.ageToMonths === null || s.ageToMonths === stored.ageToMonths) && (s.description === '' || s.description === (stored.description || ''));
 };
 
+export const CSV_MAX_BYTES = 512 * 1024;
+
 /**
  * Validate a curriculum CSV against the presentations already in db. Pure.
  * The first row must be a header with at least an area and a name column (any order; extra columns are ignored).
  * Ages are in months. A blank sequence continues after the highest sequence in that area.
  */
 export function previewCurriculumCsv(db, text) {
+  // the same limit curriculum.importCsv applies, so a preview the import would refuse is never offered
+  if (new TextEncoder().encode(String(text)).length > CSV_MAX_BYTES) fail('VALIDATION', 'The file is larger than 512 KB');
+  // the browser decodes a file that is not UTF-8 with replacement characters; refuse it rather than import altered names
+  if (String(text).includes('\uFFFD')) fail('VALIDATION', 'The file is not UTF-8 text. Save it as "CSV UTF-8" and try again');
   const parsed = parseCsvObjects(text);
   const col = {};
   for (const h of parsed.headers) for (const [k, list] of Object.entries(COLUMNS)) if (col[k] === undefined && list.includes(normHeader(h))) col[k] = h;

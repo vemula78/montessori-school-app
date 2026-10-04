@@ -97,6 +97,16 @@ export async function verifyUpload(path: string) {
   return info;
 }
 
+/** After photos.complete: if the row ended rejected, its object goes now (errors are logged; photosCleanup retries). */
+export async function deleteIfRejected(photoId: string, path: string) {
+  try {
+    const rows = await rest(`photos?id=eq.${encodeURIComponent(photoId)}&select=status`);
+    if (rows && rows[0] && rows[0].status === 'rejected') await deleteObjects([path]);
+  } catch (e: any) {
+    console.error('photos.complete: deleting the rejected object failed; photosCleanup retries:', e?.message);
+  }
+}
+
 /** Rows in 'deleting' (all, or these ids): delete their objects, then record them deleted/expired. */
 export async function cleanupDeleting(photoIds: string[] | null = null) {
   const filter = photoIds ? `&id=in.${inList(photoIds)}` : '';

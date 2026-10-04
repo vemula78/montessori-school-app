@@ -12,7 +12,7 @@ import { caller } from '../_shared/authz.ts';
 import { runCommand } from '../_shared/persist.ts';
 import { fanOut } from '../_shared/push.ts';
 import { finishErasure } from '../_shared/erasure.ts';
-import { signUpload, signView, verifyUpload, cleanupDeleting, deleteObjects } from '../_shared/photos.ts';
+import { signUpload, signView, verifyUpload, cleanupDeleting, deleteObjects, deleteIfRejected } from '../_shared/photos.ts';
 import { COMMANDS } from '../_shared/domain/commands.js';
 
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L
@@ -46,14 +46,23 @@ serve(async (req) => {
     extra.ctx = { inviteCodeHash: await sha256Hex(normaliseCode(args[0])) };
     extra.hints = { auditRedeemFailedBy: who.user.id };
   }
+  let completing: { photoId: string; path: string } | null = null;
   if (name === 'photos.complete') {
     // authorize first (the same check as complete), and only then touch the object
     const t = (await runCommand('photos.uploadTarget', args, who)).result;
+    completing = { photoId: t.photoId, path: t.path };
     if (t.status !== 'pending') extra.ctx = { objectInfo: null };
     else if (!t.consentOk) { await deleteObjects([t.path]); extra.ctx = { objectInfo: { objectDeleted: true } }; } // complete rejects the row
     else extra.ctx = { objectInfo: await verifyUpload(t.path) };
   }
-  const run = await runCommand(name, args, who, extra);
+  let run;
+  try {
+    run = await runCommand(name, args, who, extra);
+  } finally {
+    // whatever made complete reject the row (the file check, or consent withdrawn after that check: audit R2), its
+    // object is deleted before the caller gets the answer; the 15-minute photosCleanup retries a failure
+    if (completing) await deleteIfRejected(completing.photoId, completing.path);
+  }
   if (!run.replayed) await fanOut(name, run);
   if (name === 'photos.register' && !run.replayed && run.result && run.result.path) {
     try { return { result: { ...run.result, upload: await signUpload(run.result.path) } }; } catch (e: any) {

@@ -1,5 +1,5 @@
 // POST /cron-daily (header X-Cron-Secret; verify_jwt=false). Called by pg_cron at 08:00 IST via pg_net, and every
-// 15 minutes with body {"steps":["trips"]} (stale-trip cleanup only). Steps, each counted in the response (nothing
+// 15 minutes with body {"steps":["trips","photosCleanup"]} (stale trips, photo clean-up). Steps, each counted in the response (nothing
 // silently skipped; every list is read page by page, never cut at the API's 1000-row cap):
 //   1. fee reminders (T−3, due day, +7, +14 of the effective due date): claimed atomically in reminders_sent (a
 //      concurrent run gets nothing to send), pushed to guardians with push consent for that child, then marked sent
@@ -16,7 +16,9 @@
 //      expire, other rows are deleted — only for categories whose period is set; every row re-checked by the command
 //  11. photosCleanup: delete the objects of 'deleting' rows (→ deleted/expired), reject uploads abandoned for 2 hours,
 //      delete objects of closed rows at once and objects without a row (or with a pending one) after 2 hours
-// Every step runs; if any reports an error the answer is HTTP 500 {ok:false, failedSteps, report}.
+// Every step runs; the answer is HTTP 500 {ok:false, failedSteps, report} if any step threw, or if a privacy step (photo
+// consent sweep, retention, photo cleanup, erasure clean-up) reports errors[] / failed > 0. A failed push in the reminders
+// step is routine (phones go offline) and is retried by the next run, so it is counted in the report, not failed.
 
 import { CORS, errorResponse, json, coded } from '../_shared/http.ts';
 import { rest, restAll, restCount, rpc } from '../_shared/db.ts';
@@ -161,7 +163,11 @@ Deno.serve(async (req) => {
     await step(report, only, 'photosCleanup', async () => ({ ...(await cleanupDeleting(null)), ...(await sweepPhotos(nowMs)) }));
 
     // every step ran; any failure makes the whole run a failure the scheduler can see (audit C6)
-    const failedSteps = ALL_STEPS.filter(k => only.has(k) && (report[k] as any)?.error !== undefined);
+    // a step failed if it threw, or if it reports errors or a failure count without throwing (audit R3)
+    const PRIVACY_STEPS = new Set(['photosConsentSweep', 'retention', 'photosCleanup', 'erasureCleanup']);
+    const failedOf = (k: string, r: any) => r && (r.error !== undefined
+      || (PRIVACY_STEPS.has(k) && ((Array.isArray(r.errors) && r.errors.length > 0) || Number(r.failed) > 0)));
+    const failedSteps = ALL_STEPS.filter(k => only.has(k) && failedOf(k, report[k]));
     if (failedSteps.length) return json({ ok: false, failedSteps, report }, 500);
     return json({ ok: true, report });
   } catch (e) {

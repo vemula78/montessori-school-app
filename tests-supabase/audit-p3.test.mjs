@@ -87,10 +87,15 @@ test('R3-3 one failing erasure request does not stop cron finishing the others',
   await rest('POST', 'erasure_requests', { id: bad, doc: { id: bad, requestedAt: now, status: 'cleanup', pendingUserIds: 5 } }, 'return=minimal');
   await rest('POST', 'erasure_requests', { id: good, doc: { id: good, guardianId: 'grd-22', requestedAt: now, status: 'cleanup', pendingUserIds: [] } }, 'return=minimal');
   const r = await cron(['erasureCleanup']);
-  assert.equal(r.status, 200, JSON.stringify(r.data));
+  // Phase 3 audit R3: a step that counts a failure makes the whole run a visible failure (500, failedSteps)
+  assert.equal(r.status, 500, JSON.stringify(r.data));
+  assert.deepEqual(r.data.failedSteps, ['erasureCleanup']);
   assert.equal(psql(`select doc->>'status' from erasure_requests where id = '${good}'`), 'done', JSON.stringify(r.data.report));
   assert.ok(r.data.report.erasureCleanup.failed >= 1, 'the bad request is counted as failed');
   assert.equal(psql(`select doc->>'status' from erasure_requests where id = '${bad}'`), 'cleanup', 'the bad one stays for the next run');
+  // the malformed fixture would fail every later run: close it by hand, as the office would after looking at it
+  await rest('PATCH', `erasure_requests?id=eq.${bad}`, { doc: { id: bad, requestedAt: now, status: 'done', pendingUserIds: [] } });
+  assert.equal((await cron(['erasureCleanup'])).status, 200);
 });
 
 test("#9 the data export carries the family's own stored gateway events", async () => {

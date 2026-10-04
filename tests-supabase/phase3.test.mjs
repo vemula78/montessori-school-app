@@ -6,6 +6,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { local, signIn, fn, command, rest, rpcAs, restAs, psql } from './helpers.mjs';
 import { CONSENT_VERSION } from '../src/domain/commands.js';
@@ -274,4 +275,63 @@ test('C6 cron-daily answers 500 {ok:false, failedSteps} when a step fails, after
   const fine = await cron(['photosCleanup']);
   assert.equal(fine.status, 200);
   assert.equal(fine.data.ok, true);
+});
+
+// ================================================================ audit round 2 (R2–R4)
+/** A psql session holding a lock until release() (to stop a request at a known point). */
+function holdLock(sql) {
+  const p = spawn('docker', ['exec', '-i', 'supabase_db_montessori-school-app', 'psql', '-U', 'postgres', '-tAq', '-v', 'ON_ERROR_STOP=1']);
+  let out = '';
+  const ready = new Promise((resolve, reject) => {
+    p.stdout.on('data', d => { out += d; if (out.includes('locked')) resolve(); });
+    p.on('exit', code => reject(new Error(`psql exited ${code}`)));
+  });
+  p.stdin.write(`begin;\n${sql};\nselect 'locked';\n`);
+  return { ready, release: () => new Promise(r => { p.on('close', r); p.stdin.end('commit;\n'); }) };
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+test('R2 consent withdrawn while complete is checking the file: the row is rejected AND the object is deleted', async () => {
+  const x = await photoFor(tpa, 'stu-04', { complete: false });
+  // stop the file check (Storage reads storage.objects) after uploadTarget saw consent still holding
+  const lock = holdLock('lock table storage.objects in access exclusive mode');
+  await lock.ready;
+  const pending = command(tpa.token, 'photos.complete', x.id);
+  let waiting = false;
+  for (let i = 0; i < 100 && !waiting; i++) { await sleep(100); waiting = psql(`select count(*) from pg_stat_activity where wait_event_type = 'Lock' and query ilike '%storage%objects%'`) !== '0'; }
+  assert.ok(waiting, 'the file check is waiting on the lock');
+  // meanwhile a second guardian of stu-04 starts using the app without photo consent
+  await rest('POST', 'student_guardians', { student_id: 'stu-04', guardian_id: 'grd-21', ord: 9 }, 'return=minimal');
+  await rest('POST', 'consents', { id: 'cns-p3-r2', doc: { id: 'cns-p3-r2', guardianId: 'grd-21', studentId: 'stu-04', purpose: 'app_account', version: CONSENT_VERSION, withdrawnAt: null } }, 'return=minimal');
+  try {
+    await lock.release();
+    const r = await pending;
+    assert.equal(r.status, 422, JSON.stringify(r.data));
+    assert.match(r.data.error.message, /photo consent no longer holds/);
+    assert.equal(photoStatus(x.id), 'rejected');
+    assert.equal(objectCount(x.path), 0, 'the file that passed the check is deleted before the answer');
+  } finally {
+    await rest('DELETE', 'student_guardians?student_id=eq.stu-04&guardian_id=eq.grd-21');
+    await rest('DELETE', 'consents?id=eq.cns-p3-r2');
+  }
+});
+
+test('R3 a step that reports errors without throwing (a Storage delete refused) fails the run: 500, failedSteps', async () => {
+  const x = await photoFor(tpa, 'stu-04');
+  psql(`update photos set doc = doc || '{"status":"deleting","deleteReason":"r3 test"}'::jsonb where id = '${x.id}';
+        create function public.r3_refuse_delete() returns trigger language plpgsql as $$ begin raise exception 'r3 test: delete refused'; end $$;
+        create trigger r3_refuse_delete before delete on storage.objects for each row execute function public.r3_refuse_delete();`);
+  try {
+    const r = await cron(['photosCleanup']);
+    assert.equal(r.status, 500, JSON.stringify(r.data));
+    assert.deepEqual(r.data.failedSteps, ['photosCleanup']);
+    assert.ok(r.data.report.photosCleanup.errors?.length >= 1, JSON.stringify(r.data.report.photosCleanup));
+    assert.equal(photoStatus(x.id), 'deleting', 'kept for the next run');
+  } finally {
+    psql('drop trigger r3_refuse_delete on storage.objects; drop function public.r3_refuse_delete();');
+  }
+  const again = await cron(['photosCleanup']);
+  assert.equal(again.status, 200, JSON.stringify(again.data));
+  assert.equal(photoStatus(x.id), 'deleted');
+  assert.equal(objectCount(x.path), 0);
 });

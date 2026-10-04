@@ -10,7 +10,7 @@
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(139);
+select plan(140);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -248,6 +248,8 @@ select is(array[public.take_order_slot('00000000-0000-4000-8000-0000000000d1', 2
 
 -- #38 stale trips are ended within 15 minutes
 select is((select count(*)::int from cron.job where jobname = 'cron-trips' and schedule = '*/15 * * * *'), 1, 'cron_trips_job_registered');
+-- R4 (migration 0007): the 15-minute job also retries photo clean-up (failed deletions, files put back with an old grant)
+select ok((select command from cron.job where jobname = 'cron-trips') ~ '"steps":\s*\["trips",\s*"photosCleanup"\]', 'r4_cron_trips_also_runs_photos_cleanup');
 
 -- ================================================================ phase 3 (migration 0005)
 -- fixtures (fake): grd-02 = parent-bus (stu-03 Toddler, stu-04 Primary A); teacher-pa teaches Primary A only

@@ -269,6 +269,7 @@ test('#28 reminders: a failed push is retried by the next run; two simultaneous 
   const failing = subscription(`/push/fail/p2-${rand()}`);
   assert.equal((await subscribe(parentBus, failing)).status, 201);
   r = await cron(['reminders']);
+  // a failed push is routine and retried by the next run: counted in the report, not a failed run (only privacy steps fail it)
   assert.equal(r.status, 200, JSON.stringify(r.data));
   const rep = r.data.report.reminders;
   assert.equal(rep.claimed + rep.claimedElsewhere, rep.due, JSON.stringify(rep));

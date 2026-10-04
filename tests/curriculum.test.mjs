@@ -160,3 +160,13 @@ test('the seed carries the starter list as the load command would, with unique i
   assert.deepEqual(db.presentations.map(p => p.key), starter.map(p => p.key));
   assert.equal(new Set(db.presentations.map(p => p.id)).size, starter.length);
 });
+
+test('R7 the preview refuses a file over 512 KB, the same limit the import uses, so Confirm is never offered for it', () => {
+  const big = 'area,name\n' + Array.from({ length: 900 }, (_, i) => `sensorial,${'x'.repeat(600)}${i}`).join('\n');
+  assert.ok(new TextEncoder().encode(big).length > 512 * 1024);
+  assert.throws(() => previewCurriculumCsv(emptyDb(), big), /512 KB/);
+});
+
+test('R8 text that was not valid UTF-8 (decoded with replacement characters) is refused, not silently imported', () => {
+  assert.throws(() => previewCurriculumCsv(emptyDb(), 'area,name\nsensorial,Pink tower �\n'), /UTF-8/);
+});

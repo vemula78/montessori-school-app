@@ -367,7 +367,11 @@ export function createSurface({ db, me, clock, cmd }) {
     /** consentStatus({programId} | {studentIds}) → {studentId: boolean} for the staff photo badges. */
     consentStatus: op(({ programId, studentIds } = {}) => {
       const p = allow('admin', 'teacher'); const d = db();
-      const ids = programId ? d.students.filter(s => s.programId === programId).map(s => s.id) : (studentIds || []);
+      // as the server: a known programme the caller teaches, its active children only
+      if (programId && !d.programs.some(x => x.id === programId)) throw new ApiError('NOT_FOUND', 'Program not found');
+      if (programId && p.role === 'teacher' && !(p.programIds || []).includes(programId)) throw new ApiError('NOT_ALLOWED', 'Not your programme');
+      if (!programId && !(Array.isArray(studentIds) && studentIds.length)) throw new ApiError('VALIDATION', 'Give a programId or studentIds');
+      const ids = programId ? d.students.filter(s => s.programId === programId && s.status === 'active').map(s => s.id) : studentIds;
       return Object.fromEntries(ids.map(id => { mustSee(p, id); return [id, photoConsentFor(d, id)]; }));
     }),
   };

@@ -617,6 +617,27 @@ test('jpeg.js: a canvas-style JPEG passes; EXIF, PNG, truncation and comments ar
   assert.equal(inspectJpeg(new Uint8Array(0)).reason, 'not a JPEG image');
 });
 
+test('audit R5: the whole file is walked — progressive and restart-marker JPEGs pass; metadata after a scan, late APP0, trailing bytes and a missing end are refused', () => {
+  const prog = inspectJpeg(fixture('tiny-progressive.jpg'));
+  assert.deepEqual([prog.reason, prog.width, prog.height], [null, 32, 24], 'a valid progressive (multi-scan) JPEG');
+  const rst = inspectJpeg(fixture('tiny-restart.jpg'));
+  assert.deepEqual([rst.reason, rst.width, rst.height], [null, 32, 24], 'restart markers inside the scan data are data');
+  assert.match(inspectJpeg(fixture('tiny-progressive-com.jpg')).reason || '', /comment/, 'a COM between two scans');
+  const p = new Uint8Array(fixture('tiny-progressive.jpg'));
+  const at = (bytes, m) => bytes.findIndex((v, i) => v === 0xff && bytes[i + 1] === m);
+  // the end of the first scan = the first marker after it that is not stuffing or a restart
+  const sos = at(p, 0xda), hdr = (p[sos + 2] << 8) | p[sos + 3];
+  let j = sos + 2 + hdr; while (!(p[j] === 0xff && p[j + 1] !== 0 && !(p[j + 1] >= 0xd0 && p[j + 1] <= 0xd7))) j++;
+  const insert = seg => new Uint8Array([...p.subarray(0, j), ...seg, ...p.subarray(j)]);
+  const exif = [0xff, 0xe1, 0x00, 0x0a, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4d, 0x4d];
+  assert.match(inspectJpeg(insert(exif)).reason || '', /EXIF/, 'EXIF hidden after the first scan');
+  assert.match(inspectJpeg(insert([0xff, 0xe5, 0x00, 0x04, 0x01, 0x02])).reason || '', /metadata/, 'any APPn other than JFIF APP0');
+  assert.match(inspectJpeg(insert([0xff, 0xe0, 0x00, 0x07, 0x4a, 0x46, 0x49, 0x46, 0x00])).reason || '', /APP0|metadata/, 'APP0 after the frame header');
+  assert.match(inspectJpeg(new Uint8Array([...p, 0x41, 0x42])).reason || '', /after the end of image/, 'non-zero bytes after EOI');
+  assert.equal(inspectJpeg(new Uint8Array([...p, 0, 0, 0])).reason, null, 'zero padding after EOI');
+  assert.match(inspectJpeg(p.subarray(0, p.length - 2)).reason || '', /cut short|end of image/, 'no EOI');
+});
+
 test('CONSENT_VERSION is v2 everywhere: the UI notice and the latest migration defining app.consent_version()', async () => {
   assert.equal(CONSENT_VERSION, 'v2');
   const { PRIVACY_VERSION } = await import('../src/ui/privacy.js');
