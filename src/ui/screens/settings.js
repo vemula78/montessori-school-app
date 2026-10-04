@@ -36,7 +36,7 @@ export async function render(ctx) {
     <div class="card stack"><h2>Storage</h2>
       <div>${esc(kb(used))} used${quota ? ` of about ${esc(kb(quota))}` : ''}${pct != null ? ` (${esc(pct)}%)` : ''}</div>
       ${pct != null ? `<div class="progress" role="progressbar" aria-valuenow="${esc(pct)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${esc(pct)}%"></i></div>` : ''}
-      <small>Everything lives in this browser's local storage (key <code>montessori.db.v2</code>). Clearing site data erases it - export a backup first.</small></div>
+      <small>Everything lives in this browser's local storage (key <code>montessori.db.v3</code>). Clearing site data erases it - export a backup first.</small></div>
     <div class="card stack"><h2>Backup and restore</h2>
       <div class="row"><button class="btn primary" id="s-export">Export JSON backup</button>
         <label class="btn" style="cursor:pointer">Import JSON...<input type="file" id="s-import" accept="application/json,.json" style="display:none"></label></div>

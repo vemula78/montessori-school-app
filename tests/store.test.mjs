@@ -153,7 +153,7 @@ const v1Blob = () => {
   return d;
 };
 
-test('DB_KEY is unchanged by the schema bump', () => assert.equal(DB_KEY, 'montessori.db.v2'));
+test('DB_KEY v3: returning demo visitors get the full Phase 3 sample data, not empty Learning lists', () => assert.equal(DB_KEY, 'montessori.db.v3'));
 
 test('a stored v1 document is migrated on load: new collections empty, leftOn null, retention not decided, nothing else changed', () => {
   const be = memoryBackend();

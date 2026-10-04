@@ -15,9 +15,10 @@ import { DomainError } from '../domain/ids.js';
 import { appendAudit } from '../domain/audit.js';
 import { validateDb, checkStructure } from '../domain/validate.js';
 
-// v2: the school was renamed (03-Oct-2026); a fresh key gives every returning demo visitor the new seed.
-export const DB_KEY = 'montessori.db.v2';
-export const OLD_DB_KEYS = ['montessori.db.v1'];
+// v2: the school was renamed (03-Oct-2026). v3: Phase 3 added Learning (04-Oct-2026); migrate() would give a returning
+// visitor empty Learning lists, so a fresh key gives every demo visitor the full sample data instead.
+export const DB_KEY = 'montessori.db.v3';
+export const OLD_DB_KEYS = ['montessori.db.v1', 'montessori.db.v2'];
 export const CORRUPT_PREFIX = 'montessori.db.corrupt.';
 export const APPROX_QUOTA_BYTES = 5 * 1024 * 1024;
 
