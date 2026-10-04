@@ -10,8 +10,8 @@
 // While supabaseUrl / supabaseAnonKey are empty the app shows a "not configured" page instead of starting.
 // For local development put overrides in app/config.local.js (gitignored; loaded only on localhost).
 window.__APP_CONFIG__ = {
-  supabaseUrl: '',
-  supabaseAnonKey: '',
+  supabaseUrl: 'https://gwwgbzhyslzavwexpkkv.supabase.co',
+  supabaseAnonKey: 'sb_publishable_jq8oG8q3POGdOJ67uh67JQ_S_cUThzZ',
   vapidPublicKey: '',
   gatewayMode: 'test',
   appVersion: '2.0.0-pilot',
