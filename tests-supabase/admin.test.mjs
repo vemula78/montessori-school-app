@@ -5,7 +5,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { local, signIn, fn, command, rest, rpcAs, restAs, http, psql, enrollTotp, unenrollAll, claimsOf } from './helpers.mjs';
+import { local, signIn, fn, command, rest, rpcAs, restAs, http, psql, enrollTotp, unenrollAll, claimsOf, pastCutoff } from './helpers.mjs';
+import { PERMISSIONS } from '../src/domain/permissions.js';
 
 let admin, admin2, teacher, acct;
 const rand = () => randomBytes(4).toString('hex');
@@ -23,6 +24,7 @@ before(async () => {
 });
 after(async () => {
   if (admin) await unenrollAll(admin.userId);
+  await pastCutoff(); // the next suite's principal sign-in must postdate the cutoff written by the unenrolment
   await rest('PATCH', 'app_policy?key=eq.two_step', { value: { required: false } });
   assert.equal(psql(`select count(*) from two_step_enrolled where user_id = '${admin.userId}'`), '0', 'the principal is unenrolled again for the later suites');
 });
@@ -86,6 +88,7 @@ test('block → the parent is cut off (snapshot blocked, refresh and new sign-in
   assert.equal(self.status, 422, 'never yourself');
   const u = await desk(admin2, 'unblock', { userId: p.userId });
   assert.equal(u.status, 200, JSON.stringify(u.data)); assert.equal(u.data.result.status, 'active');
+  await pastCutoff();
   const again = await signIn(p.email);
   assert.equal((await snapshot(again)).status, 'active');
   assert.equal((await command(again.token, 'rights.file', { kind: 'export' })).status, 200);
@@ -102,6 +105,13 @@ test('sign out everywhere: the token is dead at the auth server (403) and at the
   assert.equal(u.status, 403, JSON.stringify(u.data));
   assert.equal((await command(p.token, 'rights.file', { kind: 'erasure' })).status, 401);
   assert.equal(psql(`select count(*) from audit_log where doc->>'entityId' = '${p.userId}' and doc->>'action' = 'signOutEverywhere' and doc->>'actorId' = 'stf-principal'`), '1');
+  // C4: the old access token is still unexpired, but reads nothing through PostgREST or the snapshot
+  assert.equal((await snapshot(p)).status, 'session_ended');
+  assert.equal((await restAs(p.token, 'students?select=id')).data.length, 0);
+  assert.equal((await restAs(p.token, 'invoices?select=id')).data.length, 0);
+  await pastCutoff();
+  const again = await signIn(p.email);
+  assert.equal((await snapshot(again)).status, 'active', 'a new sign-in reads again');
 });
 
 test('change email: the sign-in and the guardian record change together; a clash changes neither', async () => {
@@ -110,8 +120,14 @@ test('change email: the sign-in and the guardian record change together; a clash
   const clashAuth = await desk(admin2, 'change_email', { userId: p.userId, email: 'teacher-pa@example.com' });
   assert.equal(clashAuth.status, 422, JSON.stringify(clashAuth.data));
   const otherGuardian = psql(`select doc->>'email' from guardians where id = 'grd-10'`);
+  const authBefore = psql(`select updated_at from auth.users where id = '${p.userId}'`);
   const clashDoc = await desk(admin2, 'change_email', { userId: p.userId, email: otherGuardian });
   assert.equal(clashDoc.status, 422, JSON.stringify(clashDoc.data));
+  // C6: refused by the school records BEFORE the auth server is touched (no change-then-revert window)
+  assert.equal(psql(`select updated_at from auth.users where id = '${p.userId}'`), authBefore, 'the sign-in was never changed');
+  const staffClash = await desk(admin2, 'change_email', { userId: p.userId, email: 'driver2@example.com' });
+  assert.equal(staffClash.status, 422, JSON.stringify(staffClash.data));
+  assert.equal(psql(`select updated_at from auth.users where id = '${p.userId}'`), authBefore, 'a staff address without a sign-in: refused before the auth server too');
   assert.equal(psql(`select email from auth.users where id = '${p.userId}'`), p.email, 'the auth email was put back');
   assert.equal(psql(`select doc->>'email' from guardians where id = 'grd-09'`), before);
   const next = `adm-new-${rand()}@example.com`;
@@ -120,6 +136,7 @@ test('change email: the sign-in and the guardian record change together; a clash
   assert.equal(psql(`select email from auth.users where id = '${p.userId}'`), next);
   assert.equal(psql(`select doc->>'email' from guardians where id = 'grd-09'`), next);
   assert.equal((await command(p.token, 'rights.file', { kind: 'erasure' })).status, 401, 'old sessions ended');
+  await pastCutoff();
   assert.equal((await snapshot(await signIn(next))).status, 'active', 'signs in with the new address');
 });
 
@@ -163,8 +180,15 @@ test('two-step policy: cannot be required while the accountant has no authentica
   const reset = await desk(admin2, 'reset_two_step', { userId: acct.userId });
   assert.equal(reset.status, 200, JSON.stringify(reset.data));
   assert.equal(reset.data.result.factorsRemoved, 1);
+  assert.ok(reset.data.result.sessionsEnded >= 1, 'the reset ends their sessions');
   assert.equal(psql(`select count(*) from two_step_enrolled where user_id = '${acct.userId}'`), '0');
-  void a;
+  // C3: neither the aal2 token from before the reset nor the old aal1 token comes back to life
+  assert.equal((await snapshot({ token: a.token })).status, 'session_ended');
+  assert.equal((await snapshot(acct)).status, 'session_ended');
+  assert.equal((await restAs(acct.token, 'invoices?select=id')).data.length, 0);
+  await pastCutoff();
+  acct = await signIn('accountant@example.com');
+  assert.equal((await snapshot(acct)).status, 'active', 'a fresh sign-in works (no authenticator any more)');
 });
 
 test('resend invite: a guardian without a sign-in gets a new code once; one who signed in is refused', async () => {
@@ -198,5 +222,48 @@ test('resend invite (staff): the auth server mails an invite; its code signs the
   assert.equal(psql(`select role || '/' || status from app_users where user_id = '${uid}'`), 'teacher/active', 'confirming the mailbox linked the staff role');
   assert.equal((await desk(admin2, 'resend_invite', { staffId: 'stf-teacher-float' })).status, 422, 'signed in: no second invite');
   await http('DELETE', `${local().url}/auth/v1/admin/users/${uid}`, { headers: { apikey: local().service, Authorization: `Bearer ${local().service}` } });
+});
+
+test('C1: POST /command refuses the account commands (they belong to admin-accounts), even for an aal2 principal', async () => {
+  const p = await linkedParent('grd-10');
+  for (const [name, args] of [['admin.blockUser', [p.userId]], ['admin.unblockUser', [p.userId]], ['admin.changeSignInEmail', [{ userId: p.userId, email: `x-${rand()}@example.com` }]],
+    ['admin.noteAccountAction', [{ userId: p.userId, action: 'block', outcome: 'ok', by: 'stf-principal' }]]]) {
+    const r = await command(admin2.token, name, ...args);
+    assert.equal(r.status, 403, `${name}: ${JSON.stringify(r.data)}`);
+    assert.equal(r.data.error.code, 'NOT_ALLOWED');
+  }
+  assert.equal(psql(`select status from app_users where user_id = '${p.userId}'`), 'active', 'link unchanged');
+  assert.equal(psql(`select count(*) from audit_log where doc->>'entityId' = '${p.userId}' and doc->>'action' in ('block', 'unblock', 'changeEmail')`), '0');
+});
+
+test('C7: a staff invite is refused when the staff email is also recorded for a guardian', async () => {
+  const email = psql(`select email from staff_contacts where staff_id = 'stf-driver-2'`);
+  const was = psql(`select doc->>'email' from guardians where id = 'grd-11'`);
+  psql(`update guardians set doc = jsonb_set(doc, '{email}', to_jsonb('${email}'::text)) where id = 'grd-11'`);
+  try {
+    const r = await desk(admin2, 'resend_invite', { staffId: 'stf-driver-2' });
+    assert.equal(r.status, 422, JSON.stringify(r.data));
+    assert.match(r.data.error.message, /guardian or another staff member/);
+    assert.equal(psql(`select count(*) from auth.users where email = '${email}'`), '0', 'no invite sent, no sign-in created');
+  } finally {
+    psql(`update guardians set doc = jsonb_set(doc, '{email}', to_jsonb('${was}'::text)) where id = 'grd-11'`);
+  }
+});
+
+test('C10: every action the matrix denies the teacher and the aal1 principal is refused by the command function', async () => {
+  const today = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  const fill = v => (v === '$today' ? today : Array.isArray(v) ? v.map(fill) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)])) : v);
+  let probed = 0;
+  for (const cap of PERMISSIONS.capabilities.filter(c => c.js.kind === 'command')) {
+    for (const [actor, who, code] of [['teacher', teacher, null], ['principal_aal1_enrolled', admin, 'TWO_STEP_REQUIRED']]) {
+      if (cap.allow[actor]) continue;
+      const r = await command(who.token, cap.js.name, ...fill(cap.js.args));
+      assert.equal(r.status, 403, `${cap.key} / ${actor}: ${JSON.stringify(r.data)}`);
+      // the aal1 principal is stopped by two-step first; account commands by the command function itself (C1)
+      if (code) assert.ok([code, 'NOT_ALLOWED'].includes(r.data.error.code), `${cap.key} / ${actor}: ${r.data.error.code}`);
+      probed++;
+    }
+  }
+  assert.ok(probed >= 15, `${probed} denied cells probed`);
 });
 

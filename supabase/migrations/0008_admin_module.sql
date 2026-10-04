@@ -1,6 +1,10 @@
 -- Administration module (forward-only: 0001–0007 are applied to the cloud project and never edited).
 --   * accounts: app_users.status gains 'blocked' (RLS, my_snapshot and the command function refuse it at once);
 --     public.end_sessions(user) ends every session of a sign-in (service role only; the second SECURITY DEFINER function)
+--     and records a session cutoff: an access token issued before it reads nothing any more (app.my_link), so sign-out
+--     everywhere, an email change and a two-step reset take effect at once, not when the old token expires (≤ 1 h).
+--     Losing the last authenticator writes a cutoff too, so old aal1 tokens do not come back to life.
+--   * audit_log: the accountant no longer reads the account desk's rows (entity 'appUser'); the principal reads all
 --   * two-step sign-in for the principal and the accountant: the JWT `aal` claim must be aal2 when the user has a
 --     verified authenticator (two_step_enrolled, mirrored from auth.mfa_factors by a trigger) or the school's policy
 --     (app_policy 'two_step' = {"required": true}) asks for it. app.my_link() returns nothing otherwise, so every policy,
@@ -33,6 +37,26 @@ alter table public.app_policy force row level security;
 -- readable by every signed-in user (the app shows whether two-step is required); not via app.my_link: my_link reads it
 create policy read_all on public.app_policy for select to authenticated using (true);
 
+-- ---------------------------------------------------------------- session cutoffs (sign out everywhere takes effect at once)
+-- No foreign key: the authenticator mirror may write a cutoff while the auth server deletes the user (cascade); a row of a
+-- deleted user is only an id and a time.
+create table public.session_cutoffs (
+  user_id uuid primary key,
+  cut_at timestamptz not null default now()
+);
+alter table public.session_cutoffs enable row level security;
+alter table public.session_cutoffs force row level security;
+-- app.my_link runs as the caller (security invoker), so a user must be able to read their OWN cutoff row; nothing else
+create policy read_own on public.session_cutoffs for select to authenticated using (user_id = auth.uid());
+create policy auth_server_writes on public.session_cutoffs for all to supabase_auth_admin using (true) with check (true);
+-- true when the caller's access token was issued at or before their cutoff. JWT iat is whole seconds, so a token issued
+-- in the cutoff's own second counts as old (the safe side): it is refused, and the app signs that tab out; signing in
+-- again a moment later works. STABLE, one primary-key read.
+create function app.session_cut(p_user uuid) returns boolean language sql stable security invoker set search_path = public, pg_temp as $$
+  select exists (select 1 from public.session_cutoffs c where c.user_id = p_user
+                 and coalesce((auth.jwt()->>'iat')::numeric, 0) <= extract(epoch from c.cut_at))
+$$;
+
 -- ---------------------------------------------------------------- two-step: who has a verified authenticator
 create table public.two_step_enrolled (
   user_id uuid primary key references auth.users (id) on delete cascade,
@@ -52,6 +76,10 @@ begin
       insert into public.two_step_enrolled (user_id) values (uid) on conflict (user_id) do nothing;
     else
       delete from public.two_step_enrolled where user_id = uid;
+      -- the last authenticator is gone: tokens issued before now stop working (they were refused while enrolled)
+      if found then
+        insert into public.session_cutoffs (user_id, cut_at) values (uid, now()) on conflict (user_id) do update set cut_at = excluded.cut_at;
+      end if;
     end if;
   end loop;
   return null;
@@ -73,7 +101,16 @@ create or replace function app.my_link() returns public.app_users language sql s
   select u.* from public.app_users u
   where u.user_id = auth.uid() and u.status = 'active'
     and (u.role not in ('admin', 'accountant') or app.two_step_ok(u.user_id))
+    and not app.session_cut(u.user_id)
 $$;
+
+-- ---------------------------------------------------------------- audit log: the account desk's rows are the principal's
+drop policy read_fin on public.audit_log;
+create policy read_scoped on public.audit_log for select to authenticated using (
+  case app.my_role()
+    when 'admin' then true
+    when 'accountant' then entity is distinct from 'appUser'
+    else false end);
 
 -- ---------------------------------------------------------------- sign-in activity
 create table public.sign_in_events (
@@ -128,6 +165,7 @@ declare n int;
 begin
   delete from auth.sessions where user_id = p_user;
   get diagnostics n = row_count;
+  insert into public.session_cutoffs (user_id, cut_at) values (p_user, now()) on conflict (user_id) do update set cut_at = excluded.cut_at;
   return n;
 end $$;
 
@@ -187,6 +225,8 @@ declare
   r jsonb;
 begin
   select * into u from public.app_users where user_id = auth.uid();
+  -- a token from before "sign out everywhere": nothing, and the app signs this tab out (a blocked account still says blocked)
+  if u.user_id is not null and u.status = 'active' and app.session_cut(u.user_id) then return jsonb_build_object('status', 'session_ended'); end if;
   if u.user_id is not null then enrolled := exists (select 1 from public.two_step_enrolled e where e.user_id = u.user_id); end if;
   if u.user_id is not null and u.status = 'active' and u.role in ('admin', 'accountant') and not app.two_step_ok(u.user_id) then
     return jsonb_build_object('status', 'two_step_required', 'me', jsonb_build_object('role', u.role),
@@ -201,17 +241,18 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- grants
-revoke all on public.app_policy, public.two_step_enrolled, public.sign_in_events, public.data_requests from anon, authenticated;
-grant select on public.app_policy, public.two_step_enrolled, public.sign_in_events, public.data_requests to authenticated;
-grant all on public.app_policy, public.two_step_enrolled, public.sign_in_events, public.data_requests to service_role;
+revoke all on public.app_policy, public.two_step_enrolled, public.sign_in_events, public.data_requests, public.session_cutoffs from anon, authenticated;
+grant select on public.app_policy, public.two_step_enrolled, public.sign_in_events, public.data_requests, public.session_cutoffs to authenticated;
+grant all on public.app_policy, public.two_step_enrolled, public.sign_in_events, public.data_requests, public.session_cutoffs to service_role;
+grant select, insert, update on public.session_cutoffs to supabase_auth_admin;
 grant usage, select on sequence public.sign_in_events_id_seq to service_role;
 -- the auth server's role runs both triggers (security invoker)
 grant usage on schema app, public to supabase_auth_admin;
 grant select, insert, delete on public.two_step_enrolled to supabase_auth_admin;
 grant insert on public.sign_in_events to supabase_auth_admin;
 grant usage on sequence public.sign_in_events_id_seq to supabase_auth_admin;
-revoke all on function app.two_step_ok(uuid), app.mirror_two_step(), app.record_sign_in() from public, anon, authenticated;
-grant execute on function app.two_step_ok(uuid) to authenticated, service_role;
+revoke all on function app.two_step_ok(uuid), app.session_cut(uuid), app.mirror_two_step(), app.record_sign_in() from public, anon, authenticated;
+grant execute on function app.two_step_ok(uuid), app.session_cut(uuid) to authenticated, service_role;
 grant execute on function app.mirror_two_step(), app.record_sign_in() to supabase_auth_admin;
 revoke all on function public.end_sessions(uuid) from public, anon, authenticated;
 grant execute on function public.end_sessions(uuid) to service_role;

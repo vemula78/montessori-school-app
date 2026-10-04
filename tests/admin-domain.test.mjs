@@ -115,7 +115,7 @@ test('rights.file: a parent files about own data (before consent too); a second 
 
 test('rights.update: the principal only; closing needs a resolution and is final', () => {
   const db = seed();
-  const r = execute('rights.file', db, [{ kind: 'erasure' }], ctx({ role: 'parent', id: 'grd-02' }), parent(db));
+  const r = execute('rights.file', db, [{ kind: 'export' }], ctx({ role: 'parent', id: 'grd-02' }), parent(db));
   assert.throws(() => execute('rights.update', db, [r.id, { status: 'done', resolution: 'x' }], ctx({ role: 'parent', id: 'grd-02' }), parent(db)), { code: 'NOT_ALLOWED' });
   assert.equal(run(db, 'rights.update', [r.id, { status: 'in_progress' }]).status, 'in_progress');
   assert.throws(() => run(db, 'rights.update', [r.id, { status: 'done' }]), { code: 'VALIDATION', message: /resolution/ });
@@ -126,16 +126,37 @@ test('rights.update: the principal only; closing needs a resolution and is final
   assert.deepEqual(validateDb(db).filter(v => v.severity !== 'warning'), []);
 });
 
-test('people.anonymiseGuardian closes the guardian\'s open erasure requests on the desk (erasure slice writes dataRequests)', () => {
+test('erasure on the desk: in progress after anonymise, done only when finishErasure succeeds; done by hand before that is refused', () => {
   const db = withAccounts(seed());
   const r = execute('rights.file', db, [{ kind: 'erasure' }], ctx({ role: 'parent', id: 'grd-02' }), parent(db));
+  assert.throws(() => run(db, 'rights.update', [r.id, { status: 'done', resolution: 'x' }]), { code: 'VALIDATION', message: /erasure first/ }, 'not done before the erasure');
   const res = run(db, 'people.anonymiseGuardian', ['grd-02']);
-  assert.equal(res.dataRequestsClosed, 1);
-  const after = db.dataRequests.find(x => x.id === r.id);
-  assert.equal(after.status, 'done'); assert.ok(after.resolution);
+  assert.equal(res.dataRequestsInProgress, 1);
+  const desk = () => db.dataRequests.find(x => x.id === r.id);
+  assert.equal(desk().status, 'in_progress'); assert.ok(desk().resolution);
+  assert.throws(() => run(db, 'rights.update', [r.id, { status: 'done', resolution: 'x' }]), { code: 'VALIDATION' }, 'still cleanup: not done yet');
+  const sys = systemPersona('erasure');
+  const failed = execute('people.finishErasure', db, ['grd-02', { errors: ['auth 500'] }], ctx({ role: 'system', id: 'erasure' }), sys);
+  assert.equal(failed.dataRequestsDone, 0); assert.equal(desk().status, 'in_progress', 'a failed clean-up leaves it in progress');
+  const ok = execute('people.finishErasure', db, ['grd-02', { errors: [] }], ctx({ role: 'system', id: 'erasure' }), sys);
+  assert.equal(ok.dataRequestsDone, 1);
+  assert.equal(desk().status, 'done'); assert.ok(desk().decidedAt);
+  // declining stays allowed at any time
+  const db2 = seed();
+  const r2 = execute('rights.file', db2, [{ kind: 'erasure' }], ctx({ role: 'parent', id: 'grd-02' }), parent(db2));
+  assert.equal(run(db2, 'rights.update', [r2.id, { status: 'declined', resolution: 'Fake: fees outstanding, kept by law.' }]).status, 'declined');
   assert.ok(SLICES.erasure.writes.includes('dataRequests') && SLICES.erasure.reads.includes('dataRequests'));
+  assert.ok(SLICES.rights.reads.includes('erasureRequests'));
   assert.ok(guardSlices('rights', ['dataRequests']).includes('erasure') && guardSlices('erasure', ['dataRequests']).includes('rights'));
   assert.ok(SLICES.export.reads.includes('dataRequests'));
+});
+
+test('account commands are admin-accounts only (POST /command refuses functionOnly); noteAccountAction knows auth_db_mismatch', () => {
+  for (const n of ['admin.blockUser', 'admin.unblockUser', 'admin.changeSignInEmail', 'admin.noteAccountAction']) assert.equal(COMMANDS[n].functionOnly, 'admin-accounts', n);
+  for (const [n, c] of Object.entries(COMMANDS)) if (c.functionOnly) assert.ok(c.serverOnly, `${n}: functionOnly implies serverOnly`);
+  const db = withAccounts(seed());
+  const r = execute('admin.noteAccountAction', db, [{ userId: U(6), action: 'changeEmail', outcome: 'auth_db_mismatch', by: 'stf-principal' }], ctx({ role: 'system', id: 'admin-accounts' }), systemPersona('admin-accounts'));
+  assert.equal(r.outcome, 'auth_db_mismatch');
 });
 
 // ---------------------------------------------------------------- announcement
@@ -212,7 +233,9 @@ test('whoCanSee (real app): a guardian without app_account consent is listed as 
 // ---------------------------------------------------------------- the permission matrix (JS half)
 test('permission matrix: every JS probe on the local seed equals the matrix cell', () => {
   const db = withFixture(seed());
-  db.consents = linkChanges(db, NOW.toISOString()).upserts.consents;
+  const lc = linkChanges(db, NOW.toISOString()); // the local database: links, their consents and the seed-links audit row
+  db.consents = lc.upserts.consents;
+  db.auditLog.push(...lc.audit);
   db.appUsers = []; db.invites = []; db.erasureRequests = []; db.importBatches = []; db.importRows = [];
   const keys = PERMISSIONS.actors.map(a => a.key);
   assert.deepEqual(keys, Object.keys(MATRIX_ACTORS));

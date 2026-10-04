@@ -122,6 +122,9 @@ export function createRemoteAdmin({ sb, call, ApiError, op, me, snap, refresh, n
         if (/aal2|AAL2|assurance/i.test(error.message || '')) throw new ApiError('TWO_STEP_REQUIRED', 'Enter a code from your authenticator first, then turn it off');
         throw new ApiError('VALIDATION', `Two-step sign-in could not be turned off (${error.message})`);
       }
+      // removing the last authenticator writes a session cutoff (tokens issued up to that second read nothing): the
+      // refreshed token must come from the next whole second
+      await new Promise(r => setTimeout(r, 1050 - (Date.now() % 1000)));
       await sb.auth.refreshSession();
       await refresh();
     }),

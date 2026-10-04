@@ -84,3 +84,6 @@ export async function unenrollAll(userId) {
 
 /** The claims of an access token (tests only; the server never trusts them without the auth server). */
 export const claimsOf = token => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+
+/** Wait until a later whole second: a session cutoff refuses tokens issued in its own second (JWT iat is whole seconds). */
+export const pastCutoff = () => new Promise(r => setTimeout(r, 1100));

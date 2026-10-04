@@ -57,7 +57,7 @@ async function accounts(ctx, host) {
           ${r.userId && r.twoStep === 'verified' ? `<button class="btn sm" data-act="reset2" data-user="${esc(r.userId)}" data-name="${esc(r.name)}">Reset two-step</button>` : ''}
         </div></td></tr>`).join('')}
     </tbody></table></div>` : empty(rows.length ? 'No accounts match' : 'No accounts yet')}
-    <small>Blocking cuts off the person&rsquo;s data at once. Signing out everywhere ends their sessions, but a page already open can keep reading for up to an hour; block the account if that is not acceptable. Passwords are never shown or set here: each person sets their own.</small>`;
+    <small>Blocking cuts off the person&rsquo;s data at once. Signing out everywhere ends every session at once: a page they already have open stops loading data and asks them to sign in again. Passwords are never shown or set here: each person sets their own.</small>`;
   host.querySelector('#ad-q').addEventListener('change', (e) => ctx.setQuery({ q: e.target.value }));
   host.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-act]');
@@ -69,7 +69,7 @@ async function accounts(ctx, host) {
     } else if (act === 'unblock') {
       await done('Account unblocked', () => api.admin.accounts.unblock(user));
     } else if (act === 'signout') {
-      if (await confirmDialog('Sign out everywhere', `End every sign-in session of ${name}? A page they already have open can keep reading for up to an hour.`, { okLabel: 'Sign out everywhere', kind: 'danger' })) await done('Sessions ended', () => api.admin.accounts.signOutEverywhere(user));
+      if (await confirmDialog('Sign out everywhere', `End every sign-in session of ${name}? Every device they use will ask them to sign in again.`, { okLabel: 'Sign out everywhere', kind: 'danger' })) await done('Sessions ended', () => api.admin.accounts.signOutEverywhere(user));
     } else if (act === 'reset2') {
       if (await confirmDialog('Reset two-step', `Remove ${name}'s authenticator? They will have to set it up again. Do this only if they lost their phone.`, { okLabel: 'Reset two-step', kind: 'danger' })) await done('Two-step reset', () => api.admin.accounts.resetTwoStep(user));
     } else if (act === 'email') {
@@ -151,7 +151,7 @@ async function matrixSection(ctx) {
       <div class="tablewrap"><table class="matrix"><thead><tr><th>What</th>${m.actors.map((a) => `<th>${esc(a.label)}</th>`).join('')}</tr></thead><tbody>
         ${m.capabilities.map((c) => `<tr><td>${esc(c.label)}</td>${m.actors.map((a) => `<td>${yesNo(c.allow[a.key])}</td>`).join('')}</tr>`).join('')}
       </tbody></table></div>
-      <small>This table is checked against the real rules by automated tests, so it cannot drift from what the app allows.</small></div>`;
+      <small>Automated tests check every row: the reading rows against the database&rsquo;s own access rules, the action rows against the rules every action runs through on the server.</small></div>`;
   });
 }
 

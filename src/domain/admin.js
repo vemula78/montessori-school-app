@@ -104,6 +104,10 @@ export function updateDataRequest(db, id, { status, resolution } = {}, ctx) {
   if (!DATA_REQUEST_STATUSES.includes(status)) fail('VALIDATION', `Unknown status: ${status}`);
   if (!DATA_REQUEST_OPEN.includes(r.status)) fail('VALIDATION', `This request is already ${r.status}; a closed request is final`);
   const closing = !DATA_REQUEST_OPEN.includes(status);
+  // an erasure is done only when the erasure itself has finished (people.finishErasure closes these); declining stays allowed
+  if (r.kind === 'erasure' && status === 'done' && !(db.erasureRequests || []).some(e => e.guardianId === r.guardianId && e.status === 'done')) {
+    fail('VALIDATION', 'Carry out the erasure first (People → Erase); this request closes by itself once the erasure has finished');
+  }
   const res = cleanText(resolution, 'The resolution', closing);
   if (status === r.status && !res) fail('VALIDATION', `The request is already ${status}`);
   const before = r.status;
@@ -113,13 +117,22 @@ export function updateDataRequest(db, id, { status, resolution } = {}, ctx) {
   return dataRequestView(db, r);
 }
 
-/** Erasure carried out (people.anonymiseGuardian): the guardian's open erasure requests are done. */
-export function closeErasureRequests(db, guardianId, ctx) {
+/**
+ * The guardian's open erasure requests on the desk follow the erasure: people.anonymiseGuardian moves them to in_progress
+ * (the sign-in deletion and payment-record scrubbing still run), people.finishErasure closes them as done once every
+ * server step succeeded. Returns how many requests moved.
+ */
+export function advanceErasureRequests(db, guardianId, done, ctx) {
   let n = 0;
   for (const r of db.dataRequests || []) {
     if (r.guardianId !== guardianId || r.kind !== 'erasure' || !DATA_REQUEST_OPEN.includes(r.status)) continue;
-    Object.assign(r, { status: 'done', updatedAt: ctx.now, decidedBy: ctx.actor.id, decidedAt: ctx.now,
-      resolution: 'Erased by the principal; fee records, consent records and audit entries are kept as the law requires.' });
+    if (done) {
+      Object.assign(r, { status: 'done', updatedAt: ctx.now, decidedBy: ctx.actor.id, decidedAt: ctx.now,
+        resolution: 'Erased; fee records, consent records and audit entries are kept as the law requires.' });
+    } else {
+      if (r.status === 'in_progress' && r.resolution) continue;
+      Object.assign(r, { status: 'in_progress', updatedAt: ctx.now, resolution: 'Erasure carried out by the principal; the sign-in deletion and payment-record clean-up are finishing.' });
+    }
     n++;
   }
   return n;
@@ -214,7 +227,8 @@ export const ACCOUNT_ACTIONS = ['signOutEverywhere', 'resendInvite', 'resetTwoSt
 /** Audit-only row for an action done on the auth server (no data row changes). detail: codes only, never personal data. */
 export function noteAccountAction(db, { userId = null, action, outcome, detail = null, by } = {}, ctx) {
   if (!ACCOUNT_ACTIONS.includes(action)) fail('VALIDATION', `Unknown account action: ${action}`);
-  if (!['ok', 'failed'].includes(outcome)) fail('VALIDATION', 'outcome must be ok or failed');
+  // auth_db_mismatch: the sign-in server and the school records disagree and could not be put back (fix in the dashboard)
+  if (!['ok', 'failed', 'auth_db_mismatch'].includes(outcome)) fail('VALIDATION', 'outcome must be ok, failed or auth_db_mismatch');
   if (typeof by !== 'string' || !by) fail('VALIDATION', 'by (the staff id of the principal) is required');
   const d = detail === null || detail === undefined ? '' : String(detail).replace(/[^\w .,:;=/()+-]/g, '').slice(0, 200);
   const row = appendAudit(db, { ...ctx, actor: { role: 'admin', id: by } },

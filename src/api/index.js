@@ -322,7 +322,12 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     markRead: cmd('diary.markRead'),
   };
 
-  const audit = { list: op(q => { allow('admin', 'accountant'); return listAudit(db(), q || {}); }) };
+  // the accountant reads the audit log except the account desk's rows (entity appUser), as the real app's RLS does
+  const audit = { list: op(q => {
+    allow('admin', 'accountant');
+    const rows = listAudit(db(), q || {});
+    return me().role === 'admin' ? rows : rows.filter(r => r.entity !== 'appUser');
+  }) };
 
   // ---------------- administration: data requests, announcement, oversight (same reads and commands in both modes) ----------------
   const rights = {

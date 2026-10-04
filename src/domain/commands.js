@@ -14,6 +14,8 @@
 //   readOnly                 true → the server runs it but never persists (e.g. import.preview)
 //   allowUnlinked            true → may run for a signed-in user without an app_users link
 //   demoOnly                 true → the demo runs it; the server refuses it (e.g. the mock payment: no money moves)
+//   functionOnly             'admin-accounts' → only that Edge Function runs it (it pairs the change with the auth server:
+//                            ban, email, session kill); POST /command refuses it
 //   beforeConsent            true → a parent may run it before giving app_account consent (consent itself, data access);
 //                            every other parent command only sees children with current app_account consent
 //   storedResult(result)     what the server keeps for a replay of this request id (default: the result itself)
@@ -440,9 +442,10 @@ export const COMMANDS = {
       const reqs = (db.erasureRequests || []).filter(r => r.guardianId === guardianId && ['open', 'cleanup'].includes(r.status));
       if (!reqs.length) { const r = { id: newId('era'), guardianId, requestedAt: ctx.now, requestedBy: ctx.actor.id, status: 'open', doneAt: null, doneBy: null }; db.erasureRequests.push(r); reqs.push(r); }
       for (const r of reqs) Object.assign(r, { status: 'cleanup', erasedAt: ctx.now, doneBy: ctx.actor.id, erased, retained, pendingUserIds: [...new Set([...(r.pendingUserIds || []), ...revokedUserIds])] });
-      const dataRequestsClosed = AD.closeErasureRequests(db, g.id, ctx); // the data-rights desk's erasure requests are done
-      appendAudit(db, ctx, { entity: 'guardian', entityId: g.id, action: 'anonymise', summary: `guardian erased (${label}): ${messages} message(s), ${revokedUserIds.length} sign-in(s), ${invitesRevoked} invite(s), ${importRows} import row(s), ${dataRequestsClosed} data request(s) closed; ledger kept` });
-      return { guardianId: g.id, label, revokedUserIds, erased, retained, dataRequestsClosed };
+      // the data-rights desk's erasure requests: in progress now, done when people.finishErasure succeeds
+      const dataRequestsInProgress = AD.advanceErasureRequests(db, g.id, false, ctx);
+      appendAudit(db, ctx, { entity: 'guardian', entityId: g.id, action: 'anonymise', summary: `guardian erased (${label}): ${messages} message(s), ${revokedUserIds.length} sign-in(s), ${invitesRevoked} invite(s), ${importRows} import row(s), ${dataRequestsInProgress} data request(s) in progress; ledger kept` });
+      return { guardianId: g.id, label, revokedUserIds, erased, retained, dataRequestsInProgress };
     },
   },
   /** Erasure clean-up outcome (command function / cron): done when no server step failed, else kept with the error. */
@@ -455,8 +458,9 @@ export const COMMANDS = {
         if (errors.length) { r.lastError = String(errors.join('; ')).slice(0, 500); continue; }
         Object.assign(r, { status: 'done', doneAt: ctx.now, lastError: null, pendingUserIds: [] });
       }
+      const dataRequestsDone = reqs.length && !errors.length ? AD.advanceErasureRequests(db, guardianId, true, ctx) : 0;
       if (reqs.length) appendAudit(db, ctx, { entity: 'guardian', entityId: guardianId, action: 'erasureCleanup', summary: errors.length ? `clean-up failed (${errors.length} step(s)); retried by cron` : 'sign-ins deleted and gateway copies scrubbed; erasure done' });
-      return { guardianId, requests: reqs.length, done: !errors.length };
+      return { guardianId, requests: reqs.length, done: !errors.length, dataRequestsDone };
     },
   },
 
@@ -722,12 +726,12 @@ export const COMMANDS = {
 
   // ---- administration: sign-in accounts (server only; the admin-accounts function pairs each with the auth server)
   /** blockUser(userId) → {userId, status:'blocked'} — never yourself, never the last active principal. */
-  'admin.blockUser': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'admin'), run: (db, [userId], ctx, p) => AD.blockUser(db, userId, ctx, p) },
-  'admin.unblockUser': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'admin'), run: (db, [userId], ctx) => AD.unblockUser(db, userId, ctx) },
+  'admin.blockUser': { slice: 'account', serverOnly: true, functionOnly: 'admin-accounts', authorize: p => allow(p, 'admin'), run: (db, [userId], ctx, p) => AD.blockUser(db, userId, ctx, p) },
+  'admin.unblockUser': { slice: 'account', serverOnly: true, functionOnly: 'admin-accounts', authorize: p => allow(p, 'admin'), run: (db, [userId], ctx) => AD.unblockUser(db, userId, ctx) },
   /** changeSignInEmail({userId, email}) — after the auth server took the new address; refused when another person uses it. */
-  'admin.changeSignInEmail': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => AD.changeSignInEmail(db, a || {}, ctx) },
+  'admin.changeSignInEmail': { slice: 'account', serverOnly: true, functionOnly: 'admin-accounts', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => AD.changeSignInEmail(db, a || {}, ctx) },
   /** System (admin-accounts function): the audit row of an auth-server-only action, attributed to the principal (by). */
-  'admin.noteAccountAction': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'system'), run: (db, [a], ctx) => AD.noteAccountAction(db, a || {}, ctx) },
+  'admin.noteAccountAction': { slice: 'account', serverOnly: true, functionOnly: 'admin-accounts', authorize: p => allow(p, 'system'), run: (db, [a], ctx) => AD.noteAccountAction(db, a || {}, ctx) },
 
   // ---- account: consent, invites (server only: these tables do not exist in the demo document)
   'consent.give': {

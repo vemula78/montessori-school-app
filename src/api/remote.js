@@ -57,6 +57,16 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     const still = await sessionUser();
     if (myGen !== gen || !still || still.id !== user.id || mySeq < applied) return snap;
     applied = mySeq;
+    // "sign out everywhere" (or a block, an email change, a two-step reset) ended this session on the server: this tab
+    // signs out too and shows the sign-in page
+    if (next.status === 'session_ended') {
+      gen++; shownUserId = null; email = null;
+      if (stopNudges) { stopNudges(); stopNudges = null; }
+      snap = SIGNED_OUT();
+      try { await sb.auth.signOut({ scope: 'local' }); } catch (e) { console.error(e); }
+      emit();
+      return snap;
+    }
     email = user.email || null;
     shownUserId = user.id;
     snap = next;

@@ -170,7 +170,12 @@ security_invoker", append-only audit, unique receipt numbers, stale-rev rejectio
 - **Administration** (`#/admin`, principal): *Accounts* (block / unblock, sign out everywhere, change sign-in email, invites, reset
   two-step), *Oversight* (sign-in activity, change history, who can see a child, the permission matrix), *Data requests* (the DPDP
   desk: parents file export / erasure / correction requests under Account; the principal answers; closing needs an answer and is
-  final), *Announcement* (one plain-text banner, 280 characters, shown to everyone) and *Two-step policy*.
+  final; an erasure request closes by itself when the erasure has finished), *Announcement* (one plain-text banner, 280
+  characters, shown to everyone) and *Two-step policy*. Sign out everywhere, a block, an email change and a two-step reset end
+  the person's sessions at once: a session cutoff makes every older access token read nothing. The permission matrix's
+  reading rows are checked against the database (generated pgTAP, `supabase/tests/permissions.test.sql`); its action rows are
+  checked against the command registry's authorize (`tests/admin-domain.test.mjs`) and the denied ones of the teacher and
+  the aal1 principal are sent to the command function (`tests-supabase/admin.test.mjs`).
 - **In the demo** the same registry commands and domain reads run, with these stand-ins (all cleared by *Reset to demo data*):
   a password is a per-persona SHA-256 in `sessionStorage` (`montessori.demo-password.v1`; recovery by email is real-app-only);
   two-step is real TOTP against a per-persona secret in `sessionStorage` with a **demo authenticator** panel showing the live code;

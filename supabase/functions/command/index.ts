@@ -36,6 +36,8 @@ serve(async (req) => {
   if (requestId == null || requestId === '') throw coded('BAD_REQUEST', 'requestId is required');
   // demo-only commands (the mock online payment) never run on the server: money moves only through the gateway
   if ((COMMANDS as any)[name].demoOnly) throw coded('NOT_ALLOWED', 'This action exists only in the demo; online payments go through the payment gateway');
+  // account actions change a sign-in together with the auth server (ban, email, sessions): only admin-accounts runs them
+  if ((COMMANDS as any)[name].functionOnly) throw coded('NOT_ALLOWED', 'Use Administration → Accounts for this action');
   const extra: { ctx?: Record<string, unknown>; hints?: Record<string, unknown>; requestId?: unknown } = { requestId };
   if (name === 'admin.inviteCode') {
     const code = newInviteCode();

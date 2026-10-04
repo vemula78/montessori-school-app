@@ -1,8 +1,10 @@
 // The permission matrix: who can read and do what, checked three ways so the screen cannot drift from the truth.
 //   (a) tests/admin-domain.test.mjs evaluates every `js` probe on the seed (evaluateJs below: the command registry's
 //       authorize with the server's persona rules, or a read rule) and asserts it equals `allow`;
-//   (b) scripts/permissions-sql.mjs turns every `sql` probe into pgTAP (supabase/tests/permissions.test.sql), run as the
-//       seeded users with the JWT `aal` claim set, so RLS itself is probed cell by cell;
+//   (b) scripts/permissions-sql.mjs turns every `sql` probe (the READ rows) into pgTAP (supabase/tests/permissions.test.sql),
+//       run as the seeded users with the JWT `aal` claim set, so RLS itself is probed cell by cell. The ACTION rows have no
+//       SQL probe: they are checked against the registry's authorize, and tests-supabase/admin.test.mjs sends every denied
+//       action cell of the teacher and the aal1 principal to the command function;
 //   (c) npm run check-domain fails when that generated file is out of date.
 // The Oversight screen shows PERMISSIONS as it is (plain data: no functions inside).
 // A read probe answers "does this actor see at least one such row" on the seed plus FIXTURE (a cell of a capability the
@@ -71,6 +73,8 @@ export const PERMISSIONS = {
       js: { kind: 'read', name: 'otherConsents' }, sql: "select count(*) from public.consents where guardian_id <> coalesce(app.my_guardian_id(), '')" },
     { key: 'audit_log', label: 'Audit log', allow: row(Y, N, N, Y, N, N, N),
       js: { kind: 'read', name: 'auditLog' }, sql: 'select count(*) from public.audit_log' },
+    { key: 'account_audit', label: 'Account desk history (blocks, sign-outs, email changes)', allow: row(Y, N, N, N, N, N, N),
+      js: { kind: 'read', name: 'accountAudit' }, sql: "select count(*) from public.audit_log where entity = 'appUser'" },
     { key: 'sign_in_activity', label: 'Sign-in activity', allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'read', name: 'signInActivity' }, sql: 'select count(*) from public.sign_in_events' },
     { key: 'data_requests_all', label: "Every family's data requests", allow: row(Y, N, N, N, N, N, N),
@@ -117,6 +121,8 @@ const READS = {
   progress: (db, p) => p.role !== 'parent' && anyOf(db.progressEvents, e => learner(p, e.studentId)),
   otherConsents: (db, p) => p.role === 'admin' && db.consents.length > 0,
   auditLog: (db, p) => STAFF_SEES_ALL.includes(p.role),
+  // the account desk's rows (entity appUser: links, blocks, email changes, sign-outs): the principal only (0008)
+  accountAudit: (db, p) => p.role === 'admin' && db.auditLog.some(r => r.entity === 'appUser'),
   signInActivity: (db, p, extra) => p.role === 'admin' && extra.signInEvents.length > 0,
   otherDataRequests: (db, p) => p.role === 'admin' && db.dataRequests.length > 0,
   curriculum: (db, p) => ['admin', 'teacher'].includes(p.role) && db.presentations.length > 0,

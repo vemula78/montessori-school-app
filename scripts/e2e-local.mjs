@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { reconcile } from '../src/domain/reconcile.js';
 import { invoiceBalance } from '../src/domain/fees.js';
 import { startMock } from './mock-razorpay.mjs';
-import { signIn, command, fn, rpcAs, http, psql, rest, enrollTotp, unenrollAll, MOCK } from '../tests-supabase/helpers.mjs';
+import { signIn, command, fn, rpcAs, http, psql, rest, enrollTotp, unenrollAll, pastCutoff, MOCK } from '../tests-supabase/helpers.mjs';
 import { signWebhook } from '../supabase/functions/_shared/razorpay.js';
 import { local } from '../tests-supabase/helpers.mjs';
 
@@ -136,6 +136,7 @@ try {
     must(await desk('unblock', { userId: p.userId }), 'unblock');
     check(blockedSnap === 'blocked', `blocked parent's snapshot says ${blockedSnap}`);
     must(await command(a2.token, 'admin.setAnnouncement', { text: 'E2E fake announcement.', tone: 'info' }), 'announcement');
+    await pastCutoff(); // the block ended the parent's sessions (cutoff): sign in again from a later second
     const p2 = await signIn(p.email);
     const seen = (await rpcAs(p2.token, 'my_snapshot')).data.school?.announcement?.text;
     must(await command(a2.token, 'admin.clearAnnouncement'), 'clear announcement');

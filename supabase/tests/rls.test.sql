@@ -13,7 +13,7 @@
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(185);
+select plan(200);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -371,6 +371,10 @@ create function tests.as_user_aal(uid text, aal text) returns void language sql 
   select set_config('role', 'authenticated', true), set_config('request.jwt.claims', json_build_object('sub', uid, 'role', 'authenticated', 'aal', aal)::text, true);
 $$;
 grant execute on function tests.as_user_aal(text, text) to authenticated;
+create function tests.as_user_iat(uid text, aal text, iat bigint) returns void language sql as $$
+  select set_config('role', 'authenticated', true), set_config('request.jwt.claims', json_build_object('sub', uid, 'role', 'authenticated', 'aal', aal, 'iat', iat)::text, true);
+$$;
+grant execute on function tests.as_user_iat(text, text, bigint) to authenticated;
 
 -- blocked: accepted by the constraint, closes every read at once, the snapshot says so
 update public.app_users set status = 'blocked' where user_id = '00000000-0000-4000-8000-000000000004';
@@ -409,6 +413,18 @@ select is((select count(*)::int from public.two_step_enrolled where user_id <> '
 reset role;
 delete from auth.mfa_factors where id in ('00000000-0000-4000-8000-0000000000f1', '00000000-0000-4000-8000-0000000000f2');
 select is((select count(*)::int from public.two_step_enrolled where user_id in ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002')), 0, 'adm_deleted_factor_unenrols');
+-- C3: losing the last authenticator writes a session cutoff (old aal1 tokens, refused while enrolled, stay refused)
+select is((select count(*)::int from public.session_cutoffs where user_id in ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002')), 2, 'adm_last_factor_removed_writes_a_cutoff');
+select tests.as_user_iat('00000000-0000-4000-8000-000000000001', 'aal1', extract(epoch from now())::bigint - 60);
+select is((select count(*)::int from public.students), 0, 'adm_token_from_before_the_cutoff_reads_nothing');
+select is(public.my_snapshot()->>'status', 'session_ended', 'adm_snapshot_of_a_cut_token_says_session_ended');
+select is((select count(*)::int from public.session_cutoffs), 1, 'adm_user_reads_own_cutoff_only');
+select throws_ok($$delete from public.session_cutoffs$$, '42501', null, 'adm_users_cannot_remove_cutoffs');
+reset role;
+select tests.as_user_iat('00000000-0000-4000-8000-000000000001', 'aal1', extract(epoch from now())::bigint + 5);
+select is((select count(*) from public.students), (select stu from totals), 'adm_token_issued_after_the_cutoff_reads_again');
+reset role;
+delete from public.session_cutoffs where user_id in ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002');
 
 -- the policy row: required = true closes an unenrolled accountant at aal1; aal2 opens; teachers never asked
 update public.app_policy set value = '{"required": true}' where key = 'two_step';
@@ -456,6 +472,16 @@ select is(public.end_sessions('00000000-0000-4000-8000-000000000005'), 2, 'adm_e
 select is((select count(*)::int from auth.sessions where user_id = '00000000-0000-4000-8000-000000000005') + (select count(*)::int from auth.refresh_tokens where token = 'pgtap-refresh-1'), 0,
   'adm_end_sessions_removes_sessions_and_refresh_tokens');
 select is((select count(*)::int from auth.sessions where id = '00000000-0000-4000-8000-0000000000e3'), 1, 'adm_end_sessions_leaves_other_users');
+-- C4: the old access token (issued before end_sessions) reads nothing through PostgREST or the snapshot; a new one does
+select ok((select cut_at from public.session_cutoffs where user_id = '00000000-0000-4000-8000-000000000005') is not null, 'adm_end_sessions_writes_a_cutoff');
+select tests.as_user_iat('00000000-0000-4000-8000-000000000005', 'aal1', extract(epoch from now())::bigint - 60);
+select is((select count(*)::int from public.students) + (select count(*)::int from public.invoices), 0, 'adm_signed_out_everywhere_old_token_reads_nothing');
+select is(public.my_snapshot()->>'status', 'session_ended', 'adm_signed_out_everywhere_old_token_snapshot_session_ended');
+reset role;
+select tests.as_user_iat('00000000-0000-4000-8000-000000000005', 'aal1', extract(epoch from now())::bigint + 5);
+select ok((select count(*) from public.students) > 0, 'adm_signed_out_everywhere_new_sign_in_reads');
+reset role;
+select ok(not exists (select 1 from public.session_cutoffs where user_id = '00000000-0000-4000-8000-000000000006'), 'adm_cutoff_only_for_that_user');
 set local role anon;
 select throws_ok($$select public.end_sessions('00000000-0000-4000-8000-000000000006')$$, '42501', null, 'adm_anon_cannot_end_sessions');
 reset role;
@@ -464,6 +490,18 @@ select throws_ok($$select public.end_sessions('00000000-0000-4000-8000-000000000
 reset role;
 select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user', 'public.end_sessions'], 'adm_definer_list_is_exactly_two');
+
+-- C9: the account desk's audit rows (entity appUser) are the principal's; the accountant reads the rest of the log
+insert into public.audit_log (id, doc) values ('aud-t-acct', jsonb_build_object('id', 'aud-t-acct', 'ts', '2026-10-03T05:00:00.000Z', 'actorRole', 'admin',
+  'actorId', 'stf-principal', 'entity', 'appUser', 'entityId', '00000000-0000-4000-8000-000000000006', 'action', 'block', 'summary', 'parent sign-in blocked'));
+select tests.as_user('00000000-0000-4000-8000-000000000003');
+select is((select count(*)::int from public.audit_log where entity = 'appUser'), 0, 'adm_accountant_reads_no_account_desk_audit');
+select ok((select count(*) from public.audit_log where entity <> 'appUser') > 0, 'adm_accountant_still_reads_the_rest_of_the_audit_log');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000001');
+select ok((select count(*) from public.audit_log where entity = 'appUser') > 0, 'adm_principal_reads_account_desk_audit');
+reset role;
+select throws_ok($$update public.audit_log set doc = doc where id = 'aud-t-acct'$$, '42501', null, 'adm_audit_log_still_append_only');
 
 -- the data-rights desk: written through persist; a parent reads their own, the principal all, a teacher none
 select lives_ok($$select public.persist('pgtap-rights', 0, '{"upserts":{"dataRequests":[

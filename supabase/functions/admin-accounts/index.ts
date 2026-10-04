@@ -5,11 +5,15 @@
 //   directory                     every staff member and guardian with their sign-in: status, last sign-in, two-step
 //   block {userId}                admin.blockUser first (data cut at once), then the auth ban, then every session ended
 //   unblock {userId}              the auth ban lifted first, then admin.unblockUser
-//   sign_out_everywhere {userId}  every session ended (public.end_sessions); reads under a still-valid token last ≤ 1 h
-//   change_email {userId, email}  the auth server first (identity), then admin.changeSignInEmail (refused → the auth
-//                                 email is put back), then every session ended
-//   resend_invite {guardianId}    a new invite code (admin.inviteCode; shown once)   | {staffId} an auth invite email
-//   reset_two_step {userId}       the person's authenticators removed (they set one up again at their next sign-in)
+//   sign_out_everywhere {userId}  every session ended and a session cutoff written (public.end_sessions): old access
+//                                 tokens read nothing from that moment
+//   change_email {userId, email}  refused at once if another staff member or guardian has the address; then the auth
+//                                 server (identity), then admin.changeSignInEmail (refused → the auth email is put back;
+//                                 if that fails too: an auth_db_mismatch audit row and an error), then every session ended
+//   resend_invite {guardianId}    a new invite code (admin.inviteCode; shown once)   | {staffId} an auth invite email,
+//                                 refused when the address is also recorded for a guardian or another staff member
+//   reset_two_step {userId}       the person's authenticators removed and every session ended (they sign in again and
+//                                 set up a new authenticator)
 //   two_step_policy               {required, privileged:[{userId, name, role, enrolled}]}
 //   set_two_step_policy {required}  turning it on needs every active principal/accountant enrolled
 // Every action is audited: DB changes by their commands, auth-server-only ones by admin.noteAccountAction (codes only).
@@ -54,6 +58,13 @@ async function linkOf(userId: string) {
 }
 const note = (who: Who, userId: string | null, action: string, outcome: 'ok' | 'failed', detail: string | null = null) =>
   runCommand('admin.noteAccountAction', [{ userId, action, outcome, detail, by: who.link!.staffId }], system('admin-accounts'));
+/** Does a staff member or guardian other than this one already have the address (school records, service role)? */
+async function emailTakenByOther(email: string, { staffId = null, guardianId = null }: { staffId?: string | null; guardianId?: string | null }) {
+  const e = encodeURIComponent(email);
+  const staff = (await rest(`staff_contacts?email=eq.${e}&select=staff_id`)).filter((x: any) => x.staff_id !== staffId);
+  const guardians = (await rest(`guardians?email=eq.${e}&select=id`)).filter((x: any) => x.id !== guardianId);
+  return staff.length + guardians.length > 0;
+}
 const endSessions = async (userId: string) => Number(await rpc('end_sessions', { p_user: userId })) || 0;
 const policyRequired = async () => Boolean((await rest('app_policy?key=eq.two_step&select=value'))?.[0]?.value?.required);
 
@@ -125,7 +136,12 @@ async function changeEmail(who: Who, p: any, requestId: unknown) {
   const userId = userIdOf(p);
   const email = String(p?.email ?? '').trim().toLowerCase();
   if (!EMAIL.test(email) || email.length > 254) throw coded('VALIDATION', 'Enter a valid email address');
-  await linkOf(userId);
+  const link = await linkOf(userId);
+  // the school records first (read only): another staff member or guardian with this address → refused before the auth
+  // server is touched, so the two can never be left disagreeing over a clash
+  if (await emailTakenByOther(email, { staffId: link.staff_id, guardianId: link.guardian_id })) {
+    throw coded('VALIDATION', 'Another person in the school already uses this email');
+  }
   const before = await getAuthUser(userId);
   if (!before.ok || !before.body?.id) throw coded('NOT_FOUND', 'This sign-in no longer exists');
   const oldEmail = before.body.email;
@@ -141,10 +157,19 @@ async function changeEmail(who: Who, p: any, requestId: unknown) {
     r = await runCommand('admin.changeSignInEmail', [{ userId, email }], who, { requestId });
   } catch (e) {
     const back = await updateAuthUser(userId, { email: oldEmail, email_confirm: true });
-    await note(who, userId, 'changeEmail', 'failed', back.ok ? 'refused by the school records; auth email put back' : `refused; auth email NOT put back (${back.status})`);
-    throw e;
+    if (back.ok) {
+      await note(who, userId, 'changeEmail', 'failed', 'refused by the school records; auth email put back');
+      throw e;
+    }
+    // the sign-in has the new address, the school records the old one: say so loudly (ids only in the audit row)
+    await note(who, userId, 'changeEmail', 'auth_db_mismatch', `auth ${back.status}`);
+    throw coded('GATEWAY', 'The sign-in email changed but the school records did not, and it could not be put back. Fix it in the Supabase dashboard (Authentication → Users): set this person\'s email back to the old address.');
   }
-  const sessionsEnded = await endSessions(userId);
+  let sessionsEnded;
+  try { sessionsEnded = await endSessions(userId); } catch {
+    await note(who, userId, 'changeEmail', 'failed', 'email changed; sessions NOT ended');
+    throw coded('GATEWAY', 'The email was changed, but the old sessions could not be ended. Press Sign out everywhere for this person.');
+  }
   return { ...r.result, sessionsEnded };
 }
 
@@ -166,6 +191,11 @@ async function resendInvite(who: Who, p: any, requestId: unknown) {
   if (links.some((l: any) => l.status === 'blocked')) throw coded('VALIDATION', 'This sign-in is blocked; unblock it instead');
   if (links.length) throw coded('VALIDATION', 'This staff member has already signed in');
   if (!s.email) throw coded('VALIDATION', 'This staff member has no sign-in email; add one first');
+  // a guardian (or another staff member) with the same address would be given this staff role by the sign-up link
+  if (await emailTakenByOther(String(s.email).toLowerCase(), { staffId: s.id })) {
+    await note(who, null, 'resendInvite', 'failed', `staff ${s.id}: email also recorded for another person`);
+    throw coded('VALIDATION', 'This email is also recorded for a guardian or another staff member; correct the email before inviting');
+  }
   const existing = (await listAuthUsers()).find((u: any) => String(u.email || '').toLowerCase() === String(s.email).toLowerCase());
   if (existing && (existing.last_sign_in_at || existing.email_confirmed_at)) throw coded('VALIDATION', 'This staff member has already signed in');
   if (existing && existing.banned_until && tsToMs(existing.banned_until) > Date.now()) throw coded('VALIDATION', 'This sign-in is blocked');
@@ -187,9 +217,14 @@ async function resetTwoStep(who: Who, p: any) {
     const d = await deleteAuthFactor(userId, f.id);
     if (d.ok || d.status === 404) factorsRemoved++; else failed.push(d.status);
   }
-  await note(who, userId, 'resetTwoStep', failed.length ? 'failed' : 'ok', `removed ${factorsRemoved} of ${factors.length}`);
+  // the person signs in again (and sets up a new authenticator): every old session ends, old tokens read nothing
+  let sessionsEnded = 0;
+  let endFailed = false;
+  try { sessionsEnded = await endSessions(userId); } catch { endFailed = true; }
+  await note(who, userId, 'resetTwoStep', failed.length || endFailed ? 'failed' : 'ok', `removed ${factorsRemoved} of ${factors.length}; sessions ${endFailed ? 'NOT ended' : sessionsEnded}`);
   if (failed.length) throw coded('GATEWAY', `${failed.length} authenticator(s) could not be removed; try again`);
-  return { userId, factorsRemoved };
+  if (endFailed) throw coded('GATEWAY', 'The authenticators were removed, but the sessions could not be ended. Press Sign out everywhere for this person.');
+  return { userId, factorsRemoved, sessionsEnded };
 }
 
 async function twoStepPolicy() {

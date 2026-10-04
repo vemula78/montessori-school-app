@@ -339,3 +339,15 @@ test('permissions matrix: served to the principal as the shared object', async (
   assert.ok(m.actors.length >= 7 && m.capabilities.length >= 15);
   assert.ok(m.capabilities.every((c) => c.label && Object.keys(c.allow).length === m.actors.length));
 });
+
+test('account-desk audit rows (entity appUser) are the principal\'s only: the accountant\'s audit log leaves them out, as RLS does in the real app', async () => {
+  const { api } = await mk();
+  as(api, ADMIN);
+  await api.admin.accounts.block(PARENT1);
+  assert.ok((await api.audit.list({})).some(r => r.entity === 'appUser'), 'the principal sees the block');
+  as(api, ACCOUNTANT);
+  const rows = await api.audit.list({});
+  assert.ok(rows.length > 0);
+  assert.equal(rows.filter(r => r.entity === 'appUser').length, 0);
+  assert.equal((await api.audit.list({ entity: 'appUser' })).length, 0);
+});

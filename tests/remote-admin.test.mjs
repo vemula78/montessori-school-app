@@ -159,3 +159,14 @@ test('oversight.signInActivity: sign_in_events newest first, named through admin
   await p.ready();
   await assert.rejects(p.oversight.signInActivity(), { code: 'NOT_ALLOWED' });
 });
+
+test('a session ended on the server (snapshot session_ended) signs this tab out locally and drops the data', async () => {
+  const sb = fakeSb({ snapshots: [snapshotOf(ADMIN), { status: 'session_ended' }] });
+  const api = await make(sb);
+  await api.ready();
+  assert.ok(api.getDb());
+  await api.refresh();
+  assert.equal(api.getDb(), null);
+  assert.deepEqual(named(sb, 'signOut'), [{ scope: 'local' }]);
+  assert.equal((await api.auth.status()).state, 'signedOut', 'the sign-in page, not an error');
+});
