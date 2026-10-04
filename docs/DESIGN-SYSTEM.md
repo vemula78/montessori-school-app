@@ -45,13 +45,15 @@ The website's title face is a licensed web font, and its body face (DM Sans) isn
 
 ## Shape and spacing
 
-- Radius `--radius` 14px for cards; 12px for buttons; 999px for pills, chips and badges; the logo mark is a circle.
+- Radius `--radius` 14px for cards; 12px for buttons; 999px for pills, chips and badges; the logo sits in a 9px-rounded white square.
 - Minimum tap target `--tap` 44px.
 - Shadow `--shadow`: two soft navy-tinted layers.
 
 ## Mark
 
-A sun over rolling hills, echoing the hill on the website's home page. It's an original simple mark, not the school's logo: [`app/icons/icon.svg`](../app/icons/icon.svg) (PNG sizes 180/192/512 are rendered from it). The same SVG, in a circle, is the logo in the app bar and on the sign-in card (`.logo` in `app.css`), so there is one mark to replace. To use the school's own logo, drop the file in and swap the SVG; the PNGs must be re-rendered (`magick -background none -density 300 icon.svg -resize 512x512 icon-512.png`).
+The school's own logo, a dome with a cabin, trees and mountains above the word KINFOLK, is [`app/icons/kinfolk-logo.jpg`](../app/icons/kinfolk-logo.jpg) (80 × 80 px as supplied, metadata stripped). It is shown at its own colours on white in a rounded square (`.logo` in `app.css`): 38 px in the app bar, 72 px on the sign-in card; never cropped to a circle, never recoloured.
+
+The phone home-screen icons (180/192/512 px PNGs rendered from [`app/icons/icon.svg`](../app/icons/icon.svg), a simple sun over hills) still use the placeholder mark: 80 px is too small to enlarge to 512 px without blurring. Replace them from a logo file of at least 512 × 512 px (`magick logo.png -resize 512x512 -background white -gravity center -extent 512x512 icon-512.png`, likewise 192 and 180).
 
 ## Learning components
 

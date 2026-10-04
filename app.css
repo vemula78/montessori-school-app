@@ -99,7 +99,7 @@ code { font-size: .88em; background: var(--clay-soft); padding: 1px 5px; border-
 }
 .brand { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-weight: 600; font-size: 1.12rem; color: var(--clay); text-decoration: none; min-width: 0; }
 .brand .logo {
-  flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--clay) url("./app/icons/icon.svg") center / cover no-repeat;
+  flex: none; width: 38px; height: 38px; border-radius: 9px; border: 1px solid var(--line); background: #fff url("./app/icons/kinfolk-logo.jpg") center / 92% no-repeat;
 }
 .brand span.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .spacer { flex: 1; }
@@ -440,7 +440,7 @@ body.no-ribbon { --ribbon-h: 0px; }
 /* sign-in, invite, consent */
 .auth-wrap { min-height: calc(100vh - var(--ribbon-h)); display: grid; place-items: start center; padding: 28px 14px; }
 .auth-card { width: min(460px, 100%); background: var(--paper); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 22px 20px; }
-.auth-logo .logo { display: block; width: 46px; height: 46px; border-radius: 50%; background: var(--clay) url("./app/icons/icon.svg") center / cover no-repeat; }
+.auth-logo .logo { display: block; width: 72px; height: 72px; border-radius: 14px; border: 1px solid var(--line); background: #fff url("./app/icons/kinfolk-logo.jpg") center / 92% no-repeat; }
 .code-input { font-size: 1.6rem; letter-spacing: .22em; text-align: center; font-weight: 900; font-variant-numeric: tabular-nums; }
 .consent-row { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
 .consent-row input { margin-top: 3px; }
