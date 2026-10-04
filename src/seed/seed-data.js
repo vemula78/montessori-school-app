@@ -14,6 +14,11 @@ import { saveStructure, generateInvoices, recordPayment, cancelPayment, refund, 
 import { sendNotice, markNoticeRead, acknowledgeNotice, openThread, replyThread, markThreadRead, closeThread } from '../domain/messaging.js';
 import { markAttendance } from '../domain/attendance.js';
 import { addDiaryEntry } from '../domain/diary.js';
+import { addObservation, shareObservation } from '../domain/observations.js';
+import { recordProgress } from '../domain/progress.js';
+import { generateReport, saveNarratives, submitReport, publishReport } from '../domain/reports.js';
+import { starterPresentations } from '../domain/curriculum-starter.js';
+import { CONSENT_VERSION } from '../domain/commands.js';
 import { startTrip, recordPosition, markChild, endTrip } from '../domain/transport.js';
 import { simulationPlan } from '../domain/sim.js';
 import { SCHOOL, fakePhone, fakeEmail } from './names.js';
@@ -165,7 +170,7 @@ export function buildSeed(now = new Date()) {
       const s = {
         id: `stu-${pad(sn)}`, firstName: first, lastName, dob, programId: P[pk], admissionNo: `ADM-26-${String(sn).padStart(3, '0')}`,
         status: status || 'active', guardianIds: [...gids], routeId: route ? route.id : null, stopId: route ? route.stops[seq - 1].id : null,
-        feeCategory, healthNotes: null,
+        feeCategory, healthNotes: null, leftOn: null,
       };
       db.students.push(s);
       stu[first] = s.id;
@@ -176,9 +181,25 @@ export function buildSeed(now = new Date()) {
   db.students.find((s) => s.id === stu.Kabir).healthNotes = 'Mild dust allergy (demo data)';
   db.students.find((s) => s.id === stu.Anika).healthNotes = 'Uses a spectacle prescription (demo data)';
 
+  // consents the families gave in the demo: the app account and photos for every child, except one deliberate gap
+  // (Zoya) so the "no photo consent" state can be seen. Fake ids and evidence only.
+  const at0 = isoAt('2026-06-01', 10, 0);
+  for (const s of db.students) {
+    for (const gid of s.guardianIds) {
+      for (const purpose of ['app_account', 'photos']) {
+        if (purpose === 'photos' && s.id === stu.Zoya) continue;
+        db.consents.push({ id: `cns-demo-${gid}-${s.id}-${purpose}`, guardianId: gid, studentId: s.id, purpose, version: CONSENT_VERSION, textHash: null, givenAt: at0, withdrawnAt: null, evidence: { method: 'demo seed (fake data)', inviteId: null } });
+      }
+    }
+  }
+
   db.feeHeads = HEADS.map((h) => ({ ...h }));
 
   appendAudit(db, { actor: { role: 'system', id: 'seed' }, now: isoAt(today, 6, 0), today }, { entity: 'seed', entityId: 'seed', action: 'build', summary: 'Demo database built from seed data (fake data only)' });
+
+  // ---------------------------------------------------------------- curriculum (the starter list, loaded as the command would)
+  db.presentations = starterPresentations().map((p, i) => ({ id: `pres-${String(i + 1).padStart(3, '0')}`, ...p }));
+  appendAudit(db, { actor: { role: 'admin', id: ID.principal }, now: isoAt('2026-06-01', 9, 0), today: '2026-06-01' }, { entity: 'curriculum', entityId: '-', action: 'loadStarter', summary: `starter list loaded: ${db.presentations.length} presentations` });
 
   // ---------------------------------------------------------------- calendar (manual entries; the CSV adds the rest)
   const calCtx = ctxAt('2026-06-01', ADMIN);
@@ -246,7 +267,9 @@ export function buildSeed(now = new Date()) {
     const pay = db.payments.find((p) => p.studentId === stu.Saanvi && p.status === 'valid');
     refund(db, { paymentId: pay.id, invoiceId: inv.id, amountPaise: pay.amountPaise, mode: 'cash', reference: null, date: '2026-07-02', reason: 'Child withdrew before the term began; full fee refunded' }, ctxAt('2026-07-02', ACCT));
     cancelInvoice(db, inv.id, 'Child withdrew; fee refunded in full', ctxAt('2026-07-02', ACCT));
-    db.students.find((s) => s.id === stu.Saanvi).status = 'left';
+    const left = db.students.find((s) => s.id === stu.Saanvi);
+    left.status = 'left';
+    left.leftOn = '2026-07-02';
   });
   at('2026-09-14', () => { for (const key of ['td', 'pb']) generateInvoices(db, { academicYearId: AY, programId: P[key], installmentName: 'Term 2' }, ctxAt('2026-09-14', ADMIN)); });
   payFull('Aarav', '2026-09-20', 'cash', null, 'Term 2');
@@ -334,12 +357,27 @@ export function buildSeed(now = new Date()) {
 
   const recent = workingDays.filter((d) => d < today || now.getHours() >= 15).slice(-3); // entries are stamped 15:00, so none 'from the future' for today
   const AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
+  // [observation text, presentation name in the starter list (same area), illustration drawn for the demo photo | null]
   const OBS = {
-    practicalLife: ['Poured water between two jugs without spilling.', 'Buttoned and unbuttoned the dressing frame on her own.', 'Wiped the table carefully after snack.'],
-    sensorial: ['Matched the pink tower cubes in order, then rebuilt it from memory.', 'Sorted the colour tablets into three shades.', 'Explored the sound cylinders with focus.'],
-    language: ['Traced sandpaper letters and said the sounds aloud.', 'Built three-letter words with the moveable alphabet.', 'Listened to a story and retold the middle part.'],
-    math: ['Counted the number rods up to ten with one-to-one touch.', 'Worked with the spindle boxes, counting to nine.', 'Matched numerals to quantities with the cards and counters.'],
-    culture: ['Placed the continent puzzle pieces with the correct names.', 'Watered the classroom plants and described the leaves.', 'Sorted living and non-living objects.'],
+    practicalLife: [['Poured water between two jugs without spilling.', 'Pouring water between jugs', 'pouringJugs'], ['Buttoned and unbuttoned the dressing frame on her own.', 'Dressing frame: large buttons', null], ['Wiped the table carefully after snack.', 'Table washing', null]],
+    sensorial: [['Matched the pink tower cubes in order, then rebuilt it from memory.', 'Pink tower', 'pinkTower'], ['Sorted the colour tablets into three shades.', 'Colour tablets: box 3', 'colourTablets'], ['Explored the sound cylinders with focus.', 'Sound cylinders', null]],
+    language: [['Traced sandpaper letters and said the sounds aloud.', 'Sandpaper letters: group 1', null], ['Built three-letter words with the moveable alphabet.', 'Moveable alphabet: three-letter words', 'movableAlphabet'], ['Listened to a story and retold the middle part.', 'Storytelling and retelling', null]],
+    math: [['Counted the number rods up to ten with one-to-one touch.', 'Number rods', 'numberRods'], ['Worked with the spindle boxes, counting to nine.', 'Spindle boxes', null], ['Matched numerals to quantities with the cards and counters.', 'Cards and counters', null]],
+    culture: [['Placed the continent puzzle pieces with the correct names.', 'Puzzle map of the world', 'continentPuzzle'], ['Watered the classroom plants and described the leaves.', 'Parts of a leaf', null], ['Sorted living and non-living objects.', 'Living and non-living', null]],
+  };
+  const presId = (area, name) => db.presentations.find((p) => p.area === area && p.name === name).id;
+  const photoConsent = (studentId) => studentId !== stu.Zoya; // the one demo child without photo consent
+  /** One observation (domain function), optionally shared and with a demo photo (an SVG illustration of the material; never people). */
+  const observe = (s, date, areaIdx, textIdx, c, shared) => {
+    const area = AREAS[areaIdx];
+    const [text, presName, illustration] = OBS[area][textIdx];
+    const o = addObservation(db, { studentId: s.id, date, area, presentationId: presId(area, presName), text }, c);
+    if (shared) shareObservation(db, o.id, c);
+    if (illustration && photoConsent(s.id)) {
+      db.photos.push({ id: `pho-${o.id.slice(4)}`, observationId: o.id, studentId: s.id, path: null, status: 'ready', bytes: null, width: 200, height: 150, sha256: null, takenBy: c.actor.id,
+        createdAt: c.now, readyAt: c.now, soloConfirmedBy: c.actor.id, deleteReason: null, rejectReason: null, objectDeletedAt: null, demo: { illustration } });
+    }
+    return o;
   };
   const ACT = ['Group songs and finger play in the circle.', 'Painting with sponges on large paper.', 'Outdoor play in the garden with sand and water.', 'Story time with picture cards.'];
   const dr = lcg(77);
@@ -351,14 +389,59 @@ export function buildSeed(now = new Date()) {
       if (present && (present.status === 'absent' || present.status === 'leave')) return; // no diary for absent children
       addDiaryEntry(db, { studentId: s.id, date: d, type: 'meal', data: { meal: 'lunch', ate: dr() < 0.7 ? 'all' : 'some', note: '' } }, c);
       if (s.programId === P.td) addDiaryEntry(db, { studentId: s.id, date: d, type: 'sleep', data: { from: '12:40', to: dr() < 0.5 ? '14:10' : '14:25' } }, c);
-      else {
-        const area = AREAS[(si + di) % AREAS.length];
-        addDiaryEntry(db, { studentId: s.id, date: d, type: 'observation', data: { area, text: OBS[area][(si + di) % 3] } }, c);
-      }
+      else observe(s, d, (si + di) % AREAS.length, (si + di) % 3, c, (si + di) % 2 === 0);
       if ((si + di) % 4 === 0) addDiaryEntry(db, { studentId: s.id, date: d, type: 'activity', data: { text: ACT[(si + di) % ACT.length] } }, c);
       if ((si + di) % 11 === 0) addDiaryEntry(db, { studentId: s.id, date: d, type: 'health', data: { temperatureC: Number((36.6 + (si % 3) * 0.1).toFixed(1)), note: 'Routine check, no concerns.' } }, c);
     });
   });
+
+  // ---------------------------------------------------------------- learning history for a few children (June to September)
+  // Observations over four weeks (alternate ones shared with the family) and the progress that goes with them, so the
+  // progress view and the termly report have something to show. Every row goes through the domain functions.
+  const LEARNERS = ['Neel', 'Ira', 'Dev', 'Zoya', 'Navya', 'Vivaan', 'Aditi', 'Kiara'];
+  const HISTORY_DATES = ['2026-06-24', '2026-07-15', '2026-08-12', '2026-09-09'];
+  LEARNERS.forEach((first, ki) => {
+    const s = db.students.find((x) => x.id === stu[first]);
+    const teacher = tea(s.programId === P.pb ? ID.tPB : ID.tPA);
+    const seen = [];
+    HISTORY_DATES.forEach((d, j) => {
+      const areaIdx = (ki + j) % AREAS.length;
+      const textIdx = (ki + j) % 3;
+      const o = observe(s, d, areaIdx, textIdx, ctxAt(d, teacher, 15, 0), j % 2 === 0);
+      seen.push({ pid: o.presentationId, d });
+    });
+    const rec = (pid, status, date, note = '') => recordProgress(db, { studentId: s.id, presentationId: pid, status, date, note }, ctxAt(date, teacher, 15, 10));
+    rec(seen[0].pid, 'introduced', seen[0].d);
+    rec(seen[0].pid, 'practising', seen[1].d, 'Repeats it independently');
+    rec(seen[0].pid, 'mastered', seen[3].d);
+    rec(seen[1].pid, 'introduced', seen[1].d);
+    rec(seen[1].pid, 'practising', seen[3].d);
+    rec(seen[2].pid, 'practising', seen[2].d, 'Arrived already working with this material');
+    rec(seen[3].pid, 'introduced', seen[3].d);
+  });
+
+  // Term 1 reports: Neel's is published (what the family reads and prints); Ira's waits for the principal; Vivaan's is a draft.
+  const NARR = {
+    overall: 'A settled, curious child who chooses work with care. Sample text for the demo.',
+    practicalLife: 'Works independently on pouring and dressing work and tidies up afterwards.',
+    sensorial: 'Enjoys grading and matching work and returns to the same material to repeat it.',
+    language: 'Is building confidence with the sounds of letters and early word building.',
+    math: 'Counts with one-to-one touch and is ready for the next quantity work.',
+    culture: 'Shows interest in plants, animals and maps and asks many questions.',
+  };
+  const T1 = { academicYearId: AY, termName: 'Term 1', fromDate: '2026-06-01', toDate: '2026-09-30' };
+  const reportFor = (first, stage) => {
+    const s = db.students.find((x) => x.id === stu[first]);
+    const teacher = tea(s.programId === P.pb ? ID.tPB : ID.tPA);
+    const r = generateReport(db, { studentId: s.id, ...T1 }, ctxAt('2026-10-01', teacher, 10, 0));
+    saveNarratives(db, r.id, { narratives: NARR, revision: r.revision }, ctxAt('2026-10-01', teacher, 10, 30));
+    if (stage === 'draft') return;
+    submitReport(db, r.id, ctxAt('2026-10-01', teacher, 11, 0));
+    if (stage === 'published') publishReport(db, r.id, ctxAt('2026-10-01', ADMIN, 14, 0));
+  };
+  reportFor('Neel', 'published');
+  reportFor('Ira', 'submitted');
+  reportFor('Vivaan', 'draft');
 
   // ---------------------------------------------------------------- one ended simulated trip (previous school day)
   const prevDay = (() => { let d = addDays(today, -1); for (let i = 0; i < 10 && !isWorkingDay(db, d, P.td); i++) d = addDays(d, -1); return d; })();

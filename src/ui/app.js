@@ -26,6 +26,8 @@ const ROUTES = [
   { pattern: '/calendar/import', roles: ['admin'], load: () => import('./screens/calendar-import.js') },
   { pattern: '/attendance', roles: ['admin', 'teacher'], load: () => import('./screens/attendance.js') },
   { pattern: '/diary', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/diary.js') },
+  { pattern: '/learning', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/learning.js') },
+  { pattern: '/print/report/:id', roles: ['admin', 'teacher', 'parent'], bare: true, load: () => import('./screens/report-print.js') },
   {
     pattern: '/bus', roles: ['admin', 'driver', 'parent'],
     load: (p) => (p.role === 'driver' ? import('./screens/bus-driver.js') : p.role === 'parent' ? import('./screens/bus-parent.js') : import('./screens/bus-admin.js')),
@@ -50,10 +52,10 @@ const ROUTES = [
 ];
 
 const ROLE_BLURB = {
-  admin: 'Notices, calendar, attendance, fees overview, reports, audit, settings.',
-  teacher: 'Own programme only: attendance, daily diary, parent messages.',
+  admin: 'Notices, calendar, attendance, learning and curriculum, fees overview, reports, audit, settings.',
+  teacher: 'Own programme only: attendance, daily diary, observations and photos, progress, termly reports, parent messages.',
   accountant: 'Fee structures, invoices, payments, receipts, reports.',
-  parent: 'Notices, messages, diary, bus tracking, fees - for own children.',
+  parent: 'Notices, messages, diary, learning (shared observations and termly reports), bus tracking, fees - for own children.',
   driver: 'Start / end the trip and share the bus position.',
 };
 
@@ -225,7 +227,7 @@ async function gate() {
     let cs;
     try { cs = await api.consent.status(); } catch (e) { renderBlocked(root, 'unavailable', { email: st.email, error: e, onRetry: retry, onSignOut: signOutNow }); return false; }
     if (my !== token) return false;
-    if (!cs?.purposes?.app_account?.given) { renderConsent(root, { status: cs, onDone: again, onSignOut: signOutNow }); return false; }
+    if (!cs?.purposes?.app_account?.given) { renderConsent(root, { status: cs, children: (persona.studentIds || []).map((id) => api.getDb().students.find((s) => s.id === id)).filter(Boolean).map((s) => ({ id: s.id, firstName: s.firstName })), photoMonths: api.getDb().school?.retention?.photosMonthsAfterLeaving ?? null, onDone: again, onSignOut: signOutNow }); return false; }
     // a parent who already chose notifications keeps them working across browser clean-ups (no prompt, no new consent)
     if (cs.purposes.push?.given) Promise.resolve().then(() => api.push.vapidPublicKey()).then((vapidKey) => push.keepAlive({ vapidKey, send: (j) => api.push.subscribe(j) })).catch(() => {});
   }

@@ -21,13 +21,21 @@ import * as D from '../domain/diary.js';
 import { listAudit } from '../domain/audit.js';
 import { validateDb } from '../domain/validate.js';
 import {
-  COMMANDS, execute, buildPersonas, ctxFor as cmdCtx, allow as allowP, mustSee as mustSeeP, canManageNotice, visibleThread,
+  COMMANDS, execute, buildPersonas, photoConsentFor, systemPersona, ctxFor as cmdCtx, allow as allowP, mustSee as mustSeeP, canManageNotice, visibleThread,
   visibleRoutes, mustRoute, driverTrip, teachesProgram, tripOut as tripOutP, STAFF_SEES_ALL, CONSENT_VERSION,
 } from '../domain/commands.js';
 import { remindersDue, lateFeesDueList } from '../domain/reminders.js';
 import { parseCsvObjects } from '../domain/csv.js';
 import * as I from '../domain/import-people.js';
 import { guardianExport } from '../domain/export.js';
+import { previewCurriculumCsv } from '../domain/curriculum.js';
+import { listPresentations } from '../domain/presentations.js';
+import { listObservations, learnerVisible } from '../domain/observations.js';
+import { progressState, progressHistory } from '../domain/progress.js';
+import { listReports, getReport } from '../domain/reports.js';
+import { photoView } from '../domain/photos.js';
+import { retentionPlan } from '../domain/retention.js';
+import { createDemoPhotos } from './demo-photos.js';
 
 export { buildPersonas };
 
@@ -109,6 +117,8 @@ export function createSurface({ db, me, clock, cmd }) {
       if (!visibleGuardianIds(d, p).includes(guardianId)) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
       return childrenOf(d, guardianId).filter(s => p.role !== 'teacher' || p.studentIds.includes(s.id)).map(s => studentView(d, s, p));
     }),
+    /** updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?}) — principal only; the one way a child changes class or leaves. */
+    updateStudent: cmd('people.updateStudent'),
   };
 
   const withStats = (d, n) => ({ ...n, ...M.noticeStats(d, n.id) });
@@ -304,6 +314,58 @@ export function createSurface({ db, me, clock, cmd }) {
 
   const audit = { list: op(q => { allow('admin', 'accountant'); return listAudit(db(), q || {}); }) };
 
+
+  // ---------------- Phase 3: curriculum, observations, photos, progress, reports ----------------
+  // Reads work over the same Db shape in both modes (the real app's snapshot carries the same collections, scoped by RLS).
+  const curriculum = {
+    /** list({area?, includeRetired? = true}) → presentations in classroom order (area, sequence, name). Staff only. */
+    list: op(({ area, includeRetired = true } = {}) => listPresentations(db(), me(), { area, includeRetired })),
+    /** previewCsv(text) → {rows, duplicates, rejected, counts}: pure, nothing is written; pass the result to importCsv. */
+    previewCsv: op(text => { allow('admin'); return previewCurriculumCsv(db(), text); }),
+    importCsv: cmd('curriculum.importCsv'),
+    loadStarter: cmd('curriculum.loadStarter'),
+    save: cmd('curriculum.save'),
+    retire: cmd('curriculum.retire'),
+    restore: cmd('curriculum.restore'),
+  };
+  const observations = {
+    /** list({studentId} | {programId}, from?, to?) → newest first; parents get shared observations of their own children only. */
+    list: op((q = {}) => listObservations(db(), me(), q)),
+    add: cmd('observations.add'),
+    edit: cmd('observations.edit'),
+    share: cmd('observations.share'),
+    unshare: cmd('observations.unshare'),
+  };
+  const progress = {
+    /** state({studentId} | {programId}) → the current status per (child, presentation); staff only (parents see the report). */
+    state: op((q = {}) => progressState(db(), me(), q)),
+    /** history(studentId, presentationId) → every event, oldest first. */
+    history: op((studentId, presentationId) => progressHistory(db(), me(), studentId, presentationId)),
+    record: cmd('progress.record'),
+  };
+  const reports = {
+    list: op((q = {}) => listReports(db(), me(), q)),
+    get: op(id => getReport(db(), me(), id)),
+    generate: cmd('reports.generate'),
+    saveNarratives: cmd('reports.saveNarratives'),
+    submit: cmd('reports.submit'),
+    publish: cmd('reports.publish'),
+    unpublish: cmd('reports.unpublish'),
+  };
+  /** The photo rows of an observation as this persona may see them (parents: ready photos of shared observations only). */
+  const photoRows = (p, d, observationId) => {
+    const o = (d.observations || []).find(x => x.id === observationId);
+    if (!o) throw new ApiError('NOT_FOUND', 'Observation not found');
+    if (!['admin', 'teacher', 'parent'].includes(p.role) || !learnerVisible(p, o.studentId) || (p.role === 'parent' && !o.sharedAt)) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
+    return (d.photos || []).filter(x => x.observationId === o.id && (p.role === 'parent' ? x.status === 'ready' : !['deleted', 'expired'].includes(x.status)))
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)).map(photoView);
+  };
+  const photos = {
+    list: op(observationId => photoRows(me(), db(), observationId)),
+    /** consent(studentId) → true when photos of this child may be taken (photoConsentFor); staff only. */
+    consent: op(studentId => { const p = allow('admin', 'teacher'); mustSee(p, studentId); return photoConsentFor(db(), studentId); }),
+  };
+
   /** Children/fees CSV import helpers that need no server (parsing and the suggested column mapping). */
   const importHelpers = {
     /** parseCsv(text) → {headers, rows:[{line, values}], problems:[{line, reason}]} — pass rows to stage() unchanged. */
@@ -312,7 +374,7 @@ export function createSurface({ db, me, clock, cmd }) {
     suggestMapping: op((kind, headers) => { allow('admin', 'accountant'); return I.suggestMapping(kind, headers || []); }),
   };
 
-  return { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds } };
+  return { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports, photos, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
 }
 
 /**
@@ -384,7 +446,7 @@ export function createApi(opts = {}) {
   });
 
   const surface = createSurface({ db, me, clock, cmd });
-  const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers } = surface;
+  const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports } = surface;
   const today = () => todayISO(clock());
 
   // ---------------- live trip feed (demo: same-browser commits and storage events) ----------------
@@ -429,7 +491,7 @@ export function createApi(opts = {}) {
   };
   const consent = {
     // The demo holds no personal data; live bus tracking is shown, so the demo reports it as given.
-    status: op(() => ({ version: CONSENT_VERSION, purposes: { app_account: { given: true, at: null }, push: { given: false, at: null }, bus_live: { given: true, at: null } }, demo: true })),
+    status: op(() => ({ version: CONSENT_VERSION, purposes: { app_account: { given: true, at: null }, push: { given: false, at: null }, bus_live: { given: true, at: null }, photos: { given: true, at: null } }, demo: true })),
     give: op(() => { throw realAppOnly('Recording consent'); }),
     withdraw: op(() => { throw realAppOnly('Withdrawing consent'); }),
   };
@@ -488,6 +550,58 @@ export function createApi(opts = {}) {
     }),
   };
 
+  // ---------------- photos (demo): bytes in IndexedDB (a teacher's own file) or an SVG illustration (seed rows) ----------------
+  const demoPhotos = opts.photos || createDemoPhotos();
+  const raw = fn => async (...args) => { try { return await fn(...args); } catch (e) { throw toApiError(e); } }; // no structured clone: Blobs pass through
+  const photos = {
+    ...surface.photos,
+    /** register({observationId, soloConfirmed:true}) → {photo, path, upload:null} */
+    register: cmd('photos.register'),
+    /** upload(blob, grant) — demo: keep the prepared blob in IndexedDB under the photo id (grant = register's result, plus width/height of the blob). */
+    upload: raw(async (blob, grant = {}) => {
+      me(); db();
+      const id = grant.photo?.id;
+      if (!id) throw new ApiError('VALIDATION', 'No upload grant');
+      if (!(blob instanceof Blob)) throw new ApiError('VALIDATION', 'Nothing to upload');
+      await demoPhotos.put(id, { blob, width: Number.isInteger(grant.width) ? grant.width : null, height: Number.isInteger(grant.height) ? grant.height : null });
+    }),
+    /** complete(photoId) → {photo}; a refused file is recorded as rejected and then reported, as the server does (422). */
+    complete: raw(async photoId => {
+      const p = me(); db();
+      const rec = await demoPhotos.get(photoId);
+      const objectInfo = rec ? { mime: rec.blob.type, bytes: rec.blob.size, width: rec.width, height: rec.height, hasExif: false, hasXmp: false } : { missing: true };
+      const r = out(storage.commit(d => execute('photos.complete', d, [photoId], { ...ctxNow(p), objectInfo }, p)));
+      if (r.failure) { await demoPhotos.remove(photoId); throw new ApiError(r.failure.code, r.failure.message); }
+      return r;
+    }),
+    /** remove(photoId, reason?) → deleting, then (demo) the bytes are dropped and the row finishes as deleted. */
+    remove: raw(async (photoId, reason) => {
+      const r = await cmd('photos.remove')(photoId, reason);
+      await demoPhotos.remove(photoId);
+      const sys = systemPersona('demo');
+      storage.commit(d => execute('photos.finishDelete', d, [{ photoIds: [photoId] }], systemCtx(), sys));
+      return r;
+    }),
+    /** blob(photoId) → Blob of a ready photo this persona may see. Show it with URL.createObjectURL only. */
+    blob: raw(async photoId => {
+      const p = me(); const d = db();
+      const ph = (d.photos || []).find(x => x.id === photoId);
+      if (!ph) throw new ApiError('NOT_FOUND', 'Photo not found');
+      const o = (d.observations || []).find(x => x.id === ph.observationId);
+      if (!learnerVisible(p, ph.studentId) || (p.role === 'parent' && !(o && o.sharedAt))) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
+      if (ph.status !== 'ready') throw new ApiError('NOT_FOUND', 'Photo not available');
+      if (ph.demo && ph.demo.illustration) {
+        const svg = (await import('../seed/illustrations.js')).illustrationSvg(ph.demo.illustration);
+        if (svg) return new Blob([svg], { type: 'image/svg+xml' });
+      }
+      const rec = await demoPhotos.get(photoId);
+      if (!rec) throw new ApiError('NOT_FOUND', 'This photo is not stored in this browser (demo photos live in the browser that took them)');
+      return rec.blob;
+    }),
+    /** Where the demo keeps photo bytes, for Settings. */
+    storageInfo: raw(() => demoPhotos.info()),
+  };
+
   // ---------------- admin ----------------
   const broken = () => !storage || storage.status !== 'ok';
   const systemCtx = () => { const now = clock(); return { actor: { role: 'system', id: 'system' }, now: nowISO(now), today: todayISO(now) }; };
@@ -502,6 +616,7 @@ export function createApi(opts = {}) {
       await ensureStorage();
       const ctx = adminCtx();
       storage.resetToSeed(ctx);
+      try { await demoPhotos.clear(); } catch { /* the seed's photos are drawn, not stored; nothing else to clear */ }
       readyPromise = Promise.resolve();
     }),
     exportJson: op(() => {
@@ -532,6 +647,14 @@ export function createApi(opts = {}) {
     users: op(() => { allowP(me(), 'admin'); return []; }),
     anonymiseGuardian: op(() => { throw realAppOnly('Erasing a guardian'); }),
     setStaffRole: op(() => { throw realAppOnly('Changing a staff role'); }),
+    /** setRetention({photosMonthsAfterLeaving, diaryMonthsAfterLeaving, …}) — whole months, or null = not decided. */
+    setRetention: cmd('admin.setRetention'),
+    /** What retention would remove today: {asOf, leftWithoutDate:[studentId], categories:{photos:{months, students, due}, …}}. */
+    retentionPreview: op(() => {
+      allowP(me(), 'admin');
+      const plan = retentionPlan(db(), today());
+      return { asOf: plan.asOf, leftWithoutDate: plan.leftWithoutDate, categories: Object.fromEntries(Object.entries(plan.categories).map(([k, c]) => [k, { months: c.months, students: c.students.length, due: c.due }])) };
+    }),
   };
 
   return {
@@ -555,6 +678,7 @@ export function createApi(opts = {}) {
     /** Real app: refetch the server snapshot. Demo: nothing to fetch. */
     refresh: op(() => undefined),
     session, people, notices, threads, calendar, transport, fees, attendance, diary, audit, admin,
+    curriculum, observations, progress, reports, photos,
     auth, consent, push, import: imports, reminders,
     /** test hook */
     _storage: () => storage,

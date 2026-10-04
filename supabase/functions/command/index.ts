@@ -2,12 +2,17 @@
 // data the caller's RLS cannot see, e.g. import previews) runs here: load slice → authorize → domain → persist
 // (rev check). requestId (required; client-made, one per user action): a repeat of a committed request returns the
 // stored result.
+// Photos (Phase 3): register → a 2-hour upload grant for the one server-chosen path (never in the stored replay copy);
+// complete → the object is read and checked here first (a refused file is deleted), the verdict goes in as
+// ctx.objectInfo; remove → the object is deleted at once (cron retries a failure); viewUrl → a 120-second download
+// path, readOnly so it is never stored.
 
 import { body, coded, serve } from '../_shared/http.ts';
 import { caller } from '../_shared/authz.ts';
 import { runCommand } from '../_shared/persist.ts';
 import { fanOut } from '../_shared/push.ts';
 import { finishErasure } from '../_shared/erasure.ts';
+import { signUpload, signView, verifyUpload, cleanupDeleting } from '../_shared/photos.ts';
 import { COMMANDS } from '../_shared/domain/commands.js';
 
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L
@@ -41,8 +46,26 @@ serve(async (req) => {
     extra.ctx = { inviteCodeHash: await sha256Hex(normaliseCode(args[0])) };
     extra.hints = { auditRedeemFailedBy: who.user.id };
   }
+  if (name === 'photos.complete') {
+    // authorize first (the same check as complete), and only then touch the object
+    const t = (await runCommand('photos.uploadTarget', args, who)).result;
+    extra.ctx = { objectInfo: t.status === 'pending' ? await verifyUpload(t.path) : null };
+  }
   const run = await runCommand(name, args, who, extra);
   if (!run.replayed) await fanOut(name, run);
+  if (name === 'photos.register' && !run.replayed && run.result && run.result.path) {
+    try { return { result: { ...run.result, upload: await signUpload(run.result.path) } }; } catch (e: any) {
+      console.error('photos.register: upload grant failed:', e?.message);
+      return { result: { ...run.result, upload: null, uploadError: 'The upload could not be prepared; add the photo again.' } };
+    }
+  }
+  if (name === 'photos.remove' && run.result && run.result.photo) {
+    let cleanup: any;
+    try { cleanup = await cleanupDeleting([run.result.photo.id]); } catch (e: any) { cleanup = { errors: [String(e?.message || e)] }; }
+    if (cleanup.errors?.length) console.error('photos.remove: object deletion failed; cron retries:', cleanup.errors.join('; '));
+    return { result: { ...run.result, objectDeleted: !cleanup.errors?.length && cleanup.finished > 0 } };
+  }
+  if (name === 'photos.viewUrl') return { result: { photoId: run.result.photoId, ...(await signView(run.result.path)) } };
   if (name === 'people.anonymiseGuardian' && run.result) {
     return { result: { ...run.result, server: await finishErasure(run.result.guardianId, run.result.revokedUserIds || []) } };
   }

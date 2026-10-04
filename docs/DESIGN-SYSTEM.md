@@ -53,6 +53,21 @@ The website's title face is a licensed web font, and its body face (DM Sans) isn
 
 A sun over rolling hills, echoing the hill on the website's home page. It's an original simple mark, not the school's logo: [`app/icons/icon.svg`](../app/icons/icon.svg) (PNG sizes 180/192/512 are rendered from it). The same SVG, in a circle, is the logo in the app bar and on the sign-in card (`.logo` in `app.css`), so there is one mark to replace. To use the school's own logo, drop the file in and swap the SVG; the PNGs must be re-rendered (`magick -background none -density 300 icon.svg -resize 512x512 icon-512.png`).
 
+## Learning components
+
+Added in Phase 3 (observations, photos, progress, termly reports). No new colour was needed: every one uses the tokens above, so no new contrast figure is required. They are rendered on [`docs/design-system.html`](design-system.html).
+
+| Class | What | Notes |
+|---|---|---|
+| `.obs-card`, `.obs-text` | One observation: child, date, area badge, text, photos, actions | Status is always a word: "Staff only" (Linen badge) or "Shared 02-Oct-2026" (Fern badge) |
+| `.photo-row`, `.photo-thumb` | Photo thumbnails, 96 px, tap opens a larger view | Minimum 44 px target (`--tap`); `.photo-missing` shows text when the image cannot load. Images come from object URLs only |
+| `.lbox`, `.lhead`, `.lrow` | Dense list: curriculum and the per-child progress list | `.lrow.retired` is greyed with the word "retired" |
+| `.upload-status` (`.ok`, `.bad`) | Photo prep result line | Fern for ready, Brick for a refusal; always has words |
+| `.report` | A4 termly report sheet (screen and print) | Prints black on white; the demo stamp reuses the receipt `.stamp`; `src/ui/print.css` sets the page to A4 for this route only |
+| `.i-learn` | Learning nav icon (stacked blocks, an inline mask) | Same masking as the other icons |
+
+Progress statuses use the existing badges: Introduced = Lake (`info`), Practising = Sunshine (`warn`), Mastered = Fern (`ok`). Never colour alone: the word is always shown.
+
 ## Rules
 
 - Primary action per screen: one Forest button. Secondary actions: outlined paper buttons.

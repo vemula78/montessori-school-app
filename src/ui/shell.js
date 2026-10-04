@@ -8,6 +8,7 @@ const N = {
   calendar: { path: '/calendar', label: 'Calendar', icon: 'calendar' },
   attendance: { path: '/attendance', label: 'Attendance', icon: 'check' },
   diary: { path: '/diary', label: 'Daily diary', icon: 'book', short: 'Diary' },
+  learning: { path: '/learning', label: 'Learning', icon: 'learn', short: 'Learn' },
   bus: { path: '/bus', label: 'Bus', icon: 'bus' },
   trip: { path: '/bus', label: 'Trip', icon: 'bus' },
   fees: { path: '/fees', label: 'Fees', icon: 'rupee' },
@@ -21,10 +22,10 @@ const N = {
 };
 
 export const NAV = {
-  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'bus', 'fees', 'structures', 'reports', 'audit', 'settings'],
-  teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary'],
+  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'settings'],
+  teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'learning'],
   accountant: ['home', 'fees', 'structures', 'reports', 'calendar', 'audit'],
-  parent: ['home', 'notices', 'messages', 'diary', 'bus', 'fees'],
+  parent: ['home', 'notices', 'messages', 'diary', 'learning', 'bus', 'fees'],
   driver: ['home', 'trip', 'calendar'],
 };
 

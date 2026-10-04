@@ -8,8 +8,11 @@
 //   a gateway-dashboard refund (webhook), and 10 simultaneous payments (deferred #1: contiguous numbers).
 // Then: the accountant's RLS snapshot → Phase 1 reconcile() → all five checks must pass; and a SECOND PATH in
 // SQL over payments.doc / invoices.doc / refunds.doc / credits.doc must equal the JS totals. Counts are printed.
+// Then one photo through Storage (Phase 3): teacher observation → register → upload → server check → share → the
+// parent's signed download returns the same bytes; second path: the row and the stored object agree in SQL.
 // Finally prints two unredeemed invite codes for the browser smoke test. Exit 1 on any mismatch.
 
+import { readFileSync } from 'node:fs';
 import { reconcile } from '../src/domain/reconcile.js';
 import { invoiceBalance } from '../src/domain/fees.js';
 import { startMock } from './mock-razorpay.mjs';
@@ -91,6 +94,26 @@ try {
   const maxNo = n(`select max(substring(receipt_number from '\\d+$')::int) from payments where receipt_number like 'RCP/26-27/%'`);
   check(gaps === 0 && counter === maxNo, `receipt numbers 1..${maxNo} have no gap; counter ${counter} = highest`);
   console.log(`\nCounts: students ${db.students.length}, invoices ${db.invoices.length}, payments ${db.payments.length} (valid ${db.payments.filter(p => p.status === 'valid').length}), refunds ${db.refunds.length}, credits ${db.credits.length}`);
+
+  // ---------------------------------------------------------------- one photo, end to end (fake picture)
+  console.log('\nPhoto through Storage (command function + signed URLs)');
+  const teacher = await signIn('teacher-pa@example.com');
+  const jpeg = readFileSync(new URL('../tests/fixtures/tiny.jpg', import.meta.url));
+  const obs = must(await command(teacher.token, 'observations.add', { studentId: 'stu-04', date: today, area: 'math', text: 'E2E fake note: counted golden beads to ten.' }), 'observations.add');
+  const reg = must(await command(teacher.token, 'photos.register', { observationId: obs.id, soloConfirmed: true }), 'photos.register');
+  const up = await fetch(`${local().url}/storage/v1${reg.upload.signedPath}`, { method: 'PUT', headers: { apikey: local().anon, 'Content-Type': 'image/jpeg' }, body: jpeg });
+  check(up.status === 200, `upload to the granted path (${up.status})`);
+  const done = must(await command(teacher.token, 'photos.complete', reg.photo.id), 'photos.complete');
+  check(done.photo.status === 'ready' && done.photo.bytes === jpeg.length, `server check passed: ready, ${done.photo.bytes} bytes`);
+  must(await command(teacher.token, 'observations.share', obs.id), 'observations.share');
+  const view = must(await command(parent.token, 'photos.viewUrl', reg.photo.id), 'photos.viewUrl');
+  const got = Buffer.from(await (await fetch(`${local().url}/storage/v1${view.signedPath}`)).arrayBuffer());
+  check(got.equals(jpeg), `the parent's signed download returns the same ${got.length} bytes`);
+  const row = psql(`select status || '|' || (doc->>'bytes') from photos where id = '${reg.photo.id}'`);
+  const obj = psql(`select (metadata->>'size') from storage.objects where bucket_id = 'child-photos' and name = '${reg.upload.path}'`);
+  check(row === `ready|${jpeg.length}` && obj === String(jpeg.length), `second path (SQL): row ${row}, stored object ${obj} bytes`);
+  must(await command(teacher.token, 'photos.remove', reg.photo.id, 'e2e clean-up'), 'photos.remove');
+  check(psql(`select count(*) from storage.objects where bucket_id = 'child-photos' and name = '${reg.upload.path}'`) === '0', 'removed: the object is gone, the row stays as evidence');
 
   // ---------------------------------------------------------------- invite codes for the browser smoke test
   console.log('\nUnredeemed invite codes (local, fake families) — sign in at /app/ with any @example.com email, then redeem:');

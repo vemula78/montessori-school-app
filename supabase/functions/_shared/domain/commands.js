@@ -5,7 +5,8 @@
 //
 // Entry shape:
 //   slice      which revision-guarded slice the command writes ('ledger'|'messaging'|'calendar'|'transport'|
-//              'classroom'|'people'|'account'|'settlement'|'export'); the server loads that slice's collections.
+//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'); the server
+//              loads that slice's collections.
 //   authorize(p, db, args)   throws DomainError NOT_ALLOWED / NOT_FOUND; p = persona (see personaFor)
 //   run(db, args, ctx, p)    mutates db and returns the api result (same shape in both modes)
 //   load(args)               optional hints for the server loader (e.g. {tripId})
@@ -32,11 +33,20 @@ import * as I from './import-people.js';
 import { appendAudit } from './audit.js';
 import { tsToMs } from './dates.js';
 import { guardianExport } from './export.js';
+import * as O from './observations.js';
+import * as P from './photos.js';
+import * as PG from './progress.js';
+import * as RP from './reports.js';
+import * as RT from './retention.js';
+import * as CU from './presentations.js';
+import { isISODate, compareISO } from './dates.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
-export const CONSENT_PURPOSES = ['app_account', 'push', 'bus_live'];
-export const CONSENT_VERSION = 'v1';
+export const CONSENT_PURPOSES = ['app_account', 'push', 'bus_live', 'photos'];
+// v2 (Phase 3): the photos purpose and the retention section of the notice. Must equal PRIVACY_VERSION
+// (src/ui/privacy.js) and app.consent_version() (latest migration defining it).
+export const CONSENT_VERSION = 'v2';
 export const MAX_INVITE_FAILURES = 5; // wrong dates of birth per invite code, across all accounts
 export const ERASED_MESSAGE = '[message erased at the guardian\'s request]';
 
@@ -96,6 +106,8 @@ export function personaFor(db, link) {
 }
 
 export const ctxFor = (p, now, today) => ({ actor: { role: p.role, id: p.staffId || p.guardianId }, now, today });
+/** The persona of a server job (cron, the command function's follow-up steps; the demo api for photos.finishDelete). */
+export const systemPersona = (label = 'system') => ({ id: `system-${label}`, role: 'system', staffId: null, guardianId: null, studentIds: [], programIds: [], routeIds: [] });
 
 // ---------------------------------------------------------------- authorization helpers
 
@@ -445,45 +457,286 @@ export const COMMANDS = {
     },
   },
 
+  // ---- learning: curriculum, observations, photos, progress, termly reports (slice 'learning')
+  // Hints name the one child whose records a command needs (the server loads that child's rows only).
+  'curriculum.loadStarter': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, args, ctx) => CU.loadStarter(db, ctx) },
+  /** save({id?, area, name, sequence, ageFromMonths, ageToMonths, description}) — create, or edit (a rename keeps the id). */
+  'curriculum.save': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [input], ctx) => CU.savePresentation(db, input || {}, ctx) },
+  'curriculum.retire': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [id], ctx) => CU.setPresentationActive(db, id, false, ctx) },
+  'curriculum.restore': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [id], ctx) => CU.setPresentationActive(db, id, true, ctx) },
+  /** importCsv(preview) — preview from api.curriculum.previewCsv; → {inputRows, imported, skippedDuplicate, rejected, rejectedRows} */
+  'curriculum.importCsv': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [preview], ctx) => CU.importCurriculum(db, preview, ctx) },
+
+  /** add({studentId, date, area, presentationId?, text}) — staff-only until shared. */
+  'observations.add': {
+    slice: 'learning', load: ([i = {}]) => ({ learningStudentId: String(i?.studentId ?? '') }),
+    authorize: (p, db, [i = {}]) => { staffLearning(p); O.mustSeeLearner(p, db, i?.studentId); },
+    run: (db, [i], ctx) => O.observationView(db, O.addObservation(db, i || {}, ctx)),
+  },
+  /** edit(id, {date?, area?, presentationId?, text?}) — only while unshared. */
+  'observations.edit': {
+    slice: 'learning', load: ([id]) => ({ observationId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, observationOf(db, id).studentId); },
+    run: (db, [id, patch], ctx) => O.observationView(db, O.editObservation(db, id, patch || {}, ctx)),
+  },
+  'observations.share': {
+    slice: 'learning', load: ([id]) => ({ observationId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, observationOf(db, id).studentId); },
+    run: (db, [id], ctx) => O.observationView(db, O.shareObservation(db, id, ctx)),
+  },
+  /** A teacher within 24 hours of sharing; the principal at any time. */
+  'observations.unshare': {
+    slice: 'learning', load: ([id]) => ({ observationId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, observationOf(db, id).studentId); },
+    run: (db, [id], ctx) => O.observationView(db, O.unshareObservation(db, id, ctx)),
+  },
+
+  /**
+   * register({observationId, soloConfirmed:true}) → {photo, path, upload}. Needs photo consent (photoConsentFor), the
+   * teacher's "only this child is in the frame" and room under the per-child cap. The real app's command function
+   * adds upload = {bucket, path, token, signedPath, expiresAt} (2 h); the copy kept for a replay of the request id
+   * has no token (uploadWithheld), so a replay never re-issues a grant.
+   */
+  'photos.register': {
+    slice: 'learning', load: ([a = {}]) => ({ observationId: String(a?.observationId ?? '') }),
+    storedResult: r => ({ ...r, upload: null, uploadWithheld: true }),
+    authorize: (p, db, [a = {}]) => { staffLearning(p); O.mustSeeLearner(p, db, observationOf(db, a?.observationId).studentId); },
+    run(db, [a = {}], ctx) {
+      const o = observationOf(db, a.observationId);
+      if (byId(db.students, o.studentId).status !== 'active') fail('VALIDATION', 'Student is not active');
+      if (a.soloConfirmed !== true) fail('VALIDATION', 'Confirm that only this child is in the photo');
+      if (!photoConsentFor(db, o.studentId)) fail('VALIDATION', 'No photo consent for this child (every guardian using the app must agree to photos)');
+      if (P.livePhotoCount(db, o.studentId) >= P.PHOTO_CAP) fail('VALIDATION', `This child already has ${P.PHOTO_CAP} photos; delete one to add another`);
+      const ph = P.registerPhoto(db, { observationId: o.id }, ctx);
+      return { photo: P.photoView(ph), path: ph.path, upload: null };
+    },
+  },
+  /**
+   * complete(photoId) → {photo} — the server first reads the uploaded object and passes what it found as
+   * ctx.objectInfo (never from the client); a refused file is deleted and the row committed as rejected (then 422).
+   * Demo: the api runs it with a synthetic objectInfo after storing the prepared blob.
+   */
+  'photos.complete': {
+    slice: 'learning', load: ([id]) => ({ photoId: String(id ?? '') }),
+    authorize: (p, db, [id]) => takerOf(p, db, id),
+    run(db, [id], ctx) { const r = P.completePhoto(db, id, ctx.objectInfo, ctx); return { photo: P.photoView(r.photo), ...(r.failure ? { failure: r.failure } : {}) }; },
+  },
+  /** Server step before complete: the object path of a photo the caller may complete (never returned to the browser). */
+  'photos.uploadTarget': {
+    slice: 'learning', serverOnly: true, readOnly: true, load: ([id]) => ({ photoId: String(id ?? '') }),
+    authorize: (p, db, [id]) => takerOf(p, db, id),
+    run: (db, [id]) => { const ph = byId(db.photos, id); return { photoId: ph.id, path: ph.path, status: ph.status }; },
+  },
+  /** remove(photoId, reason?) → deleting; the command function then deletes the object (cron retries). */
+  'photos.remove': {
+    slice: 'learning', load: ([id]) => ({ photoId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, photoOf(db, id).studentId); },
+    run: (db, [id, reason], ctx) => ({ photo: P.photoView(P.markDeleting(db, id, reason ? String(reason).slice(0, 200) : 'removed by staff', ctx)) }),
+  },
+  /**
+   * The bytes of a ready photo, for a persona who may see it: staff of the child; a parent of the child once the
+   * observation is shared. The command function turns {path} into a signed URL (120 s) that remote.js fetches at
+   * once; readOnly, so nothing about it is stored.
+   */
+  'photos.viewUrl': {
+    slice: 'learning', serverOnly: true, readOnly: true, load: ([id]) => ({ photoId: String(id ?? '') }),
+    authorize(p, db, [id]) {
+      allow(p, 'admin', 'teacher', 'parent');
+      const ph = photoOf(db, id);
+      O.mustSeeLearner(p, db, ph.studentId);
+      if (p.role === 'parent' && !byId(db.observations, ph.observationId)?.sharedAt) deny('This photo has not been shared with you');
+      if (ph.status !== 'ready' || !ph.path) fail('NOT_FOUND', 'Photo not available'); // demo rows have no stored object
+    },
+    run: (db, [id]) => { const ph = byId(db.photos, id); return { photoId: ph.id, path: ph.path }; },
+  },
+  /** System (command function, cron; the demo api after deleting its blob): objects gone → deleted / expired. */
+  'photos.finishDelete': {
+    slice: 'learning', load: ([a = {}]) => ({ photoIds: Array.isArray(a?.photoIds) ? a.photoIds.map(String) : [] }),
+    authorize: p => allow(p, 'system'),
+    run: (db, [a = {}], ctx) => P.finishDelete(db, a.photoIds, ctx),
+  },
+  /** System (cron): pending rows whose upload never completed. */
+  'photos.markRejected': {
+    slice: 'learning', serverOnly: true, load: ([a = {}]) => ({ photoIds: Array.isArray(a?.photoIds) ? a.photoIds.map(String) : [] }),
+    authorize: p => allow(p, 'system'),
+    run: (db, [a = {}], ctx) => P.markRejected(db, a.photoIds, a.reason || 'abandoned: not uploaded within 2 hours', ctx),
+  },
+  /** System (cron): every child with live photos whose photo consent no longer holds → their photos deleting. */
+  'photos.consentSweep': {
+    slice: 'learning', serverOnly: true, load: () => ({ photosLive: true }),
+    authorize: p => allow(p, 'system'),
+    run: (db, args, ctx) => P.sweepConsent(db, sid => photoConsentFor(db, sid), ctx),
+  },
+
+  /** record({studentId, presentationId, status, date, note?, correction?, reason?}) — appends one event. */
+  'progress.record': {
+    slice: 'learning', load: ([i = {}]) => ({ learningStudentId: String(i?.studentId ?? '') }),
+    authorize: (p, db, [i = {}]) => { staffLearning(p); O.mustSeeLearner(p, db, i?.studentId); },
+    run: (db, [i], ctx) => PG.recordProgress(db, i || {}, ctx),
+  },
+
+  /** generate({studentId, academicYearId, termName, fromDate, toDate}) — refused while that term's report is published. */
+  'reports.generate': {
+    slice: 'learning', load: ([i = {}]) => ({ learningStudentId: String(i?.studentId ?? '') }),
+    authorize: (p, db, [i = {}]) => { staffLearning(p); O.mustSeeLearner(p, db, i?.studentId); },
+    run: (db, [i], ctx) => RP.generateReport(db, i || {}, ctx),
+  },
+  /** saveNarratives(reportId, {narratives, revision}) — CONFLICT if the report moved since revision. */
+  'reports.saveNarratives': {
+    slice: 'learning', load: ([id]) => ({ reportId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, reportOf(db, id).studentId); },
+    run: (db, [id, a], ctx) => RP.saveNarratives(db, id, a || {}, ctx),
+  },
+  'reports.submit': {
+    slice: 'learning', load: ([id]) => ({ reportId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, reportOf(db, id).studentId); },
+    run: (db, [id], ctx) => RP.submitReport(db, id, ctx),
+  },
+  'reports.publish': {
+    slice: 'learning', load: ([id]) => ({ reportId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { allow(p, 'admin'); reportOf(db, id); },
+    run: (db, [id], ctx) => RP.publishReport(db, id, ctx),
+  },
+  'reports.unpublish': {
+    slice: 'learning', load: ([id]) => ({ reportId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { allow(p, 'admin'); reportOf(db, id); },
+    run: (db, [id, reason], ctx) => RP.unpublishReport(db, id, reason, ctx),
+  },
+
+  // ---- enrolment and retention
+  /**
+   * updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?}) — the only way a child changes class
+   * or leaves. status 'left' sets leftOn (given, else today); back to 'active' clears it; leftOn alone corrects the
+   * date of a child who has left.
+   */
+  'people.updateStudent': {
+    slice: 'ledger', authorize: p => allow(p, 'admin'),
+    run(db, [{ studentId, ...patch } = {}], ctx) {
+      const s = byId(db.students, studentId);
+      if (!s) fail('NOT_FOUND', 'Student not found');
+      for (const k of Object.keys(patch)) if (!['programId', 'status', 'leftOn', 'routeId', 'stopId'].includes(k)) fail('VALIDATION', `Unknown field: ${k}`);
+      const changes = [];
+      const leftDate = d => {
+        if (!isISODate(d)) fail('VALIDATION', `Invalid leaving date: ${d}`);
+        if (compareISO(d, ctx.today) > 0) fail('VALIDATION', 'The leaving date is in the future');
+        return d;
+      };
+      if ('programId' in patch && patch.programId !== s.programId) {
+        if (!byId(db.programs, patch.programId)) fail('NOT_FOUND', 'Program not found');
+        changes.push(`program ${s.programId} → ${patch.programId}`);
+        s.programId = patch.programId;
+      }
+      if ('routeId' in patch || 'stopId' in patch) {
+        const routeId = 'routeId' in patch ? patch.routeId || null : s.routeId, stopId = 'stopId' in patch ? patch.stopId || null : s.stopId;
+        if (routeId) {
+          const r = byId(db.routes, routeId);
+          if (!r) fail('NOT_FOUND', 'Route not found');
+          if (!r.stops.some(x => x.id === stopId)) fail('VALIDATION', 'Choose a stop on that route');
+        } else if (stopId) fail('VALIDATION', 'A stop needs a route');
+        if (routeId !== s.routeId || stopId !== s.stopId) changes.push(`route ${s.routeId || '-'}/${s.stopId || '-'} → ${routeId || '-'}/${stopId || '-'}`);
+        Object.assign(s, { routeId, stopId });
+      }
+      if ('status' in patch) {
+        if (!['active', 'left'].includes(patch.status)) fail('VALIDATION', `Unknown status: ${patch.status}`);
+        const leftOn = patch.status === 'left' ? leftDate(patch.leftOn ?? ctx.today) : null;
+        if (patch.status !== s.status || leftOn !== (s.leftOn ?? null)) changes.push(`status ${s.status} → ${patch.status}${leftOn ? ` (left ${leftOn})` : ''}`);
+        Object.assign(s, { status: patch.status, leftOn });
+      } else if ('leftOn' in patch) {
+        if (s.status !== 'left') fail('VALIDATION', 'Only a child who has left has a leaving date');
+        const d = leftDate(patch.leftOn);
+        if (d !== s.leftOn) changes.push(`leaving date ${s.leftOn || 'unknown'} → ${d}`);
+        s.leftOn = d;
+      }
+      appendAudit(db, ctx, { entity: 'student', entityId: s.id, action: 'update', summary: changes.join('; ') || 'no change' });
+      return { ...s, name: fullName(s) };
+    },
+  },
+  /** setRetention({photosMonthsAfterLeaving, …}) — whole months after leaving, or null (not decided). */
+  'admin.setRetention': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [r], ctx) => RT.setRetention(db, r || {}, ctx) },
+  /** What retention would remove today (counts per category, and the children who left without a date). */
+  'retention.preview': {
+    slice: 'retention', serverOnly: true, readOnly: true, load: () => RETENTION_LOAD, authorize: p => allow(p, 'admin'),
+    run(db, args, ctx) {
+      const plan = RT.retentionPlan(db, ctx.today);
+      return { asOf: plan.asOf, leftWithoutDate: plan.leftWithoutDate,
+        categories: Object.fromEntries(Object.entries(plan.categories).map(([k, c]) => [k, { months: c.months, students: c.students.length, due: c.due }])) };
+    },
+  },
+  /** System (cron retention step): {expire:[photoId], deletes:{collection:[key]}}, each re-checked as due today. */
+  'retention.purge': {
+    slice: 'retention', serverOnly: true, load: () => RETENTION_LOAD, authorize: p => allow(p, 'system'),
+    run: (db, [request], ctx) => RT.purgeRetention(db, request || {}, ctx),
+  },
+
   // ---- account: consent, invites (server only: these tables do not exist in the demo document)
   'consent.give': {
     slice: 'account', serverOnly: true, beforeConsent: true, authorize: p => allow(p, 'parent'),
-    /** give({purposes, version, textHash?}) — textHash: optional SHA-256 hex of the notice text the parent saw. */
-    run(db, [{ purposes, version, textHash = null } = {}], ctx, p) {
+    /**
+     * give({purposes, perChild?, version, textHash?}) — purposes apply to every child of the parent; perChild
+     * ({studentId: [purpose]}) adds optional purposes for one child only (siblings may differ, e.g. photos).
+     * app_account is never per child (required until every child has it); an optional purpose for a child needs
+     * that child's app_account at this version (given in the same call or already live).
+     * textHash: optional SHA-256 hex of the notice text the parent saw.
+     */
+    run(db, [{ purposes, perChild = null, version, textHash = null } = {}], ctx, p) {
       if (version !== CONSENT_VERSION) fail('VALIDATION', `Unknown privacy notice version: ${version}`);
       const list = [...new Set(purposes || [])];
-      if (!list.length) fail('VALIDATION', 'Choose at least one purpose');
+      if (perChild !== null && (typeof perChild !== 'object' || Array.isArray(perChild))) fail('VALIDATION', 'perChild must be {studentId: [purpose]}');
+      const extra = Object.entries(perChild || {}).map(([sid, ps]) => {
+        if (!p.studentIds.includes(sid)) deny('Not your child');
+        if (!Array.isArray(ps)) fail('VALIDATION', 'perChild must be {studentId: [purpose]}');
+        if (ps.includes('app_account')) fail('VALIDATION', 'The app account purpose is given for all your children together');
+        return [sid, [...new Set(ps)]];
+      });
+      if (!list.length && !extra.some(([, ps]) => ps.length)) fail('VALIDATION', 'Choose at least one purpose');
       // app_account is the base purpose: required until every child has it; optional purposes can be added later
       const hasBase = consentStatus(db, p).purposes.app_account.given;
       if (!hasBase && !list.includes('app_account')) fail('VALIDATION', 'The app account purpose is required to use the app');
-      for (const x of list) if (!CONSENT_PURPOSES.includes(x)) fail('VALIDATION', `Unknown purpose: ${x}`);
+      for (const x of [...list, ...extra.flatMap(([, ps]) => ps)]) if (!CONSENT_PURPOSES.includes(x)) fail('VALIDATION', `Unknown purpose: ${x}`);
       if (textHash !== null && !/^[0-9a-f]{64}$/.test(String(textHash))) fail('VALIDATION', 'textHash must be a SHA-256 hex digest');
+      const live = (studentId, purpose) => (db.consents || []).find(c => c.guardianId === p.guardianId && c.studentId === studentId && c.purpose === purpose && c.version === version && !c.withdrawnAt);
+      const wanted = new Map(p.studentIds.map(sid => [sid, new Set(list)]));
+      for (const [sid, ps] of extra) for (const x of ps) wanted.get(sid).add(x);
+      for (const [sid, ps] of wanted) {
+        if ([...ps].some(x => x !== 'app_account') && !ps.has('app_account') && !live(sid, 'app_account')) fail('VALIDATION', `Give the app account purpose for child ${sid} first`);
+      }
       const invite = (db.invites || []).find(i => i.guardianId === p.guardianId && i.redeemedBy && i.redeemedBy === ctx.userId);
       const evidence = { method: 'invite_code+child_dob+email_otp', inviteId: invite ? invite.id : null };
       let given = 0;
-      for (const studentId of p.studentIds) {
-        for (const purpose of list) {
-          const live = (db.consents || []).find(c => c.guardianId === p.guardianId && c.studentId === studentId && c.purpose === purpose && c.version === version && !c.withdrawnAt);
-          if (live) continue;
+      for (const [studentId, ps] of wanted) {
+        for (const purpose of ['app_account', ...[...ps].filter(x => x !== 'app_account')].filter(x => ps.has(x))) {
+          if (live(studentId, purpose)) continue;
           db.consents.push({ id: newId('cns'), guardianId: p.guardianId, studentId, purpose, version, textHash, givenAt: ctx.now, withdrawnAt: null, evidence });
           given++;
         }
       }
-      appendAudit(db, ctx, { entity: 'consent', entityId: p.guardianId, action: 'give', summary: `${list.join(',')} ${version}: ${given} new record(s) for ${p.studentIds.length} child(ren)` });
+      const per = extra.filter(([, ps]) => ps.length).map(([sid, ps]) => `${sid}:${ps.join('+')}`).join(' ');
+      appendAudit(db, ctx, { entity: 'consent', entityId: p.guardianId, action: 'give', summary: `${list.join(',') || '-'}${per ? ` per child ${per}` : ''} ${version}: ${given} new record(s) for ${p.studentIds.length} child(ren)` });
       return consentStatus(db, p);
     },
   },
+  // withdraw(purpose, {studentIds?}) — studentIds (photos only): withdraw for those children alone. Withdrawing photos
+  // (or the app account) also marks the photos of every child whose photo consent no longer holds as deleting, in the
+  // same transaction; the objects go with cron's photosCleanup
   'consent.withdraw': {
     slice: 'account', serverOnly: true, beforeConsent: true, authorize: p => allow(p, 'parent'),
-    run(db, [purpose], ctx, p) {
+    load: ([purpose]) => (['photos', 'app_account'].includes(purpose) ? { photosOfCaller: true } : {}),
+    run(db, [purpose, { studentIds = null } = {}], ctx, p) {
       if (!CONSENT_PURPOSES.includes(purpose)) fail('VALIDATION', `Unknown purpose: ${purpose}`);
+      if (studentIds !== null) {
+        if (purpose !== 'photos') fail('VALIDATION', 'Only photo consent can be withdrawn for one child');
+        if (!Array.isArray(studentIds) || !studentIds.length) fail('VALIDATION', 'studentIds must list at least one child');
+        for (const sid of studentIds) if (!p.studentIds.includes(sid)) deny('Not your child');
+      }
+      const only = studentIds === null ? null : new Set(studentIds);
       let n = 0;
-      for (const c of db.consents || []) if (c.guardianId === p.guardianId && c.purpose === purpose && !c.withdrawnAt) { c.withdrawnAt = ctx.now; n++; }
+      for (const c of db.consents || []) if (c.guardianId === p.guardianId && c.purpose === purpose && !c.withdrawnAt && (!only || only.has(c.studentId))) { c.withdrawnAt = ctx.now; n++; }
       if (purpose === 'app_account') {
         for (const u of db.appUsers || []) if (u.guardianId === p.guardianId && u.status === 'active') u.status = 'withdrawn';
         db.erasureRequests.push({ id: newId('era'), guardianId: p.guardianId, requestedAt: ctx.now, status: 'open', doneAt: null, doneBy: null });
       }
-      appendAudit(db, ctx, { entity: 'consent', entityId: p.guardianId, action: 'withdraw', summary: `${purpose}: ${n} record(s) withdrawn` });
+      appendAudit(db, ctx, { entity: 'consent', entityId: p.guardianId, action: 'withdraw', summary: `${purpose}${only ? ` for ${[...only].join(',')}` : ''}: ${n} record(s) withdrawn` });
+      if (['photos', 'app_account'].includes(purpose)) P.sweepConsent(db, sid => photoConsentFor(db, sid), ctx, only ? [...only] : p.studentIds);
       return consentStatus(db, p);
     },
   },
@@ -597,19 +850,53 @@ export const COMMANDS = {
   },
 };
 
-/** {version, purposes:{app_account, push, bus_live}: {given, at}} — a purpose counts as given when every child has it. */
+/**
+ * May photos of this child be taken and kept? Every guardian of the child who holds live app_account consent for the
+ * child also holds live photos consent for the child, at the current notice version — and at least one such guardian
+ * exists. Per child: a sibling's consent does not count. (Conservative on purpose; the school may relax it to any one.)
+ */
+export function photoConsentFor(db, studentId) {
+  const s = byId(db.students, studentId);
+  if (!s) return false;
+  const live = (c, purpose) => c.studentId === studentId && c.purpose === purpose && c.version === CONSENT_VERSION && !c.withdrawnAt;
+  const consents = db.consents || [];
+  const holders = [...new Set(consents.filter(c => live(c, 'app_account') && (s.guardianIds || []).includes(c.guardianId)).map(c => c.guardianId))];
+  return holders.length > 0 && holders.every(g => consents.some(c => c.guardianId === g && live(c, 'photos')));
+}
+
+/**
+ * {version, purposes:{app_account, push, bus_live, photos}: {given, at}, byChild:{studentId: [purpose]}} — a purpose
+ * counts as given when every child has it; byChild lists the live purposes of each child (photos may differ by child).
+ */
 export function consentStatus(db, p) {
   const purposes = {};
+  const liveRow = (sid, purpose) => (db.consents || []).find(c => c.guardianId === p.guardianId && c.studentId === sid && c.purpose === purpose && c.version === CONSENT_VERSION && !c.withdrawnAt);
   for (const purpose of CONSENT_PURPOSES) {
-    const rows = p.studentIds.map(sid => (db.consents || []).find(c => c.guardianId === p.guardianId && c.studentId === sid && c.purpose === purpose && c.version === CONSENT_VERSION && !c.withdrawnAt));
+    const rows = p.studentIds.map(sid => liveRow(sid, purpose));
     const given = p.studentIds.length > 0 && rows.every(Boolean);
     purposes[purpose] = { given, at: given ? rows.map(r => r.givenAt).sort()[0] : null };
   }
-  return { version: CONSENT_VERSION, purposes };
+  const byChild = Object.fromEntries(p.studentIds.map(sid => [sid, CONSENT_PURPOSES.filter(x => liveRow(sid, x))]));
+  return { version: CONSENT_VERSION, purposes, byChild };
 }
+
+const staffLearning = p => allow(p, 'admin', 'teacher');
+function observationOf(db, id) { const o = byId(db.observations, id); if (!o) fail('NOT_FOUND', 'Observation not found'); return o; }
+function photoOf(db, id) { const x = byId(db.photos, id); if (!x) fail('NOT_FOUND', 'Photo not found'); return x; }
+function reportOf(db, id) { const r = byId(db.reports, id); if (!r) fail('NOT_FOUND', 'Report not found'); return r; }
+/** The principal, or the staff member who took the photo (and still sees the child). */
+function takerOf(p, db, id) {
+  staffLearning(p);
+  const ph = photoOf(db, id);
+  O.mustSeeLearner(p, db, ph.studentId);
+  if (p.role !== 'admin' && ph.takenBy !== p.staffId) deny('Only the person who took the photo can finish its upload');
+  return ph;
+}
+const RETENTION_LOAD = { learningAll: true, diaryAll: true, attendanceAll: true };
 
 /** The DB slice each command needs on the server, and the collections it may write. */
 const BASE = ['academicYears', 'programs', 'students', 'guardians', 'staff', 'routes', 'feeHeads'];
+const LEARNING = ['presentations', 'observations', 'photos', 'progressEvents', 'reports'];
 export const SLICES = {
   ledger: { reads: [...BASE, 'calendarEvents', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'importRows', 'erasureRequests'],
     writes: ['school', 'counters', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests'] },
@@ -618,15 +905,20 @@ export const SLICES = {
   transport: { reads: [...BASE, 'calendarEvents', 'trips'], writes: ['trips'] },
   classroom: { reads: [...BASE, 'calendarEvents', 'attendance', 'diaryEntries'], writes: ['attendance', 'diaryEntries'] },
   people: { reads: [...BASE, 'invoices', 'importBatches'], writes: ['importBatches', 'importRows'] },
-  account: { reads: [...BASE, 'consents', 'invites', 'appUsers', 'erasureRequests'], writes: ['guardians', 'consents', 'invites', 'appUsers', 'erasureRequests'] },
+  account: { reads: [...BASE, 'consents', 'invites', 'appUsers', 'erasureRequests', 'photos'], writes: ['guardians', 'consents', 'invites', 'appUsers', 'erasureRequests', 'photos'] },
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
   export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
-    'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'], writes: [] },
+    'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents',
+    ...LEARNING], writes: [] },
   erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows'],
     writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows'] },
+  // learning records are loaded per child (hints) except for system sweeps; consents are read for the photo rule
+  learning: { reads: [...BASE, 'consents', ...LEARNING], writes: LEARNING },
+  // the only slice whose command removes rows (retention.purge, system only); persist's allow-list matches PURGEABLE
+  retention: { reads: [...BASE, ...LEARNING, 'diaryEntries', 'attendance', 'threads', 'messages'], writes: RT.PURGEABLE },
 };
-/** Server-only collections (not part of the Phase 1 Db document). */
-export const SERVER_COLLECTIONS = ['consents', 'invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'];
+/** Server-only collections (not part of the Db document; consents joined it in schema v2). */
+export const SERVER_COLLECTIONS = ['invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'];
 
 /**
  * Other slices whose revision must also be checked (and moved) when a command of slice `primary` changes these

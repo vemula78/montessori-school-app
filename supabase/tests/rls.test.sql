@@ -3,10 +3,12 @@
 -- grd-02 = parent-bus (stu-03 Toddler on route-1, stu-04 Primary A), grd-05 (stu-09 on route-2).
 -- Migration 0003 (audit fixes) is covered from "audit fixes" below: auth confirmation, per-child consent, child trip
 -- events, notice/calendar scoping, cross-slice revision guards, request ids, reminder claims, order slots.
+-- Migration 0005 (Phase 3 learning) from "phase 3" below: observations/photos/progress/reports RLS, consents for
+-- teachers, the private photo bucket, persist's delete allow-list, the v2 snapshot, the realtime publication.
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(86);
+select plan(132);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -33,8 +35,8 @@ grant execute on all functions in schema tests to anon, authenticated, service_r
 insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
 values ('00000000-0000-0000-0000-000000000000', '00000000-0000-4000-8000-0000000000aa', 'authenticated', 'authenticated', 'route2-parent@example.com', '', now(), now());
 insert into public.app_users (user_id, role, guardian_id, status) values ('00000000-0000-4000-8000-0000000000aa', 'parent', 'grd-05', 'active');
-insert into public.consents (id, doc) values ('cns-test-r2', jsonb_build_object('id', 'cns-test-r2', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'bus_live', 'version', 'v1', 'withdrawnAt', null));
-insert into public.consents (id, doc) values ('cns-test-r2a', jsonb_build_object('id', 'cns-test-r2a', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'app_account', 'version', 'v1', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-r2', jsonb_build_object('id', 'cns-test-r2', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'bus_live', 'version', 'v2', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-r2a', jsonb_build_object('id', 'cns-test-r2a', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'app_account', 'version', 'v2', 'withdrawnAt', null));
 
 -- ---------------------------------------------------------------- anon
 set local role anon;
@@ -72,11 +74,11 @@ select is((select count(*)::int from public.trips), 0, 'parent_positions_require
 reset role;
 -- #7 an old-version bus consent for the child, or a current one for a sibling, does not open the bus
 insert into public.consents (id, doc) values ('cns-test-g1-old', jsonb_build_object('id', 'cns-test-g1-old', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', 'v0', 'withdrawnAt', null));
-insert into public.consents (id, doc) values ('cns-test-g1-sib', jsonb_build_object('id', 'cns-test-g1-sib', 'guardianId', 'grd-01', 'studentId', 'stu-02', 'purpose', 'bus_live', 'version', 'v1', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-g1-sib', jsonb_build_object('id', 'cns-test-g1-sib', 'guardianId', 'grd-01', 'studentId', 'stu-02', 'purpose', 'bus_live', 'version', 'v2', 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-000000000005');
 select is((select count(*)::int from public.trips), 0, 'bus_consent_is_per_child_and_version: old version or sibling consent opens nothing');
 reset role;
-insert into public.consents (id, doc) values ('cns-test-g1', jsonb_build_object('id', 'cns-test-g1', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', 'v1', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-g1', jsonb_build_object('id', 'cns-test-g1', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', 'v2', 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-000000000005');
 select ok((select count(*) from public.trip_positions) > 0, 'parent_positions_require_bus_live_consent: visible once consent is given');
 reset role;
@@ -175,7 +177,7 @@ select is((select count(*)::int from public.invoices) + (select count(*)::int fr
   + (select count(*)::int from public.student_health) + (select count(*)::int from public.attendance) + (select count(*)::int from public.diary_entries),
   0, 'no_child_data_before_app_account_consent');
 reset role;
-insert into public.consents (id, doc) values ('cns-test-g3', jsonb_build_object('id', 'cns-test-g3', 'guardianId', 'grd-03', 'studentId', 'stu-05', 'purpose', 'app_account', 'version', 'v1', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-g3', jsonb_build_object('id', 'cns-test-g3', 'guardianId', 'grd-03', 'studentId', 'stu-05', 'purpose', 'app_account', 'version', 'v2', 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-0000000000c3');
 select is((select array_agg(distinct student_id) from public.invoices), array['stu-05'], 'consent_opens_only_the_consented_child');
 select is((select array_agg(id) from public.students), array['stu-05'], 'n2_consent_opens_the_full_record_of_that_child_only');
@@ -244,6 +246,101 @@ select is(array[public.take_order_slot('00000000-0000-4000-8000-0000000000d1', 2
 
 -- #38 stale trips are ended within 15 minutes
 select is((select count(*)::int from cron.job where jobname = 'cron-trips' and schedule = '*/15 * * * *'), 1, 'cron_trips_job_registered');
+
+-- ================================================================ phase 3 (migration 0005)
+-- fixtures (fake): grd-02 = parent-bus (stu-03 Toddler, stu-04 Primary A); teacher-pa teaches Primary A only
+create temp table p3 as select (select id from public.presentations order by id limit 1) pres;
+grant select on p3 to authenticated;
+insert into public.observations (id, doc) values
+  ('obs-t-shared', jsonb_build_object('id', 'obs-t-shared', 'studentId', 'stu-04', 'programId', 'prog-primary-a', 'date', app.ist_today()::text, 'area', 'math', 'presentationId', null, 'text', 'fake shared', 'createdBy', 'stf-teacher-pa', 'createdAt', '2026-10-01T05:00:00.000Z', 'sharedAt', '2026-10-01T06:00:00.000Z', 'sharedBy', 'stf-teacher-pa')),
+  ('obs-t-hidden', jsonb_build_object('id', 'obs-t-hidden', 'studentId', 'stu-04', 'programId', 'prog-primary-a', 'date', app.ist_today()::text, 'area', 'math', 'presentationId', null, 'text', 'fake unshared', 'createdBy', 'stf-teacher-pa', 'createdAt', '2026-10-01T05:00:00.000Z', 'sharedAt', null, 'sharedBy', null)),
+  ('obs-t-toddler', jsonb_build_object('id', 'obs-t-toddler', 'studentId', 'stu-03', 'programId', 'prog-toddler', 'date', app.ist_today()::text, 'area', 'sensorial', 'presentationId', null, 'text', 'fake toddler', 'createdBy', 'stf-principal', 'createdAt', '2026-10-01T05:00:00.000Z', 'sharedAt', null, 'sharedBy', null));
+insert into public.photos (id, doc) select x.id, jsonb_build_object('id', x.id, 'observationId', x.obs, 'studentId', x.sid, 'path', x.sid || '/' || x.id || '.jpg', 'status', x.status)
+  from (values ('pho-t-ok', 'obs-t-shared', 'stu-04', 'ready'), ('pho-t-pending', 'obs-t-shared', 'stu-04', 'pending'),
+               ('pho-t-unshared', 'obs-t-hidden', 'stu-04', 'ready'), ('pho-t-toddler', 'obs-t-toddler', 'stu-03', 'ready')) x(id, obs, sid, status);
+insert into public.progress_events (id, doc) select 'prg-t-' || x.sid, jsonb_build_object('id', 'prg-t-' || x.sid, 'studentId', x.sid, 'presentationId', (select pres from p3), 'seq', 1, 'status', 'introduced', 'date', '2026-09-01')
+  from (values ('stu-03'), ('stu-04')) x(sid) where not exists (select 1 from public.progress_events e where e.student_id = x.sid and e.presentation_id = (select pres from p3) and e.seq = 1);
+insert into public.reports (id, doc) values
+  ('rep-t-pub', jsonb_build_object('id', 'rep-t-pub', 'studentId', 'stu-04', 'academicYearId', 'AY-T', 'termName', 'Term 1', 'status', 'published', 'progress', '[]'::jsonb, 'observations', '[]'::jsonb)),
+  ('rep-t-draft', jsonb_build_object('id', 'rep-t-draft', 'studentId', 'stu-04', 'academicYearId', 'AY-T', 'termName', 'Term 2', 'status', 'draft', 'progress', '[]'::jsonb, 'observations', '[]'::jsonb));
+insert into storage.objects (bucket_id, name) values ('child-photos', 'stu-04/pho-t-ok.jpg');
+
+select is(app.consent_version(), 'v2', 'p3_consent_version_is_v2');
+select tests.as_user('00000000-0000-4000-8000-000000000006');
+select ok((select count(*) from public.observations) > 0 and (select bool_and(shared_at is not null and student_id in ('stu-03', 'stu-04')) from public.observations),
+  'p3_parent_sees_only_shared_observations_of_own_children');
+select is((select count(*)::int from public.observations where id in ('obs-t-hidden', 'obs-t-toddler')), 0, 'p3_parent_sees_no_unshared_observation');
+select is((select count(*)::int from public.progress_events), 0, 'p3_parent_sees_no_progress_events');
+select is((select array_agg(id order by id) from public.reports where id like 'rep-t-%'), array['rep-t-pub'], 'p3_parent_sees_published_reports_only');
+select ok((select bool_and(status = 'published') from public.reports), 'p3_parent_reports_all_published');
+select is((select array_agg(id order by id) from public.photos where id like 'pho-t-%'), array['pho-t-ok'], 'p3_parent_photos_only_ready_and_shared');
+select is((select count(*)::int from public.presentations), 0, 'p3_parent_sees_no_curriculum');
+select is((select jsonb_array_length(public.my_snapshot()->'progressEvents')), 0, 'p3_snapshot_parent_has_no_progress_events');
+select ok((select bool_and(e->>'sharedAt' is not null) from jsonb_array_elements(public.my_snapshot()->'observations') e)
+  and jsonb_array_length(public.my_snapshot()->'observations') > 0, 'p3_snapshot_parent_observations_all_shared');
+select is((public.my_snapshot()->>'schemaVersion')::int, 2, 'p3_snapshot_schema_version_2');
+select ok((select bool_and(guardian_id = 'grd-02') from public.consents), 'p3_parent_reads_own_consents_only');
+select is((select count(*)::int from storage.objects), 0, 'p3_parent_reads_no_storage_objects');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000005'); -- grd-01: another family
+select is((select count(*)::int from public.observations where student_id in ('stu-03', 'stu-04')) + (select count(*)::int from public.photos where id like 'pho-t-%')
+  + (select count(*)::int from public.reports where id like 'rep-t-%'), 0, 'p3_other_family_sees_none_of_these');
+reset role;
+
+update public.app_users set status = 'active' where user_id = '00000000-0000-4000-8000-000000000002'; -- revoked by the revocation test above
+select tests.as_user('00000000-0000-4000-8000-000000000002'); -- teacher, Primary A
+select is((select count(*)::int from public.observations o join public.students s on s.id = o.student_id where s.program_id <> 'prog-primary-a'), 0, 'p3_teacher_no_other_program_observations');
+select ok((select count(*) from public.observations where id = 'obs-t-hidden') = 1, 'p3_teacher_sees_unshared_of_own_program');
+select is((select count(*)::int from public.progress_events where student_id = 'stu-03') + (select count(*)::int from public.photos where student_id = 'stu-03')
+  + (select count(*)::int from public.observations where student_id = 'stu-03'), 0, 'p3_teacher_no_toddler_events_photos_observations');
+select is((select array_agg(id order by id) from public.photos where id like 'pho-t-%'), array['pho-t-ok', 'pho-t-pending', 'pho-t-unshared'], 'p3_teacher_sees_every_photo_of_own_program');
+select ok((select count(*) from public.consents) > 0 and (select bool_and(s.program_id = 'prog-primary-a') from public.consents c join public.students s on s.id = c.student_id),
+  'p3_teacher_sees_consents_of_own_students_only');
+select ok((select bool_and(not e ? 'evidence' and not e ? 'textHash') from jsonb_array_elements(public.my_snapshot()->'consents') e), 'p3_snapshot_teacher_consents_carry_ids_and_purposes_only');
+select ok((select count(*) from public.presentations) > 0, 'p3_teacher_reads_curriculum');
+select ok((select count(*) from public.reports where id like 'rep-t-%') = 2, 'p3_teacher_sees_draft_and_published_reports_of_own_program');
+select is((select count(*)::int from storage.objects), 0, 'p3_teacher_reads_no_storage_objects');
+reset role;
+
+select tests.as_user('00000000-0000-4000-8000-000000000003'); -- accountant
+select is((select count(*)::int from public.presentations) + (select count(*)::int from public.observations) + (select count(*)::int from public.photos)
+  + (select count(*)::int from public.progress_events) + (select count(*)::int from public.reports) + (select count(*)::int from public.consents), 0, 'p3_accountant_sees_no_learning_records');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000004'); -- driver
+select is((select count(*)::int from public.presentations) + (select count(*)::int from public.observations) + (select count(*)::int from public.photos)
+  + (select count(*)::int from public.progress_events) + (select count(*)::int from public.reports) + (select count(*)::int from public.consents), 0, 'p3_driver_sees_no_learning_records');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000001'); -- principal
+select ok((select count(*) from public.observations where id like 'obs-t-%') = 3 and (select count(*) from public.photos where id like 'pho-t-%') = 4, 'p3_admin_sees_all');
+select is((select count(*)::int from storage.objects), 0, 'p3_even_the_principal_reads_no_storage_objects');
+reset role;
+set local role anon;
+select is((select count(*)::int from storage.objects), 0, 'p3_anon_reads_no_storage_objects');
+reset role;
+
+select is((select public from storage.buckets where id = 'child-photos'), false, 'p3_photo_bucket_is_private');
+select is((select array[file_size_limit::text, array_to_string(allowed_mime_types, ',')] from storage.buckets where id = 'child-photos'), array['409600', 'image/jpeg'], 'p3_photo_bucket_limits');
+select is((select count(*)::int from pg_policies where schemaname = 'storage'), 0, 'p3_no_storage_policies_at_all');
+select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user'], 'p3_still_no_other_security_definer_function');
+select is((select array_agg(c.relname) from pg_class c join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname = 'public' and c.relkind = 'v' and not coalesce(c.reloptions @> array['security_invoker=true'], false)), null, 'p3_views_still_security_invoker');
+select throws_ok($$select public.persist('pgtap-p3', 0, '{"deletes":{"payments":["pay-x"]}}'::jsonb)$$, '42501', null, 'p3_persist_refuses_deletes_outside_the_allow_list');
+select throws_ok($$select public.persist('pgtap-p3', 0, '{"deletes":{"consents":["cns-x"]}}'::jsonb)$$, '42501', null, 'p3_persist_never_deletes_consents');
+select is(public.persist('pgtap-p3', 0, '{"deletes":{"observations":["obs-t-toddler"]}}'::jsonb), 1::bigint, 'p3_persist_accepts_an_observation_delete');
+select is((select count(*)::int from public.observations where id = 'obs-t-toddler'), 0, 'p3_observation_deleted');
+select is(public.persist('pgtap-p3', 1, '{"upserts":{"presentations":[{"id":"prs-t","key":"math:pgtap-only","area":"math","name":"pgtap only","active":true}]}}'::jsonb), 2::bigint, 'p3_persist_writes_learning_collections');
+select is((select key from public.presentations where id = 'prs-t'), 'math:pgtap-only', 'p3_presentation_written');
+select throws_ok($$insert into public.progress_events (id, doc) select 'prg-t-dup', doc || '{"id":"prg-t-dup"}'::jsonb from public.progress_events where id = 'prg-t-stu-04'$$, '23505', null, 'p3_progress_events_unique_per_child_presentation_seq');
+select throws_ok($$insert into public.reports (id, doc) select 'rep-t-dup', doc || '{"id":"rep-t-dup"}'::jsonb from public.reports where id = 'rep-t-pub'$$, '23505', null, 'p3_one_report_per_child_year_term');
+select is((public.load_slice('{observations,photos}'::text[], '{"observationId":"obs-t-shared"}'::jsonb))->'db'->'photos' @> '[{"id":"pho-t-unshared"}]'::jsonb, true, 'p3_load_slice_observation_hint_loads_the_child_s_photos');
+select is(jsonb_array_length((public.load_slice('{observations}'::text[], '{}'::jsonb))->'db'->'observations'), 0, 'p3_load_slice_without_a_hint_loads_no_observations');
+select is((select array_agg(x.tablename::text order by x.tablename) from pg_publication_tables x where x.pubname = 'supabase_realtime' and x.tablename in ('observations', 'reports')),
+  array['observations', 'reports'], 'p3_realtime_publication_includes_observations_and_reports');
+select is((select count(*)::int from public.photo_objects()), 1, 'p3_photo_objects_lists_the_bucket_for_the_service');
+select tests.as_user('00000000-0000-4000-8000-000000000001');
+select throws_ok('select * from public.photo_objects()', '42501', null, 'p3_users_cannot_list_photo_objects');
+reset role;
 
 select * from finish();
 rollback;

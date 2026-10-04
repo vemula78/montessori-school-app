@@ -103,7 +103,7 @@ export async function render(ctx) {
     if (w) {
       const key = w.dataset.withdraw;
       const required = PURPOSES.find((p) => p.key === key)?.required;
-      const ok = await confirmDialog(required ? 'Withdraw and close access' : 'Turn off', required
+      const ok = await confirmDialog(required ? 'Withdraw and close access' : 'Turn off', key === 'photos' ? 'Turning off photos means the school deletes the photos it holds of your children, and takes no new ones. Continue?' : required
         ? 'This withdraws your consent for the account. You will be signed out and will no longer see your children’s information in the app. Records the school must keep by law (fee records) are retained, and a request to erase your personal details is passed to the principal. Continue?'
         : 'Turn this off? It takes effect straight away.', { okLabel: required ? 'Withdraw and sign out' : 'Turn off', kind: 'danger' });
       if (!ok) return;
@@ -150,7 +150,9 @@ async function drawAdmin(ctx, host) {
         <dt class="muted">Academic year</dt><dd style="margin:0">${esc(ay?.label || DASH)} ${ay ? `(${fdate(ay.startDate)} to ${fdate(ay.endDate)})` : ''}</dd>
         <dt class="muted">Late fee rule</dt><dd style="margin:0">${rule ? `${esc(rule.graceDays)} grace days, ${rule.mode === 'perDay' ? `${money(rule.amountPaise)} per day${rule.capPaise != null ? `, capped at ${money(rule.capPaise)}` : ''}` : `${money(rule.amountPaise)} flat`}` : DASH}</dd>
       </dl>
-      <div class="row"><a class="btn" href="#/invites">Invite codes</a><a class="btn" href="#/import">Import data</a><a class="btn" href="#/reports/settlements">Online settlements</a></div></div></div>`;
+      <div class="row"><a class="btn" href="#/invites">Invite codes</a><a class="btn" href="#/import">Import data</a><a class="btn" href="#/reports/settlements">Online settlements</a></div></div>
+    <div id="st-retention"></div></div>`;
+  await drawRetention(ctx, host.querySelector('#st-retention'));
   host.addEventListener('click', async (e) => {
     const x = e.target.closest('[data-export-g]');
     const er = e.target.closest('[data-erase]');
@@ -166,6 +168,52 @@ async function drawAdmin(ctx, host) {
       toast(errs.length ? `Details erased, but ${errs.length} clean-up step(s) failed: ${errs.join('; ')}. Erase again to retry.` : 'Personal details erased', errs.length ? 'bad' : undefined);
       ctx.rerender();
     }
+  });
+}
+
+// ---- retention (principal): how long records are kept after a child leaves ------------------------------------------
+const RETENTION_FIELDS = [
+  ['photosMonthsAfterLeaving', 'photos', 'Photos', 'Deleted this many months after the child leaves. Always deleted at once if a parent turns photos off.'],
+  ['observationsMonthsAfterLeaving', 'observations', 'Observations and progress records', 'Also deletes their photos.'],
+  ['diaryMonthsAfterLeaving', 'diary', 'Daily diary and termly reports', ''],
+  ['attendanceMonthsAfterLeaving', 'attendance', 'Attendance', ''],
+  ['messagesMonthsAfterLeaving', 'messages', 'Messages', 'The conversation stays; its messages are deleted.'],
+];
+
+export async function drawRetention(ctx, host) {
+  const { api, db } = ctx;
+  const r = db.school.retention || {};
+  let preview = null, previewErr = null;
+  if (typeof api.admin.retentionPreview === 'function') { try { preview = await api.admin.retentionPreview(); } catch (e) { previewErr = e; } }
+  const ready = (db.photos || []).filter((p) => p.status === 'ready');
+  const active = db.students.filter((s) => s.status === 'active').length;
+  const MB = (n) => (n / 1048576).toFixed(n >= 1048576 * 100 ? 0 : 1);
+  const perYear = active * 40 * 250 * 1024;
+  host.innerHTML = `<div class="card stack"><h2>How long records are kept</h2>
+    <p style="margin:0">After a child leaves, each kind of record below is deleted automatically once its period (in whole months) has passed. <strong>Leave a box empty if the school has not decided</strong>: nothing is deleted for it. Fee records are never deleted by this; the law requires them. This schedule is a draft until the school confirms it with its legal adviser.</p>
+    <form id="ret-form" class="stack" novalidate>${RETENTION_FIELDS.map(([key, cat, label, help]) => {
+      const c = preview?.categories?.[cat];
+      return `<label class="field" style="margin:0"><span class="lbl">${esc(label)} (months after leaving)</span><input type="number" name="${esc(key)}" min="1" max="240" step="1" inputmode="numeric" value="${esc(r[key] ?? '')}" placeholder="Not decided">
+        <span class="help">${esc(help)}${c ? ` ${c.months ? `Due today: ${esc(c.due)} item(s) from ${esc(c.students)} child(ren).` : 'No period set, so nothing is due.'}` : ''}</span></label>`;
+    }).join('')}
+      <div class="err" id="ret-err" role="alert"></div>
+      <div><button class="btn primary" type="submit">Save retention periods</button></div></form>
+    ${previewErr ? banner('warn', `Due counts could not be loaded: ${esc(errMessage(previewErr))}`) : ''}
+    ${preview?.leftWithoutDate?.length ? banner('warn', `${esc(preview.leftWithoutDate.length)} child(ren) left without a recorded leaving date, so nothing about them can be due until the date is set.`) : ''}
+    <small>Photos stored (from the last 120 days of observations): ${esc(ready.length)}, about ${MB(ready.reduce((n, p) => n + (p.bytes || 0), 0))} MB. Estimate: ${esc(active)} children &times; 40 photos a year &times; about 250 KB &approx; ${MB(perYear)} MB a year. Each child can have up to 100 photos.</small></div>`;
+  host.querySelector('#ret-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = host.querySelector('#ret-err');
+    err.textContent = '';
+    const out = {};
+    for (const [key, , label] of RETENTION_FIELDS) {
+      const raw = String(host.querySelector(`input[name="${key}"]`).value ?? '').trim();
+      if (raw === '') { out[key] = null; continue; }
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1 || n > 240) { err.textContent = `${label}: enter whole months from 1 to 240, or leave empty.`; return; }
+      out[key] = n;
+    }
+    if ((await attempt(() => api.admin.setRetention(out), 'Retention periods saved')).ok) ctx.rerender();
   });
 }
 

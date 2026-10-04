@@ -53,7 +53,7 @@ async function linkedParent(guardianId, purposes = ['app_account']) {
   const who = await signIn(`p2-${guardianId}-${rand()}@example.com`);
   const r = await rest('POST', 'app_users', { user_id: who.userId, role: 'parent', guardian_id: guardianId, status: 'active' }, 'return=minimal');
   assert.equal(r.status, 201, JSON.stringify(r.data));
-  if (purposes.length) { const c = await command(who.token, 'consent.give', { purposes, version: 'v1' }); assert.equal(c.status, 200, JSON.stringify(c.data)); }
+  if (purposes.length) { const c = await command(who.token, 'consent.give', { purposes, version: 'v2' }); assert.equal(c.status, 200, JSON.stringify(c.data)); }
   return who;
 }
 
@@ -114,7 +114,7 @@ test('#6 before app_account consent a linked parent gets no child data and no pa
   assert.match(blocked.data.error.message, /privacy notice/);
   const t = await command(who.token, 'threads.open', { studentId: kid, subject: 'Hello', body: 'Fake test message' });
   assert.equal(t.status, 403);
-  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: 'v1' })).status, 200);
+  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: 'v2' })).status, 200);
   assert.ok((await snapshot(who)).invoices.length > 0);
   assert.equal((await command(who.token, 'threads.open', { studentId: kid, subject: 'Hello', body: 'Fake test message' })).status, 200);
 });

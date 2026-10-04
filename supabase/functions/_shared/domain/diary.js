@@ -1,4 +1,4 @@
-// Daily diary entries per child (observation, meal, sleep, health, activity).
+// Daily diary entries per child (meal, sleep, health, activity; 'observation' entries written before Phase 3 stay valid).
 
 import { fail, newId } from './ids.js';
 import { isISODate, compareISO, isHHMM } from './dates.js';
@@ -34,6 +34,8 @@ function cleanData(type, d = {}) {
 }
 
 export function addDiaryEntry(db, { studentId, date, type, data }, ctx) {
+  // the diary is parent-visible: observations live in Learning (staff-only until shared); old entries stay readable
+  if (type === 'observation') fail('VALIDATION', 'Observations are recorded under Learning now (staff-only until shared), not in the diary');
   const s = mustGet(db, 'students', studentId, 'Student');
   if (s.status !== 'active') fail('VALIDATION', 'Student is not active');
   if (!isISODate(date)) fail('VALIDATION', `Invalid date: ${date}`);

@@ -1,10 +1,12 @@
-// Daily diary: teachers add observations / meals / sleep / health / activity; parents read their own child's day.
+// Daily diary: teachers add meals / sleep / health / activity; parents read their own child's day.
+// Observations moved to Learning (staff-only until shared). Old diary entries of type 'observation' are still shown.
 import { todayISO, addDays, isISODate } from '../../domain/dates.js';
 import { esc, notifyQuota, empty, pageHead, fdate, ftime, fullName, options, formModal, DASH } from '../components.js';
 
 const AREAS = { practicalLife: 'Practical life', sensorial: 'Sensorial', language: 'Language', math: 'Mathematics', culture: 'Culture' };
 const ATE = { all: 'Ate everything', some: 'Ate some', none: 'Did not eat' };
 const TYPES = { observation: 'Observation', meal: 'Meal', sleep: 'Sleep', health: 'Health', activity: 'Activity' };
+const ADD_TYPES = { meal: 'Meal', sleep: 'Sleep', health: 'Health', activity: 'Activity' }; // the diary is parent-visible by design: observations are written in Learning
 
 function entryHtml(e) {
   const d = e.data || {};
@@ -21,8 +23,6 @@ function entryHtml(e) {
 
 function typeFields(type) {
   switch (type) {
-    case 'observation': return `<label class="field"><span class="lbl">Montessori area</span><select name="area">${options(Object.entries(AREAS).map(([value, label]) => ({ value, label })), 'practicalLife')}</select></label>
-      <label class="field"><span class="lbl">What did you observe?</span><textarea name="text" required></textarea></label>`;
     case 'meal': return `<label class="field"><span class="lbl">Meal</span><select name="meal"><option value="snack">Snack</option><option value="lunch">Lunch</option></select></label>
       <label class="field"><span class="lbl">How much</span><select name="ate">${options(Object.entries(ATE).map(([value, label]) => ({ value, label })), 'all')}</select></label>
       <label class="field"><span class="lbl">Note (optional)</span><input name="note"></label>`;
@@ -34,7 +34,6 @@ function typeFields(type) {
 }
 
 function buildData(type, v) {
-  if (type === 'observation') return { area: v.area, text: (v.text || '').trim() };
   if (type === 'meal') return { meal: v.meal, ate: v.ate, note: (v.note || '').trim() };
   if (type === 'sleep') return { from: v.from, to: v.to };
   if (type === 'health') return { temperatureC: v.temperatureC === '' || v.temperatureC == null ? null : Number(v.temperatureC), note: (v.note || '').trim() };
@@ -44,7 +43,7 @@ function buildData(type, v) {
 async function addEntry(ctx, student, date) {
   return formModal({
     title: `Add diary entry - ${student.firstName}`, submitLabel: 'Save entry',
-    fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(Object.entries(TYPES).map(([value, label]) => ({ value, label })), 'observation')}</select></label><div id="d-fields">${typeFields('observation')}</div>`,
+    fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(Object.entries(ADD_TYPES).map(([value, label]) => ({ value, label })), 'meal')}</select></label><div id="d-fields">${typeFields('meal')}</div>`,
     onOpen: (d) => {
       const sel = d.querySelector('#d-type');
       sel.addEventListener('change', () => { d.querySelector('#d-fields').innerHTML = typeFields(sel.value); });
@@ -65,6 +64,7 @@ async function staffView(ctx) {
   const students = (await api.people.students({ programId })).filter((s) => s.status === 'active');
   const entries = await api.diary.forProgramDate(programId, date);
   ctx.el.innerHTML = `${pageHead('Daily diary', progs.find((p) => p.id === programId).name)}
+    <p class="muted" style="margin:0 0 10px">Meals, naps, health and activities. Observations and photos are in <a href="#/learning">Learning</a> and stay staff-only until you share them.</p>
     <div class="row" style="margin-bottom:12px">
       ${progs.length > 1 ? `<select id="d-prog" style="width:auto" aria-label="Programme">${options(progs.map((p) => ({ value: p.id, label: p.name })), programId)}</select>` : ''}
       <button class="btn sm" id="d-prev" aria-label="Previous day">&larr;</button><input type="date" id="d-date" value="${esc(date)}" style="width:auto" aria-label="Date"><button class="btn sm" id="d-next" aria-label="Next day">&rarr;</button>

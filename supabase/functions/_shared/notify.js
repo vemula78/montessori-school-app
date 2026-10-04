@@ -65,6 +65,15 @@ export function pushMessages(name, before, after, result) {
     out.push({ guardianIds: guardiansOf(after, [pay.studentId]), studentIds: [pay.studentId], purposes: ['push'],
       payload: { title: 'Payment received', body: `${formatPaise(pay.amountPaise)}${s ? ` for ${s.firstName}` : ''} — receipt ${pay.receiptNumber}`, url: '#/parent/fees', tag: `pay-${pay.id}` } });
   }
+  // learning: a shared observation / a published termly report — the child's guardians only (push consent per child)
+  if ((name === 'observations.share' && result && result.sharedAt && !byId(before.observations || [], result.id)?.sharedAt)
+    || (name === 'reports.publish' && result && result.status === 'published')) {
+    const s = byId(after.students, result.studentId);
+    const report = name === 'reports.publish';
+    out.push({ guardianIds: guardiansOf(after, [result.studentId]), studentIds: [result.studentId], purposes: ['push'],
+      payload: { title: report ? 'Termly report' : 'New from the classroom', body: report ? `${s ? `${s.firstName}'s ` : ''}${result.termName} report is ready` : `A note about ${s ? s.firstName : 'your child'}'s work was shared`,
+        url: '#/parent/learning', tag: report ? `report-${result.id}-${result.revision}` : `obs-${result.id}` } });
+  }
   if (name === 'notices.send' && result && result.important) {
     const rs = after.noticeReceipts.filter(r => r.noticeId === result.id);
     out.push({ guardianIds: [...new Set(rs.map(r => r.guardianId))], studentIds: [...new Set(rs.flatMap(r => r.studentIds || []))], purposes: ['push'], payload: { title: 'Important notice', body: result.title, url: '#/parent/notices', tag: `notice-${result.id}` } });

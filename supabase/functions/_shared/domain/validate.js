@@ -1,7 +1,7 @@
 // Whole-database integrity check. Returns a list of violations (empty = valid); never throws on bad data.
 // Messages carry ids, never names or notes.
 
-import { SCHEMA_VERSION, COLLECTIONS } from '../store/schema.js';
+import { SCHEMA_VERSION, COLLECTIONS, RETENTION_KEYS } from '../store/schema.js';
 import { isISODate, compareISO, addDays } from './dates.js';
 import { parseDocNumber, ayShort } from './ids.js';
 import { derivedStatus, invoiceAmounts, PAYMENT_MODES } from './fees.js';
@@ -14,7 +14,7 @@ const REQUIRED_ARRAYS = {
   programs: ['teacherIds'], students: ['guardianIds'], guardians: ['studentIds'], staff: ['programIds'],
   noticeReceipts: ['studentIds'], calendarEvents: ['programIds'], routes: ['stops'],
   trips: ['positions', 'stopEvents', 'childEvents'], feeStructures: ['installments'],
-  invoices: ['lines', 'concessions'], payments: ['allocations'],
+  invoices: ['lines', 'concessions'], payments: ['allocations'], reports: ['progress', 'observations'],
 };
 
 /**
@@ -63,7 +63,13 @@ const ENUMS = {
   payments: ['valid', 'cancelled'],
   trips: ['active', 'ended'],
   threads: ['open', 'closed'],
+  photos: ['pending', 'ready', 'rejected', 'deleting', 'deleted', 'expired'],
+  progressEvents: ['introduced', 'practising', 'mastered'],
+  reports: ['draft', 'submitted', 'published'],
 };
+const AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
+const TERMS = ['Term 1', 'Term 2', 'Term 3'];
+const CONSENT_PURPOSE_NAMES = ['app_account', 'push', 'bus_live', 'photos'];
 
 function checks(db, add, v) {
   const index = {};
@@ -105,6 +111,8 @@ function checks(db, add, v) {
       if (typeof r.shiftDueToWorkingDay !== 'boolean') add('BAD_RULE', 'school', '-', 'lateFeeRule.shiftDueToWorkingDay must be true/false');
     }
   }
+  if (!isObj(sc.retention)) add('BAD_SCHOOL', 'school', '-', 'retention must be an object');
+  else for (const k of RETENTION_KEYS) if (sc.retention[k] !== null && !(isInt(sc.retention[k]) && sc.retention[k] > 0)) add('BAD_SCHOOL', 'school', '-', `retention.${k} must be whole months above zero, or null (not decided)`);
   for (const ay of db.academicYears) {
     if (!isISODate(ay.startDate) || !isISODate(ay.endDate) || compareISO(ay.endDate, ay.startDate) < 0) add('BAD_DATE', 'academicYear', ay.id, 'invalid date range');
     try { ayShort(ay.id); } catch { add('BAD_ID', 'academicYear', ay.id, 'id must look like AY2026-27'); }
@@ -124,6 +132,8 @@ function checks(db, add, v) {
   for (const s of db.students) {
     ref('student', s.id, 'programId', 'programs', s.programId);
     if (!isISODate(s.dob)) add('BAD_DATE', 'student', s.id, 'dob invalid');
+    if (s.leftOn !== undefined && s.leftOn !== null && !isISODate(s.leftOn)) add('BAD_DATE', 'student', s.id, 'leftOn invalid');
+    if (s.status === 'active' && s.leftOn) add('LEFT_ON_ACTIVE', 'student', s.id, 'an active student has a leftOn date');
     if (!s.guardianIds || !s.guardianIds.length) add('NO_GUARDIAN', 'student', s.id, 'student has no guardian');
     for (const g of s.guardianIds || []) {
       ref('student', s.id, 'guardianIds', 'guardians', g);
@@ -310,6 +320,80 @@ function checks(db, add, v) {
     if (!['present', 'absent', 'late', 'leave'].includes(a.status)) add('BAD_STATUS', 'attendance', k, `status ${a.status}`);
   }
   for (const d of db.diaryEntries) ref('diaryEntry', d.id, 'studentId', 'students', d.studentId);
+
+  // learning (Phase 3). Messages carry ids, never text.
+  const presKeys = new Map();
+  for (const p of db.presentations) {
+    if (!AREAS.includes(p.area)) add('BAD_AREA', 'presentation', p.id, `area ${String(p.area).slice(0, 30)}`);
+    if (typeof p.name !== 'string' || !p.name.trim()) add('MISSING_NAME', 'presentation', p.id, 'name is empty');
+    if (typeof p.key !== 'string' || !p.key) add('MISSING_KEY', 'presentation', p.id, 'key is empty');
+    else if (presKeys.has(p.key)) add('DUPLICATE_KEY', 'presentation', p.id, `key repeats ${presKeys.get(p.key)}`);
+    else presKeys.set(p.key, p.id);
+    if (typeof p.active !== 'boolean') add('BAD_FLAG', 'presentation', p.id, 'active must be true/false');
+    for (const f of ['ageFromMonths', 'ageToMonths']) if (p[f] !== null && p[f] !== undefined && !nonNeg(p[f])) add('BAD_AGE', 'presentation', p.id, `${f} must be whole months or empty`);
+    if (nonNeg(p.ageFromMonths) && nonNeg(p.ageToMonths) && p.ageFromMonths > p.ageToMonths) add('BAD_AGE', 'presentation', p.id, 'ageFromMonths is above ageToMonths');
+  }
+  for (const o of db.observations) {
+    ref('observation', o.id, 'studentId', 'students', o.studentId);
+    ref('observation', o.id, 'programId', 'programs', o.programId);
+    if (o.presentationId) ref('observation', o.id, 'presentationId', 'presentations', o.presentationId);
+    if (!isISODate(o.date)) add('BAD_DATE', 'observation', o.id, 'date invalid');
+    if (!AREAS.includes(o.area)) add('BAD_AREA', 'observation', o.id, `area ${String(o.area).slice(0, 30)}`);
+    if (typeof o.text !== 'string' || !o.text.trim()) add('MISSING_TEXT', 'observation', o.id, 'text is empty');
+    if (o.sharedAt && !o.sharedBy) add('SHARED_WITHOUT_ACTOR', 'observation', o.id, 'sharedAt set without sharedBy');
+    if (!o.sharedAt && o.sharedBy) add('SHARED_WITHOUT_TIME', 'observation', o.id, 'sharedBy set without sharedAt');
+    const pres = o.presentationId && index.presentations.get(o.presentationId);
+    if (pres && pres.area !== o.area) add('AREA_MISMATCH', 'observation', o.id, 'area differs from its presentation area');
+  }
+  for (const ph of db.photos) {
+    if (ph.status !== 'expired' && ph.status !== 'deleted') ref('photo', ph.id, 'observationId', 'observations', ph.observationId);
+    ref('photo', ph.id, 'studentId', 'students', ph.studentId);
+    const o = index.observations.get(ph.observationId);
+    if (o && o.studentId !== ph.studentId) add('CROSS_STUDENT', 'photo', ph.id, 'photo is of a different child than its observation');
+    if (ph.status === 'ready' && !ph.demo && !ph.path) add('MISSING_PATH', 'photo', ph.id, 'a ready photo has no storage path');
+    if (!ph.soloConfirmedBy) add('NOT_CONFIRMED_SOLO', 'photo', ph.id, 'nobody confirmed that only this child is in the frame');
+  }
+  const evGroups = new Map();
+  for (const e of db.progressEvents) {
+    ref('progressEvent', e.id, 'studentId', 'students', e.studentId);
+    ref('progressEvent', e.id, 'presentationId', 'presentations', e.presentationId);
+    if (!isISODate(e.date)) add('BAD_DATE', 'progressEvent', e.id, 'date invalid');
+    if (!(isInt(e.seq) && e.seq >= 1)) add('BAD_SEQ', 'progressEvent', e.id, 'seq must be a whole number from 1');
+    if (e.correction === true && !(typeof e.reason === 'string' && e.reason.trim())) add('CORRECTION_WITHOUT_REASON', 'progressEvent', e.id, 'a correction needs a reason');
+    const k = `${e.studentId}|${e.presentationId}`;
+    if (!evGroups.has(k)) evGroups.set(k, []);
+    evGroups.get(k).push(e);
+  }
+  for (const [k, list] of evGroups) {
+    const seqs = list.map(e => e.seq).filter(isInt).sort((a, b) => a - b);
+    seqs.forEach((n, i) => {
+      if (i > 0 && n === seqs[i - 1]) add('DUPLICATE_SEQ', 'progressEvent', k, `seq ${n} repeated`);
+      else if (n !== i + 1) add('NUMBER_GAP', 'progressEvent', k, `seq is not contiguous from 1 (saw ${n} at position ${i + 1})`);
+    });
+  }
+  const reportKeys = new Set();
+  for (const r of db.reports) {
+    ref('report', r.id, 'studentId', 'students', r.studentId);
+    ref('report', r.id, 'academicYearId', 'academicYears', r.academicYearId);
+    if (!TERMS.includes(r.termName)) add('BAD_TERM', 'report', r.id, `termName ${String(r.termName).slice(0, 20)}`);
+    if (!isISODate(r.fromDate) || !isISODate(r.toDate) || compareISO(r.toDate, r.fromDate) < 0) add('BAD_DATE', 'report', r.id, 'invalid term date range');
+    if (!isInt(r.revision) || r.revision < 1) add('BAD_REVISION', 'report', r.id, 'revision must be a whole number from 1');
+    const k = `${r.studentId}|${r.academicYearId}|${r.termName}`;
+    if (reportKeys.has(k)) add('DUPLICATE_REPORT', 'report', r.id, 'more than one report for (student, academic year, term)');
+    reportKeys.add(k);
+    if (r.status === 'published' && !(r.publishedAt && r.publishedBy)) add('PUBLISHED_WITHOUT_STAMP', 'report', r.id, 'a published report needs publishedAt and publishedBy');
+    if (r.status !== 'published' && r.publishedAt) add('PUBLISHED_STAMP_ON_DRAFT', 'report', r.id, 'publishedAt set on a report that is not published');
+  }
+  const consentKeys = new Set();
+  for (const c of db.consents) {
+    ref('consent', c.id, 'guardianId', 'guardians', c.guardianId);
+    ref('consent', c.id, 'studentId', 'students', c.studentId);
+    if (!CONSENT_PURPOSE_NAMES.includes(c.purpose)) add('BAD_PURPOSE', 'consent', c.id, `purpose ${String(c.purpose).slice(0, 30)}`);
+    if (typeof c.version !== 'string' || !c.version) add('MISSING_VERSION', 'consent', c.id, 'version is empty');
+    const k = `${c.guardianId}|${c.studentId}|${c.purpose}|${c.version}|${c.withdrawnAt ? 'w' : 'live'}`;
+    if (!c.withdrawnAt && consentKeys.has(k)) add('DUPLICATE_CONSENT', 'consent', c.id, 'two live records for (guardian, child, purpose, version)');
+    consentKeys.add(k);
+  }
   return v;
 }
 

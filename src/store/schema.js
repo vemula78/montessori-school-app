@@ -2,17 +2,22 @@
 // Conventions: ids are prefixed strings; money is integer paise; dates are 'YYYY-MM-DD';
 // timestamps are ISO-8601 UTC strings ('2026-10-02T07:42:00.000Z').
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
 
 /**
  * @typedef {{graceDays:number, mode:'flat'|'perDay', amountPaise:number, capPaise:number|null, shiftDueToWorkingDay:boolean}} LateFeeRule
+ * @typedef {{photosMonthsAfterLeaving:number|null, diaryMonthsAfterLeaving:number|null, observationsMonthsAfterLeaving:number|null,
+ *   attendanceMonthsAfterLeaving:number|null, messagesMonthsAfterLeaving:number|null}} Retention
+ *   Whole months, or null = the school has not decided (nothing is deleted for a category whose period is null, except photos
+ *   which the server always enforces once a period is set).
  * @typedef {{name:string, address:string, phone:string, weeklyOffs:number[], currentAcademicYearId:string|null,
- *   invoicePrefix:string, receiptPrefix:string, refundPrefix:string, lateFeeRule:LateFeeRule|null}} School
+ *   invoicePrefix:string, receiptPrefix:string, refundPrefix:string, lateFeeRule:LateFeeRule|null, retention:Retention}} School
  * @typedef {{id:string, label:string, startDate:string, endDate:string}} AcademicYear
  * @typedef {{id:string, name:string, ageRange:string, teacherIds:string[]}} Program
  * @typedef {{id:string, firstName:string, lastName:string, dob:string, programId:string, admissionNo:string,
  *   status:'active'|'left', guardianIds:string[], routeId:string|null, stopId:string|null,
- *   feeCategory:'regular'|'sibling'|'staffWard', healthNotes:string|null}} Student
+ *   feeCategory:'regular'|'sibling'|'staffWard', healthNotes:string|null, leftOn:string|null}} Student
+ *   leftOn: date the child left; null = still enrolled, or left and the date is unknown (set when status becomes 'left').
  * @typedef {{id:string, firstName:string, lastName:string, relation:string, phone:string, email:string, studentIds:string[]}} Guardian
  * @typedef {{id:string, firstName:string, lastName:string, role:'admin'|'teacher'|'accountant'|'driver', programIds:string[], phone:string}} Staff
  * @typedef {{scope:'school'}|{scope:'program', programIds:string[]}|{scope:'students', studentIds:string[]}} Audience
@@ -53,13 +58,37 @@ export const SCHEMA_VERSION = 1;
  * @typedef {{date:string, studentId:string, status:'present'|'absent'|'late'|'leave', markedBy:string, markedAt:string}} AttendanceRecord
  * @typedef {{id:string, studentId:string, date:string, type:'observation'|'meal'|'sleep'|'health'|'activity', data:Object,
  *   createdBy:string, createdAt:string, parentReadAt:string|null}} DiaryEntry
+ * @typedef {'practicalLife'|'sensorial'|'language'|'math'|'culture'} Area
+ * @typedef {{id:string, key:string, area:Area, name:string, sequence:number, ageFromMonths:number|null, ageToMonths:number|null,
+ *   description:string, active:boolean, source:'starter'|'manual'|'import', importBatchId?:string|null}} Presentation
+ *   key = curriculumKey(area, name): unique. Presentations are never deleted; retiring sets active:false.
+ * @typedef {{id:string, studentId:string, programId:string, date:string, area:Area, presentationId:string|null, text:string,
+ *   createdBy:string, createdAt:string, sharedAt:string|null, sharedBy:string|null, editedAt?:string|null, editedBy?:string|null}} Observation
+ *   sharedAt null = staff only. Parents see an observation only once it is shared.
+ * @typedef {{id:string, observationId:string, studentId:string, path:string|null, status:'pending'|'ready'|'rejected'|'deleting'|'deleted'|'expired',
+ *   bytes:number|null, width:number|null, height:number|null, sha256:string|null, takenBy:string, createdAt:string, readyAt:string|null,
+ *   soloConfirmedBy:string, deleteReason:string|null, rejectReason?:string|null, objectDeletedAt:string|null, demo?:{illustration:string}}} Photo
+ *   Metadata only: the bytes live in Storage (real app) or in the browser's IndexedDB / an SVG illustration (demo).
+ * @typedef {{id:string, studentId:string, presentationId:string, seq:number, status:'introduced'|'practising'|'mastered', date:string,
+ *   note:string, correction:boolean, reason:string|null, recordedBy:string, recordedAt:string}} ProgressEvent
+ *   Append-only; current state per (student, presentation) is the event with the highest seq.
+ * @typedef {{presentationId:string, name:string, area:Area, status:string, date:string}} ReportProgressLine
+ * @typedef {{id:string, studentId:string, academicYearId:string, termName:'Term 1'|'Term 2'|'Term 3', fromDate:string, toDate:string,
+ *   status:'draft'|'submitted'|'published', revision:number, progress:ReportProgressLine[], observations:{id:string, date:string, area:Area, text:string}[],
+ *   narratives:Object<string,string>, generatedAt:string, generatedBy:string, submittedAt:string|null, publishedAt:string|null,
+ *   publishedBy:string|null, lastPublishedAt?:string|null, unpublishReason:string|null}} Report
+ *   Frozen at publish: names and text are copies, so a published report never changes under a parent.
+ * @typedef {{id:string, guardianId:string, studentId:string, purpose:'app_account'|'push'|'bus_live'|'photos', version:string,
+ *   textHash:string|null, givenAt:string, withdrawnAt:string|null, evidence:Object}} Consent
  * @typedef {{id:string, ts:string, actorRole:string, actorId:string, entity:string, entityId:string, action:string, summary:string}} AuditRow
  * @typedef {{invoice:Object<string,number>, receipt:Object<string,number>, refund:Object<string,number>}} Counters
  * @typedef {{schemaVersion:number, rev:number, school:School, academicYears:AcademicYear[], programs:Program[],
  *   students:Student[], guardians:Guardian[], staff:Staff[], notices:Notice[], noticeReceipts:NoticeReceipt[],
  *   threads:Thread[], messages:Message[], calendarEvents:CalendarEvent[], routes:Route[], trips:Trip[],
  *   feeHeads:FeeHead[], feeStructures:FeeStructure[], invoices:Invoice[], payments:Payment[], refunds:Refund[],
- *   credits:Credit[], attendance:AttendanceRecord[], diaryEntries:DiaryEntry[], auditLog:AuditRow[], counters:Counters}} Db
+ *   credits:Credit[], attendance:AttendanceRecord[], diaryEntries:DiaryEntry[], auditLog:AuditRow[], counters:Counters,
+ *   presentations:Presentation[], observations:Observation[], photos:Photo[], progressEvents:ProgressEvent[], reports:Report[],
+ *   consents:Consent[]}} Db
  * @typedef {{role:'admin'|'teacher'|'accountant'|'driver'|'parent'|'system', id:string}} Actor
  * @typedef {{actor:Actor, now:string, today:string}} Ctx  now = ISO timestamp, today = local 'YYYY-MM-DD'
  */
@@ -69,6 +98,12 @@ export const COLLECTIONS = [
   'academicYears', 'programs', 'students', 'guardians', 'staff', 'notices', 'noticeReceipts',
   'threads', 'messages', 'calendarEvents', 'routes', 'trips', 'feeHeads', 'feeStructures',
   'invoices', 'payments', 'refunds', 'credits', 'attendance', 'diaryEntries', 'auditLog',
+  'presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents',
+];
+
+export const RETENTION_KEYS = [
+  'photosMonthsAfterLeaving', 'diaryMonthsAfterLeaving', 'observationsMonthsAfterLeaving',
+  'attendanceMonthsAfterLeaving', 'messagesMonthsAfterLeaving',
 ];
 
 /** @returns {Db} */
@@ -87,6 +122,7 @@ export function createEmptyDb() {
       receiptPrefix: 'RCP',
       refundPrefix: 'RFD',
       lateFeeRule: null,
+      retention: Object.fromEntries(RETENTION_KEYS.map(k => [k, null])),
     },
     counters: { invoice: {}, receipt: {}, refund: {} },
   };

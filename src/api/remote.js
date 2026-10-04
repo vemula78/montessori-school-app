@@ -8,6 +8,8 @@
 // Every write carries a request id; a retry of the same write (network failure) can never record it twice, and a
 // write that was saved is never reported as failed because the refetch afterwards failed.
 // A snapshot response is applied only if it is the newest and the signed-in user has not changed meanwhile.
+// Photos: the upload goes to the one path the command function signed; a photo is viewed by asking the function for a
+// 120-second signed path and fetching it here at once — the URL never leaves this file (only the Blob does).
 
 import { todayISO, nowISO, addDays, setBusinessZone, IST_OFFSET_MIN } from '../domain/dates.js';
 import * as T from '../domain/transport.js';
@@ -86,7 +88,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   const read = name => op((...args) => command(name, args, { reload: false }));
 
   const surface = createSurface({ db, me, clock, cmd });
-  const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers } = surface;
+  const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports } = surface;
 
   // ---------------- audit: read from audit_log (RLS: principal, accountant), never from the snapshot ----------------
   audit.list = op(async ({ entity, entityId, limit = 100 } = {}) => {
@@ -159,6 +161,58 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     importSettlementCsv: cmd('fees.importSettlementCsv'),
     settlementReport: read('fees.settlementReport'),
   });
+
+  // ---------------- progress history: progress_events (RLS: staff of the child), the snapshot holds the latest only ----------------
+  progress.history = op(async (studentId, presentationId) => {
+    const p = allow(me(), 'admin', 'teacher');
+    if (p.role !== 'admin' && !p.studentIds.includes(studentId)) throw new ApiError('NOT_ALLOWED', 'Not your student');
+    const { data, error } = await sb.from('progress_events').select('doc').eq('student_id', studentId).eq('presentation_id', presentationId).order('seq', { ascending: true });
+    if (error) throw new ApiError('OFFLINE', `Could not load the progress history (${error.message})`);
+    return (data || []).map(r => r.doc);
+  });
+
+  // ---------------- photos: Storage through signed paths only ----------------
+  const storageBase = `${String(config.supabaseUrl).replace(/\/+$/, '')}/storage/v1`;
+  // Blobs are returned as they are (no structured clone); errors are still ApiErrors
+  const raw = fn => async (...args) => { try { return await fn(...args); } catch (e) { throw toApiError(e); } };
+  const photos = {
+    ...surface.photos,
+    /** register({observationId, soloConfirmed:true}) → {photo, path, upload:{bucket, path, token, signedPath, expiresAt}} — pass it to upload(). */
+    register: cmd('photos.register'),
+    /** upload(blob, grant) — the prepared JPEG to the grant's one path (retry with the same grant until it expires). */
+    upload: raw(async (blob, grant) => {
+      me();
+      const g = grant && grant.upload;
+      if (!g || !g.token || !g.path) throw new ApiError('VALIDATION', grant && grant.uploadError ? grant.uploadError : 'This photo has no upload permission; add it again');
+      if (typeof Blob !== 'undefined' && !(blob instanceof Blob)) throw new ApiError('VALIDATION', 'Nothing to upload');
+      if (blob.type !== 'image/jpeg') throw new ApiError('VALIDATION', 'Only a prepared JPEG can be uploaded');
+      let r;
+      try { r = await sb.storage.from(g.bucket).uploadToSignedUrl(g.path, g.token, blob, { contentType: 'image/jpeg' }); } catch {
+        throw new ApiError('OFFLINE', 'Cannot reach the school server; try the upload again');
+      }
+      const err = r && r.error;
+      if (!err) return { uploaded: true };
+      const status = Number(err.statusCode || err.status || 0), text = String(err.message || err.error || '');
+      if (status === 409 || /exists|duplicate/i.test(text)) return { uploaded: true, already: true }; // a retry after a lost answer
+      if (status === 413 || /too large|exceeded/i.test(text)) throw new ApiError('VALIDATION', 'The photo is larger than 400 KiB');
+      if (status === 415 || /mime/i.test(text)) throw new ApiError('VALIDATION', 'Only JPEG photos can be uploaded');
+      if (status === 400 || status === 401 || status === 403) throw new ApiError('VALIDATION', 'The upload permission has expired; add the photo again');
+      throw new ApiError('OFFLINE', 'The upload did not finish; try again');
+    }),
+    /** complete(photoId) → {photo} once the server has checked the file (refused: VALIDATION, and the file is deleted). */
+    complete: cmd('photos.complete'),
+    remove: cmd('photos.remove'),
+    /** blob(photoId) → Blob. Show it with URL.createObjectURL and revoke it when done; no URL is ever returned. */
+    blob: raw(async photoId => {
+      const r = await command('photos.viewUrl', [photoId], { reload: false });
+      let res;
+      try { res = await fetch(`${storageBase}${r.signedPath}`, { cache: 'no-store', referrerPolicy: 'no-referrer' }); } catch {
+        throw new ApiError('OFFLINE', 'Cannot reach the school server to load the photo');
+      }
+      if (!res.ok) throw new ApiError(res.status === 400 || res.status === 404 ? 'NOT_FOUND' : 'OFFLINE', 'The photo could not be loaded');
+      return res.blob();
+    }),
+  };
 
   // ---------------- auth ----------------
   const auth = {
@@ -261,6 +315,9 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     erasureRequests: read('admin.erasureRequests'),
     anonymiseGuardian: cmd('people.anonymiseGuardian'),
     setStaffRole: cmd('people.setStaffRole'),
+    setRetention: cmd('admin.setRetention'),
+    /** {asOf, leftWithoutDate:[studentId], categories:{photos:{months, students, due}, …}} computed by the server over all records. */
+    retentionPreview: read('retention.preview'),
     storageInfo: op(() => info()),
     validate: op(() => { throw new ApiError('NOT_ALLOWED', 'Integrity is enforced by the server (constraints, revision checks) in the real app'); }),
     resetToSeed: demoOnly('Reset to demo data'),
@@ -306,7 +363,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     /** Refetch the snapshot now (after a payment window closes, etc.). */
     refresh: op(() => refresh().then(() => undefined)),
     session, people, notices, threads, calendar, transport, fees, attendance, diary, audit, admin,
-    auth, consent, push, import: imports, reminders,
+    auth, consent, push, import: imports, reminders, curriculum, observations, progress, reports, photos,
     _supabase: sb,
   };
   return api;

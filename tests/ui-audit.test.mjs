@@ -77,6 +77,15 @@ test('#10 GO-LIVE lists retention enforcement as a gate before real data', () =>
   assert.match(read('docs/GO-LIVE.md'), /- \[ \] \*\*Retention[^\n]*enforc/i);
 });
 
+// Phase 3 built the enforcement: the gate is now "decide the periods and set them", and the notice says what is enforced.
+test('#10 (Phase 3) the notice says an unset period is not enforced and photos are; GO-LIVE sends the principal to the Settings card', async () => {
+  const { SECTIONS } = await import('../src/ui/privacy.js');
+  const text = SECTIONS.find((x) => /how long/i.test(x.h)).p.join(' ');
+  assert.match(text, /not enforced/i);
+  assert.match(text, /Photos are the exception/);
+  assert.match(read('docs/GO-LIVE.md'), /Settings > How long records are kept/);
+});
+
 // ---------------------------------------------------------------- #48 consent version, two sources
 test('#48 the UI privacy version equals the server CONSENT_VERSION, and GO-LIVE names all three places', async () => {
   const { PRIVACY_VERSION } = await import('../src/ui/privacy.js');

@@ -2,6 +2,8 @@
 // Bus positions are the bus's, not the family's, and are not included (the children's own boarding/drop-off events
 // are); other families never appear. Server-only collections (sign-in links, invites, erasure requests, reminders,
 // push devices, payment orders, raw import rows) are present in the real app and empty in the demo.
+// Learning records are the child's record: every observation (shared or not), photo metadata (the bytes stay in the
+// app; the export says so), progress events and reports (any status).
 
 import { fail } from './ids.js';
 import { byId, childrenOf } from './people.js';
@@ -31,6 +33,12 @@ export function guardianExport(db, guardianId) {
     threads: threads.map(t => ({ ...t, messages: db.messages.filter(m => m.threadId === t.id) })),
     attendance: db.attendance.filter(mine),
     diary: db.diaryEntries.filter(mine),
+    observations: (db.observations || []).filter(mine),
+    photos: (db.photos || []).filter(mine).map(x => ({ id: x.id, observationId: x.observationId, studentId: x.studentId, status: x.status, bytes: x.bytes,
+      width: x.width, height: x.height, createdAt: x.createdAt, readyAt: x.readyAt, deleteReason: x.deleteReason ?? null, objectDeletedAt: x.objectDeletedAt ?? null })),
+    photosNote: 'Photo files are not inside this export; the school can show or hand over the photos that are still kept.',
+    progressEvents: (db.progressEvents || []).filter(mine),
+    reports: (db.reports || []).filter(mine),
     consents: (db.consents || []).filter(c => c.guardianId === guardianId),
     messagesCounted: db.messages.filter(m => threadIds.has(m.threadId)).length,
     transportEvents: (db.trips || []).flatMap(t => (t.childEvents || []).filter(e => ids.has(e.studentId))

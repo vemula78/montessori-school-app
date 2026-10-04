@@ -10,7 +10,7 @@
 // the backend replaces this with a database transaction and sequence.
 // The backend is injected ({getItem, setItem}) so tests use a Map; the browser passes localStorage.
 
-import { SCHEMA_VERSION } from './schema.js';
+import { SCHEMA_VERSION, RETENTION_KEYS } from './schema.js';
 import { DomainError } from '../domain/ids.js';
 import { appendAudit } from '../domain/audit.js';
 import { validateDb, checkStructure } from '../domain/validate.js';
@@ -32,8 +32,19 @@ export function memoryBackend(map = new Map()) {
   };
 }
 
-/** Versioned migration hook. Today only v1 exists; older/newer versions are refused by load(). */
+/**
+ * Versioned migration hook (runs on load, commit and import of an older document).
+ * v1 -> v2 (Phase 3): the six new collections as empty arrays, students.leftOn = null (unknown), school.retention all
+ * null (not decided). Nothing is dropped or rewritten. Never throws on a malformed document: checkStructure reports it.
+ * Newer versions are refused by parse().
+ */
 export function migrate(db) {
+  if (db.schemaVersion === 1) {
+    for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents']) if (!Array.isArray(db[c])) db[c] = [];
+    if (Array.isArray(db.students)) for (const s of db.students) if (s && typeof s === 'object' && s.leftOn === undefined) s.leftOn = null;
+    if (db.school && typeof db.school === 'object' && !db.school.retention) db.school.retention = Object.fromEntries(RETENTION_KEYS.map(k => [k, null]));
+    db.schemaVersion = 2;
+  }
   if (db.schemaVersion === SCHEMA_VERSION) return db;
   throw new DomainError('STORAGE_CORRUPT', `No migration from schemaVersion ${db.schemaVersion}`);
 }
@@ -67,9 +78,10 @@ export class Storage {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { status: 'corrupt', error: 'Stored data is not an object' };
     if (obj.schemaVersion !== SCHEMA_VERSION) {
       if (Number.isInteger(obj.schemaVersion) && obj.schemaVersion > 0 && obj.schemaVersion < SCHEMA_VERSION) {
-        try { return { db: migrate(obj) }; } catch (e) { return { status: 'unsupportedVersion', error: e.message }; }
+        try { obj = migrate(obj); } catch (e) { return { status: 'unsupportedVersion', error: e.message }; }
+      } else {
+        return { status: 'unsupportedVersion', error: `Unknown schemaVersion ${obj.schemaVersion} (this app reads ${SCHEMA_VERSION})` };
       }
-      return { status: 'unsupportedVersion', error: `Unknown schemaVersion ${obj.schemaVersion} (this app reads ${SCHEMA_VERSION})` };
     }
     const bad = checkStructure(obj).violations;
     if (bad.length) return { status: 'corrupt', error: `Stored data is structurally invalid: ${bad.slice(0, 3).map(x => `${x.entity} ${x.message}`).join('; ')}${bad.length > 3 ? ` (+${bad.length - 3} more)` : ''}` };

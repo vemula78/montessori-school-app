@@ -156,3 +156,24 @@ test('api: every persona\'s read endpoints work on the seed and stay scoped', as
   assert.ok(parentInvoices > 0, 'parent invoice scoping was exercised on real rows');
   assert.deepEqual(await api.admin.validate(), []);
 });
+
+// ---------------------------------------------------------------- Phase 3 seed
+test('Phase 3 seed: observations moved out of the diary, some shared and some not; reports in each state; photos are drawn, one child without consent', async () => {
+  const { photoConsentFor, CONSENT_VERSION } = await import('../src/domain/commands.js');
+  assert.equal(db.diaryEntries.filter(e => e.type === 'observation').length, 0, 'observation text lives in the observations collection');
+  assert.ok(db.observations.some(o => o.sharedAt) && db.observations.some(o => !o.sharedAt), 'some shared, some staff-only');
+  assert.ok(db.observations.every(o => (o.sharedAt === null) === (o.sharedBy === null)));
+  assert.ok(db.presentations.length >= 150 && db.presentations.every(p => p.active && p.source === 'starter'));
+  assert.deepEqual(db.reports.map(r => r.status).sort(), ['draft', 'published', 'submitted']);
+  for (const r of db.reports) for (const o of r.observations) assert.ok(db.observations.find(x => x.id === o.id)?.sharedAt, 'a report carries shared observations only');
+  assert.ok(db.photos.length > 0 && db.photos.every(p => p.path === null && p.demo?.illustration && p.status === 'ready'), 'seed photos are illustrations, never Storage paths');
+  const zoya = db.students.find(s => s.firstName === 'Zoya');
+  assert.equal(photoConsentFor(db, zoya.id), false, 'the one child without photo consent');
+  assert.equal(db.photos.filter(p => p.studentId === zoya.id).length, 0, 'and so no photo of that child');
+  assert.equal(db.students.filter(s => s.status === 'active' && !photoConsentFor(db, s.id)).length, 1, 'everyone else has it');
+  assert.ok(db.consents.every(c => c.version === CONSENT_VERSION && !c.withdrawnAt));
+  const left = db.students.find(s => s.status === 'left');
+  assert.equal(left.leftOn, '2026-07-02');
+  assert.ok(db.students.filter(s => s.status === 'active').every(s => s.leftOn === null));
+  assert.deepEqual(Object.values(db.school.retention), [null, null, null, null, null], 'no retention period is decided in the demo');
+});

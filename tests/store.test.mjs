@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { createEmptyDb, SCHEMA_VERSION } from '../src/store/schema.js';
 import { Storage, memoryBackend, DB_KEY, CORRUPT_PREFIX } from '../src/store/storage.js';
 import { createApi } from '../src/api/index.js';
+import { buildSeed } from '../src/seed/seed-data.js';
+import { validateDb } from '../src/domain/validate.js';
+import { migrate } from '../src/store/storage.js';
 
 const clock = () => new Date(Date.UTC(2026, 9, 2, 5, 0, 0));
 const ctx = { actor: { role: 'admin', id: 'ADM' }, now: '2026-10-02T05:00:00.000Z', today: '2026-10-02' };
@@ -137,4 +140,90 @@ test('api: corrupt storage rejects ready() with STORAGE_CORRUPT; reset works wit
   await assert.rejects(api.people.programs(), { code: 'NOT_ALLOWED' }); // no persona chosen yet
   api.session.set('persona-ADM');
   assert.deepEqual(await api.people.programs(), []);
+});
+
+// ---------------------------------------------------------------- schema v1 -> v2 (Phase 3)
+const v1Blob = () => {
+  const d = buildSeed(new Date(2026, 9, 2, 10, 0, 0));
+  for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents']) delete d[c];
+  for (const st of d.students) delete st.leftOn;
+  delete d.school.retention;
+  d.diaryEntries.push({ id: 'dia-old', studentId: d.students[0].id, date: '2026-10-01', type: 'observation', data: { area: 'sensorial', text: 'Old' }, createdBy: 'x', createdAt: '2026-10-01T04:00:00.000Z', parentReadAt: null });
+  d.schemaVersion = 1;
+  return d;
+};
+
+test('DB_KEY is unchanged by the schema bump', () => assert.equal(DB_KEY, 'montessori.db.v2'));
+
+test('a stored v1 document is migrated on load: new collections empty, leftOn null, retention not decided, nothing else changed', () => {
+  const be = memoryBackend();
+  const v1 = v1Blob();
+  be.setItem(DB_KEY, JSON.stringify(v1));
+  const s = new Storage({ backend: be, seedFn: seed, clock });
+  assert.equal(s.load().status, 'ok');
+  assert.equal(s.db.schemaVersion, SCHEMA_VERSION);
+  assert.equal(SCHEMA_VERSION, 2);
+  for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents']) assert.deepEqual(s.db[c], [], c);
+  assert.ok(s.db.students.every(x => x.leftOn === null));
+  assert.deepEqual(Object.values(s.db.school.retention), [null, null, null, null, null]);
+  assert.equal(s.db.diaryEntries.find(e => e.id === 'dia-old').data.text, 'Old', 'old diary observations are kept as they were');
+  assert.deepEqual(validateDb(s.db), [], 'loads clean');
+  assert.equal(s.db.invoices.length, v1.invoices.length, 'no row lost');
+  assert.equal(JSON.parse(be.getItem(DB_KEY)).schemaVersion, 1, 'load itself does not rewrite the stored blob');
+  s.commit(d => { d.school.phone = '+91-90000-00997'; });
+  const after = JSON.parse(be.getItem(DB_KEY));
+  assert.equal(after.schemaVersion, 2, 'the first commit stores v2');
+  assert.deepEqual(after.observations, []);
+});
+
+test('a v1 backup imports (migrated); garbage v1 is still refused; migrate is idempotent and refuses unknown versions', () => {
+  const be = memoryBackend();
+  const s = new Storage({ backend: be, seedFn: seed, clock });
+  s.load();
+  const r = s.importJson(JSON.stringify(v1Blob()), ctx);
+  assert.deepEqual(r.violations.filter(v => v.severity !== 'warning'), []);
+  assert.equal(s.db.schemaVersion, 2);
+  assert.throws(() => s.importJson('{"schemaVersion":1,"rev":0}', ctx), { code: 'VALIDATION' });
+  assert.throws(() => s.importJson(JSON.stringify({ ...v1Blob(), school: 'x' }), ctx), { code: 'VALIDATION' });
+  const twice = migrate(migrate(v1Blob()));
+  assert.equal(twice.schemaVersion, 2);
+  assert.throws(() => migrate({ schemaVersion: 7 }), { code: 'STORAGE_CORRUPT' });
+  assert.throws(() => migrate({ schemaVersion: 0 }), { code: 'STORAGE_CORRUPT' });
+});
+
+test('validateDb: new references and states are checked', () => {
+  const d = buildSeed(new Date(2026, 9, 2, 10, 0, 0));
+  const bad = structuredClone(d);
+  bad.observations[0].studentId = 'no-such';
+  bad.observations[1].presentationId = 'no-such';
+  bad.photos[0].observationId = 'no-such';
+  bad.progressEvents[0].presentationId = 'no-such';
+  bad.reports[0].academicYearId = 'AY1999-00';
+  bad.reports[1].studentId = 'no-such';
+  const refs = validateDb(bad).filter(v => v.code === 'BAD_REF').map(v => v.entity);
+  for (const e of ['observation', 'photo', 'progressEvent', 'report']) assert.ok(refs.includes(e), e);
+  const gap = structuredClone(d);
+  gap.progressEvents.find(e => e.seq === 2).seq = 5;
+  assert.ok(validateDb(gap).some(v => v.code === 'NUMBER_GAP'), 'seq must be contiguous per key');
+  const dup = structuredClone(d);
+  dup.reports.push({ ...dup.reports[0], id: 'rep-dup' });
+  assert.ok(validateDb(dup).some(v => v.code === 'DUPLICATE_REPORT'));
+  const pub = structuredClone(d);
+  pub.reports.find(r => r.status === 'published').publishedBy = null;
+  assert.ok(validateDb(pub).some(v => v.code === 'PUBLISHED_WITHOUT_STAMP'));
+  const cross = structuredClone(d);
+  cross.photos[0].studentId = cross.students.find(s => s.id !== cross.photos[0].studentId).id;
+  assert.ok(validateDb(cross).some(v => v.code === 'CROSS_STUDENT'), 'one photo, one child');
+  const ret = structuredClone(d);
+  ret.school.retention.photosMonthsAfterLeaving = 0;
+  assert.ok(validateDb(ret).some(v => v.code === 'BAD_SCHOOL'));
+  const act = structuredClone(d);
+  act.students[0].leftOn = '2026-07-01';
+  assert.ok(validateDb(act).some(v => v.code === 'LEFT_ON_ACTIVE'));
+  const solo = structuredClone(d);
+  solo.photos[0].soloConfirmedBy = null;
+  assert.ok(validateDb(solo).some(v => v.code === 'NOT_CONFIRMED_SOLO'));
+  const shared = structuredClone(d);
+  shared.observations.find(o => o.sharedAt).sharedBy = null;
+  assert.ok(validateDb(shared).some(v => v.code === 'SHARED_WITHOUT_ACTOR'));
 });

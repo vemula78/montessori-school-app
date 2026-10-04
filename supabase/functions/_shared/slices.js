@@ -8,7 +8,8 @@ const KEY = {
   attendance: r => `${r.date}|${r.studentId}`,
 };
 const keyOf = (c, r) => (KEY[c] ? KEY[c](r) : r.id);
-const DELETABLE = new Set(['calendarEvents', 'importRows']);
+// Phase 3: retention.purge (slice 'retention', system only) deletes learning, diary, attendance and message rows
+const DELETABLE = new Set(['calendarEvents', 'importRows', 'observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages']);
 const stable = x => JSON.stringify(x);
 
 /**

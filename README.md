@@ -30,11 +30,11 @@ so two tabs can be two different people (e.g. Driver and Parent) at once.
 
 | Persona | Try this |
 |---|---|
-| Principal — Kavita Exampleton | Calendar → import `data/holidays-2026-27.csv`; Notices → send to Primary A + Primary B with acknowledgement |
-| Teacher — Anita Demoson (Primary A) | Attendance (blocked on holidays/weekends with the reason), Daily diary, reply to parent threads |
+| Principal — Kavita Exampleton | Calendar → import `data/holidays-2026-27.csv`; Notices → send to Primary A + Primary B with acknowledgement; Learning → Curriculum → import `data/curriculum-sample.csv`, publish a submitted termly report |
+| Teacher — Anita Demoson (Primary A) | Attendance (blocked on holidays/weekends with the reason), Daily diary, **Learning**: observations with a photo (a file from your device, or the drawn demo photos), share one, record progress, start a termly report; reply to parent threads |
 | Accountant — Mohan Samplekar | Generate invoices, record cash/UPI payments, print an A5 receipt, cancel/refund, late fees, Reports → Reconciliation, data import |
 | Driver — Sunil Samplekar / Imran Fakeswaran | Start a trip (real GPS or "simulated trip"), mark children boarded |
-| Parent — Meena Notrealsen | Two children in two programs: one notice "about both children", one message thread per child |
+| Parent — Meena Notrealsen | Two children in two programs: one notice "about both children", one message thread per child; **Learning**: shared observations with photos and a published termly report to read and print (no progress grid) |
 | Parent — Priyanka Demoson | A bus child: live map, "nearing / arrived", boarded time; mock online payment |
 
 All names come from an allow-listed set of obviously fake surnames; phones are `+91-90000-00NNN`, emails
@@ -48,7 +48,7 @@ src/domain/   pure functions (money, dates, fees, calendar, messaging, transport
 src/store/    schema (typedefs, createEmptyDb) + the demo's localStorage adapter (commit/rev, corruption, quota)
 src/api/      the ONLY data module screens import: index.js (demo + mode selector), remote.js + supabase/ (real app)
 src/ui/       shell, router, screens, map, simulation runner
-src/seed/     demo data, built by calling the real domain functions
+src/seed/     demo data, built by calling the real domain functions; illustrations.js = the drawn demo photos (SVG)
 supabase/     migrations (schema, RLS, snapshot, persist), pgTAP tests, Edge Functions, seed.sql (generated)
 scripts/      dev server, scan, domain sync, seed/first-run SQL generators, mock gateway, e2e money check
 ```
@@ -57,8 +57,34 @@ scripts/      dev server, scan, domain sync, seed/first-run SQL generators, mock
 - **Dates** are `YYYY-MM-DD` internally, shown as DD-MMM-YYYY, parsed by regex (never `Date`). Server code computes
   IST business dates explicitly (`dateInZone(ms, 330)`): Deno runs in UTC.
 - **Reconciliation** (Accountant → Reports): five independent checks; mismatches listed row by row.
-- **Imports report counts**: `inputRows = imported + skippedDuplicate + rejected` (holidays) and
+- **Imports report counts**: `inputRows = imported + skippedDuplicate + rejected` (holidays, curriculum) and
   `inputRows = ok + quarantined + duplicate` (children/fees); nothing is dropped without a reason.
+
+### Learning (Phase 3): curriculum, observations, photos, progress, termly reports
+
+- **Staff only until shared.** An observation (`api.observations.add`) is visible to the principal and the child's
+  teachers; a parent sees it only after the teacher shares it (`sharedAt`). Shared text is frozen; a mistake is
+  unshared (a teacher within 24 hours, the principal any time). The diary's "Add entry" no longer offers Observation
+  (the diary is parent-visible by design); old diary observations still display.
+- **Progress never reaches a parent directly.** Progress is append-only events per child and presentation (forward
+  `introduced → practising → mastered`; backwards or repeated needs a correction with a reason). The family sees it
+  only inside a **termly report** the principal published: a frozen copy (progress as of the term end with names
+  copied in, plus the shared observations) at `#/print/report/:id`, A4, stamped DEMO in the demo.
+- **Curriculum**: about 160 starter presentations in five areas (`src/domain/curriculum-starter.js`, generic material
+  names, ages in months), loaded idempotently by key; the school's own list by CSV (`api.curriculum.previewCsv` then
+  `importCsv`: preview shows counts that add up and every duplicate or rejected line with its reason; a repeat is
+  never a silent update). Presentations are retired, never deleted.
+- **Photos**: one child per photo (the teacher ticks "only this child is in the frame"), only with photo consent
+  (every guardian using the app agrees, per child, at sign-up or in Settings). The browser shrinks to 1280 px and
+  re-saves as JPEG (`src/ui/photo-prep.js`), which drops EXIF/GPS, and refuses rather than uploads if it cannot decode.
+  Images are shown only as `URL.createObjectURL(blob)` from `api.photos.blob(id)` (revoked when the screen is left);
+  no signed URL ever reaches the page. **Demo photos** are drawn SVGs of Montessori materials (no people) or a file
+  you choose, kept in this browser's IndexedDB (`montessori.photos.v1`) only: never localStorage, the seed or git;
+  Reset to demo data clears it.
+- **Retention** (closes the Phase 2 deferred item): `school.retention` holds a period per category in months after
+  `students.leftOn`; empty = not decided = nothing deleted. The principal sets them in Settings (real app); the daily
+  job deletes what is due and reports counts. Photos also go when photo consent is withdrawn.
+- Schema v2: `migrate()` upgrades a stored v1 document in the browser (new collections empty, `leftOn` null).
 
 ## Phase 2 / real app
 
@@ -118,7 +144,8 @@ security_invoker", append-only audit, unique receipt numbers, stale-rev rejectio
   **Staff** are linked automatically when they first confirm the email on their staff record (email confirmation must
   stay ON: `enable_confirmations` locally, "Confirm email" in the dashboard); a password set on that address before it
   was confirmed is voided at confirmation. Revoking a user or withdrawing app consent cuts access on the next request.
-- **Consent** per (guardian, child, purpose, notice version) for `app_account` (required), `push`, `bus_live`, with the
+- **Consent** per (guardian, child, purpose, notice version) for `app_account` (required), `push`, `bus_live`, `photos`
+  (all optional and never pre-ticked; the sign-up screen asks photos per child when a parent has several), notice v2, with the
   SHA-256 of the notice text the parent saw and the evidence `invite_code+child_dob+email_otp`. Withdrawal is live
   (RLS evaluates consent at query time); withdrawing `app_account` disables the account and opens an erasure request.
   Until `app_account` is given for a child the server neither returns that child's data nor runs parent commands for
@@ -263,7 +290,8 @@ the fake allow-list, a phone or email is not in the fake pattern, an Aadhaar-lik
 vendor's or hospital's name appears, a published file other than the real-app api makes a network call, or anything that looks like
 a key or secret (JWTs, Supabase secret keys, Razorpay key + secret, private keys) or a `.env` file would be committed.
 
-The real app minimises data (no Aadhaar, no photos, no addresses — stop names only; health notes visible to the
+The real app minimises data (no Aadhaar, no addresses — stop names only; photos only with per-child consent, one child
+per photo, in a private bucket, deleted when consent is withdrawn or per the retention period; health notes visible to the
 principal, the child's teacher and parents only; staff phones to the principal only; positions are the bus's and are
 kept 30 days), records consent per purpose, audits every write, and supports access (export) and erasure
 (erasure of the guardian's details, messages, sign-ins, devices and raw import/gateway copies, keeping the legally
@@ -279,5 +307,6 @@ timeline must be confirmed by the school's legal adviser.
 - **Map tiles** come from `tile.openstreetmap.org`, whose policy allows light demo use only: production must
   self-host tiles or use a tile provider (e.g. MapTiler's free tier). Tile requests carry map coordinates only.
 - **Settlement CSV columns** follow the dashboard export as documented; verify against a real export before go-live.
-- **Background tracking** is impossible for a web app (see Live bus). Out of scope: photo/video sharing, staff
+- **Background tracking** is impossible for a web app (see Live bus). Demo photos from a chosen file live in one
+  browser only (a different browser or a reset shows "not stored in this browser"). Out of scope: video, staff
   attendance, admissions CRM, SMS/WhatsApp, multi-language, XLSX import (save as CSV).

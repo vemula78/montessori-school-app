@@ -313,7 +313,7 @@ export function applyRows(db, { kind, mapping, rows }, batchId, ctx) {
         if (!gids.includes(gid)) gids.push(gid);
       }
       db.students.push({ id: sid, firstName: t.firstName, lastName: t.lastName, dob: t.dob, programId: t.programId, admissionNo: t.admissionNo, status: t.status,
-        guardianIds: gids, routeId: t.routeId, stopId: t.stopId, feeCategory: 'regular', healthNotes: null, source: 'import', importBatchId: batchId });
+        guardianIds: gids, routeId: t.routeId, stopId: t.stopId, feeCategory: 'regular', healthNotes: null, leftOn: null, source: 'import', importBatchId: batchId }); // leftOn: unknown (the principal sets it)
       for (const gid of gids) { const g = byId(db.guardians, gid); if (!g.studentIds.includes(sid)) g.studentIds.push(sid); }
       created.students++;
     }

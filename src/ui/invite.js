@@ -4,7 +4,7 @@ import { esc, banner, errMessage } from './components.js';
 import { todayISO } from '../domain/dates.js';
 
 const frame = (inner) => `<div class="auth-wrap"><div class="auth-card stack">
-  <div class="auth-logo" aria-hidden="true"><span class="logo">A</span></div>${inner}</div></div>`;
+  <div class="auth-logo" aria-hidden="true"><span class="logo"></span></div>${inner}</div></div>`;
 
 /** @param {HTMLElement} root @param {{email?:string, onDone:()=>void, onSignOut:()=>void}} o */
 export function renderInvite(root, { email, onDone, onSignOut }) {

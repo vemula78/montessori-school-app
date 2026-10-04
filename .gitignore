@@ -29,3 +29,4 @@ app/*.local.js
 # real school details for the first-run generator
 first-run.json
 first-run.sql
+PLAN-PHASE3.md

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildSeed } from '../src/seed/seed-data.js';
 import { createApi } from '../src/api/index.js';
 import { memoryBackend } from '../src/store/storage.js';
-import { COMMANDS, SLICES, execute, personaFor, revKey } from '../src/domain/commands.js';
+import { COMMANDS, SLICES, execute, personaFor, revKey, CONSENT_VERSION } from '../src/domain/commands.js';
 import { dateInZone } from '../src/domain/dates.js';
 import * as F from '../src/domain/fees.js';
 import * as G from '../src/domain/gateway.js';
@@ -263,7 +263,7 @@ test('demo mode: real-app namespaces answer with demo values or NOT_ALLOWED; lat
   assert.deepEqual(await api.auth.status(), { state: 'demo', email: null });
   api.session.set('persona-grd-02');
   const cs = await api.consent.status();
-  assert.equal(cs.version, 'v1');
+  assert.equal(cs.version, CONSENT_VERSION);
   assert.equal(cs.purposes.app_account.given, true);
   assert.equal(await api.push.vapidPublicKey(), null);
   assert.deepEqual(await api.push.list(), []);
@@ -271,7 +271,7 @@ test('demo mode: real-app namespaces answer with demo values or NOT_ALLOWED; lat
     await assert.rejects(api.fees[fnName]({}), e => e.code === 'NOT_ALLOWED' && /real app/.test(e.message), fnName);
   }
   await assert.rejects(api.auth.signInWithOtp('a@example.com'), { code: 'NOT_ALLOWED' });
-  await assert.rejects(api.consent.give({ purposes: ['app_account'], version: 'v1' }), { code: 'NOT_ALLOWED' });
+  await assert.rejects(api.consent.give({ purposes: ['app_account'], version: CONSENT_VERSION }), { code: 'NOT_ALLOWED' });
   assert.ok(Array.isArray(await api.reminders.list()));
   api.session.set('persona-stf-accountant');
   const due = await api.fees.lateFeesDueList();
@@ -347,15 +347,15 @@ test('consent.give: app_account is required only until it is given; optional pur
   const db = accountDb();
   const p = personaFor(db, { role: 'parent', guardianId: 'grd-02' });
   const c = ctx('2026-10-02', { role: 'parent', id: 'grd-02' });
-  assert.throws(() => execute('consent.give', db, [{ purposes: ['bus_live'], version: 'v1' }], c, p), /app account purpose is required/);
+  assert.throws(() => execute('consent.give', db, [{ purposes: ['bus_live'], version: CONSENT_VERSION }], c, p), /app account purpose is required/);
   const hash = 'a'.repeat(64);
-  execute('consent.give', db, [{ purposes: ['app_account'], version: 'v1', textHash: hash }], c, p);
-  const st = execute('consent.give', db, [{ purposes: ['bus_live'], version: 'v1', textHash: hash }], c, p);
+  execute('consent.give', db, [{ purposes: ['app_account'], version: CONSENT_VERSION, textHash: hash }], c, p);
+  const st = execute('consent.give', db, [{ purposes: ['bus_live'], version: CONSENT_VERSION, textHash: hash }], c, p);
   assert.equal(st.purposes.app_account.given, true);
   assert.equal(st.purposes.bus_live.given, true);
   assert.equal(st.purposes.push.given, false);
   assert.ok(db.consents.every(x => x.textHash === hash));
-  assert.throws(() => execute('consent.give', db, [{ purposes: ['push'], version: 'v1', textHash: 'not-a-hash' }], c, p), /SHA-256/);
+  assert.throws(() => execute('consent.give', db, [{ purposes: ['push'], version: CONSENT_VERSION, textHash: 'not-a-hash' }], c, p), /SHA-256/);
   execute('consent.withdraw', db, ['app_account'], c, p);
-  assert.throws(() => execute('consent.give', db, [{ purposes: ['push'], version: 'v1' }], c, p), /app account purpose is required/, 'after withdrawal it is required again');
+  assert.throws(() => execute('consent.give', db, [{ purposes: ['push'], version: CONSENT_VERSION }], c, p), /app account purpose is required/, 'after withdrawal it is required again');
 });

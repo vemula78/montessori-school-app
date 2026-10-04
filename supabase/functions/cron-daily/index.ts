@@ -11,6 +11,11 @@
 //   6. count expired, unredeemed invites (they already fail redemption on expiry)
 //   7. prune command request ids (7 days) and order attempts (2 days)
 //   8. retry erasure clean-up (sign-in deletion, gateway scrubbing) for requests still in 'cleanup'
+//   9. photosConsentSweep: every child with live photos whose photo consent no longer holds → those photos deleting
+//  10. retention: what school.retention makes due today (counted per category even when nothing is decided); photos
+//      expire, other rows are deleted — only for categories whose period is set; every row re-checked by the command
+//  11. photosCleanup: delete the objects of 'deleting' rows (→ deleted/expired), reject uploads abandoned for 2 hours,
+//      delete objects older than 2 hours that have no ready/deleting row
 
 import { CORS, errorResponse, json, coded } from '../_shared/http.ts';
 import { rest, restAll, restCount, rpc } from '../_shared/db.ts';
@@ -20,14 +25,16 @@ import { deliver } from '../_shared/push.ts';
 import { settleEvent } from '../_shared/gateway.ts';
 import { finishErasure } from '../_shared/erasure.ts';
 import { timingSafeEqual } from '../_shared/razorpay.js';
-import { SLICES } from '../_shared/domain/commands.js';
+import { SLICES, COMMANDS } from '../_shared/domain/commands.js';
+import { retentionPlan } from '../_shared/domain/retention.js';
+import { cleanupDeleting, sweepPhotos } from '../_shared/photos.ts';
 import { remindersDue, lateFeesDueList } from '../_shared/domain/reminders.js';
 import { dateInZone, IST_OFFSET_MIN } from '../_shared/domain/dates.js';
 import { byId } from '../_shared/domain/people.js';
 
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
 const TRIP_MAX_MS = 3 * 3600_000, STALE_MS = 20 * 60_000, POSITIONS_DAYS = 30, MAX_EVENT_ATTEMPTS = 10, STRANDED_MS = 10 * 60_000;
-const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup'];
+const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup', 'photosConsentSweep', 'retention', 'photosCleanup'];
 
 async function step<T>(report: Record<string, unknown>, only: Set<string>, name: string, fn: () => Promise<T>) {
   if (!only.has(name)) return;
@@ -134,6 +141,23 @@ Deno.serve(async (req) => {
       }
       return { pending: open.length, done, failed, ...(errors.length ? { errors } : {}) };
     });
+
+    await step(report, only, 'photosConsentSweep', async () => (await runCommand('photos.consentSweep', [], system('cron-daily'))).result);
+
+    await step(report, only, 'retention', async () => {
+      const { db } = await rpc('load_slice', { p_collections: SLICES.retention.reads, p_hints: (COMMANDS as any)['retention.purge'].load([]) });
+      const plan = retentionPlan(db, today);
+      const expire = [...new Set(Object.values(plan.categories).flatMap((c: any) => c.expire))];
+      const deletes: Record<string, string[]> = {};
+      for (const c of Object.values(plan.categories) as any[]) for (const [col, keys] of Object.entries(c.deletes)) deletes[col] = [...new Set([...(deletes[col] || []), ...(keys as string[])])];
+      const due = Object.fromEntries(Object.entries(plan.categories).map(([k, c]: [string, any]) => [k, { months: c.months, students: c.students.length, due: c.due }]));
+      const purged = expire.length || Object.keys(deletes).length
+        ? (await runCommand('retention.purge', [{ expire, deletes }], system('cron-daily'))).result
+        : { requested: 0, expired: 0, deleted: {}, skipped: 0 };
+      return { asOf: today, leftWithoutDate: plan.leftWithoutDate.length, due, purged };
+    });
+
+    await step(report, only, 'photosCleanup', async () => ({ ...(await cleanupDeleting(null)), ...(await sweepPhotos(nowMs)) }));
 
     return json({ ok: true, report });
   } catch (e) {

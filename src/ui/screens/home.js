@@ -76,7 +76,7 @@ async function parentHome(ctx) {
     <div class="stack">${cards.join('') || empty('No children linked to this account')}</div>
     <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}
     <h2 style="margin-top:20px">Quick links</h2>
-    <div class="grid cols-2">${tile('#/notices', 'bell', 'Notices')}${tile('#/messages', 'chat', 'Messages')}${tile('#/calendar', 'calendar', 'Calendar')}${tile('#/diary', 'book', 'Daily diary')}</div>`;
+    <div class="grid cols-2">${tile('#/notices', 'bell', 'Notices')}${tile('#/messages', 'chat', 'Messages')}${tile('#/calendar', 'calendar', 'Calendar')}${tile('#/diary', 'book', 'Daily diary')}${tile('#/learning', 'learn', 'Learning', 'Shared observations and termly reports')}</div>`;
 }
 
 async function teacherHome(ctx) {
@@ -94,7 +94,7 @@ async function teacherHome(ctx) {
     const head = working === false ? badge('Not a working day', 'mute') : list ? badge(`${marked}/${list.length} marked`, marked === list.length && list.length ? 'ok' : 'warn') : badge('Register unavailable', 'bad');
     rows.push(`<div class="card stack"><div class="row between"><h3>${esc(progs.get(pid)?.name || pid)}</h3>${head}</div>
       <div class="grid cols-3">${kpi('children', list ? list.length : DASH)}${kpi('absent today', absent ?? DASH, absent ? 'bad' : '')}${kpi('unmarked', list ? list.length - marked : DASH)}</div>
-      <div class="row"><a class="btn primary sm" href="#/attendance?program=${esc(pid)}">Attendance</a><a class="btn sm" href="#/diary?program=${esc(pid)}">Daily diary</a></div></div>`);
+      <div class="row"><a class="btn primary sm" href="#/attendance?program=${esc(pid)}">Attendance</a><a class="btn sm" href="#/diary?program=${esc(pid)}">Daily diary</a><a class="btn" href="#/learning?program=${esc(pid)}">Observations</a></div></div>`);
   }
   const myThreads = db.threads.filter((t) => (persona.programIds || []).includes(t.programId));
   const unread = db.messages.filter((m) => myThreads.some((t) => t.id === m.threadId) && m.senderRole === 'parent' && !m.readAt).length;
@@ -137,7 +137,7 @@ async function adminHome(ctx) {
     </div>
     <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}
     <h2 style="margin-top:20px">Go to</h2>
-    <div class="grid cols-3">${tile('#/notices', 'bell', 'Notices', 'Send and track acknowledgements')}${tile('#/calendar', 'calendar', 'Calendar', 'Holidays, events, CSV import')}${tile('#/attendance', 'check', 'Attendance')}${tile('#/bus', 'bus', 'Bus fleet')}${tile('#/fees', 'rupee', 'Fees')}${tile('#/reports', 'chart', 'Reports')}</div>`;
+    <div class="grid cols-3">${tile('#/notices', 'bell', 'Notices', 'Send and track acknowledgements')}${tile('#/calendar', 'calendar', 'Calendar', 'Holidays, events, CSV import')}${tile('#/attendance', 'check', 'Attendance')}${tile('#/learning', 'learn', 'Learning', 'Observations, progress, reports, curriculum')}${tile('#/bus', 'bus', 'Bus fleet')}${tile('#/fees', 'rupee', 'Fees')}${tile('#/reports', 'chart', 'Reports')}</div>`;
 }
 
 async function accountantHome(ctx) {

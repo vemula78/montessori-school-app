@@ -14,7 +14,7 @@ const cron = steps => fn('cron-daily', { steps }, null, { 'X-Cron-Secret': local
 async function linkedParent(guardianId) {
   const who = await signIn(`p3-${guardianId}-${rand()}@example.com`);
   assert.equal((await rest('POST', 'app_users', { user_id: who.userId, role: 'parent', guardian_id: guardianId, status: 'active' }, 'return=minimal')).status, 201);
-  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: 'v1' })).status, 200);
+  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: 'v2' })).status, 200);
   return who;
 }
 

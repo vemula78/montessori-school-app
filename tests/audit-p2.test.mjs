@@ -368,7 +368,8 @@ test('#13 a write to a collection another slice also writes guards that slice to
   assert.deepEqual(guardSlices('account', ['guardians', 'invites']), ['erasure', 'ledger']);
   assert.ok(guardSlices('ledger', ['staff']).includes('account'), 'staff role changes move app_users (account)');
   assert.deepEqual(guardSlices('ledger', ['payments', 'invoices']), []);
-  assert.deepEqual(guardSlices('messaging', ['messages']), ['erasure']);
+  // retention.purge (Phase 3) deletes messages, so a message write also moves the retention revision (and vice versa)
+  assert.deepEqual(guardSlices('messaging', ['messages']), ['erasure', 'retention']);
 });
 
 // ---------------------------------------------------------------- erasure (#8) and access export (#9)
@@ -445,9 +446,11 @@ test('#27 REST reads are paged until a short page (no silent 1000-row cap)', asy
 });
 
 test('#6/#7 the SQL consent version (app.consent_version) equals CONSENT_VERSION', async () => {
-  const { readFileSync } = await import('node:fs');
-  const sql = readFileSync(new URL('../supabase/migrations/0003_audit_fixes.sql', import.meta.url), 'utf8');
-  const m = /create function app\.consent_version\(\)[^$]*\$\$\s*select '([^']+)'::text/.exec(sql);
+  const { readFileSync, readdirSync } = await import('node:fs');
+  // the latest migration that defines it wins (0003 created it at v1; 0005 moved it to v2)
+  const dir = new URL('../supabase/migrations/', import.meta.url);
+  const m = readdirSync(dir).filter(f => f.endsWith('.sql')).sort()
+    .map(f => /create (?:or replace )?function app\.consent_version\(\)[^$]*\$\$\s*select '([^']+)'::text/.exec(readFileSync(new URL(f, dir), 'utf8'))).filter(Boolean).at(-1);
   assert.ok(m, 'app.consent_version() found');
   assert.equal(m[1], CONSENT_VERSION);
 });

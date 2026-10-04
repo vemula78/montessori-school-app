@@ -60,7 +60,9 @@ test('summary counts over working days only', () => {
 
 test('diary entries validate per type and parentReadAt is set once', () => {
   const db = fixture();
-  const e = D.addDiaryEntry(db, { studentId: 'K1', date: '2026-10-09', type: 'observation', data: { area: 'sensorial', text: 'Pink tower, 10 cubes' } }, ctx());
+  // Phase 3: new observations go to Learning, never the parent-visible diary
+  assert.throws(() => D.addDiaryEntry(db, { studentId: 'K1', date: '2026-10-09', type: 'observation', data: { area: 'sensorial', text: 'Pink tower, 10 cubes' } }, ctx()), /Learning/);
+  const e = D.addDiaryEntry(db, { studentId: 'K1', date: '2026-10-09', type: 'activity', data: { text: 'Pink tower, 10 cubes' } }, ctx());
   D.addDiaryEntry(db, { studentId: 'K1', date: '2026-10-09', type: 'meal', data: { meal: 'lunch', ate: 'some' } }, ctx());
   assert.throws(() => D.addDiaryEntry(db, { studentId: 'K1', date: '2026-10-09', type: 'sleep', data: { from: '13:00', to: '12:00' } }, ctx()), { code: 'VALIDATION' });
   assert.throws(() => D.addDiaryEntry(db, { studentId: 'K1', date: '2026-10-09', type: 'observation', data: { area: 'sports', text: 'x' } }, ctx()), { code: 'VALIDATION' });
