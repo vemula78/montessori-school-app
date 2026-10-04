@@ -3,8 +3,8 @@
 // (rev check). requestId (required; client-made, one per user action): a repeat of a committed request returns the
 // stored result.
 // Photos (Phase 3): register → a 2-hour upload grant for the one server-chosen path (never in the stored replay copy);
-// complete → the object is read and checked here first (a refused file is deleted), the verdict goes in as
-// ctx.objectInfo; remove → the object is deleted at once (cron retries a failure); viewUrl → a 120-second download
+// complete → the object is read and checked here first (a refused file, or any file once photo consent no longer
+// holds, is deleted), the verdict goes in as ctx.objectInfo; remove → the object is deleted at once (cron retries a failure); viewUrl → a 120-second download
 // path, readOnly so it is never stored.
 
 import { body, coded, serve } from '../_shared/http.ts';
@@ -12,7 +12,7 @@ import { caller } from '../_shared/authz.ts';
 import { runCommand } from '../_shared/persist.ts';
 import { fanOut } from '../_shared/push.ts';
 import { finishErasure } from '../_shared/erasure.ts';
-import { signUpload, signView, verifyUpload, cleanupDeleting } from '../_shared/photos.ts';
+import { signUpload, signView, verifyUpload, cleanupDeleting, deleteObjects } from '../_shared/photos.ts';
 import { COMMANDS } from '../_shared/domain/commands.js';
 
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L
@@ -49,7 +49,9 @@ serve(async (req) => {
   if (name === 'photos.complete') {
     // authorize first (the same check as complete), and only then touch the object
     const t = (await runCommand('photos.uploadTarget', args, who)).result;
-    extra.ctx = { objectInfo: t.status === 'pending' ? await verifyUpload(t.path) : null };
+    if (t.status !== 'pending') extra.ctx = { objectInfo: null };
+    else if (!t.consentOk) { await deleteObjects([t.path]); extra.ctx = { objectInfo: { objectDeleted: true } }; } // complete rejects the row
+    else extra.ctx = { objectInfo: await verifyUpload(t.path) };
   }
   const run = await runCommand(name, args, who, extra);
   if (!run.replayed) await fanOut(name, run);

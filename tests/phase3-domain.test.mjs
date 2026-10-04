@@ -313,16 +313,19 @@ test('curriculum.importCsv: counts add up on the dirty fixture; rejected rows ca
   const a = admin(db);
   const text = readFileSync(new URL('./fixtures/curriculum-dirty.csv', import.meta.url), 'utf8');
   const prev = previewCurriculumCsv(db, text);
-  const r = run(db, a, 'curriculum.importCsv', prev);
+  const r = run(db, a, 'curriculum.importCsv', text); // audit C8: the command takes the CSV text and previews it itself
   assert.equal(r.inputRows, prev.counts.inputRows);
   assert.equal(r.imported + r.skippedDuplicate + r.rejected, r.inputRows);
   assert.equal(r.imported, prev.counts.imported);
   assert.ok(r.rejected > 0 && r.rejectedRows.every(x => Number.isInteger(x.line) && x.reason), 'rejected rows have line and reason');
   assert.equal(r.rejectedRows.length, r.rejected);
-  const again = run(db, a, 'curriculum.importCsv', prev);
-  assert.equal(again.imported, 0, 'a stale preview re-checked against the app imports nothing twice');
+  const again = run(db, a, 'curriculum.importCsv', text);
+  assert.equal(again.imported, 0, 'importing the same file twice adds nothing');
   assert.equal(again.imported + again.skippedDuplicate + again.rejected, again.inputRows);
-  assert.throws(() => run(db, a, 'curriculum.importCsv', { ...prev, counts: { ...prev.counts, inputRows: prev.counts.inputRows + 1 } }), /do not add up/);
+  const n = db.presentations.length;
+  assert.throws(() => run(db, a, 'curriculum.importCsv', { ...prev, counts: { inputRows: 0, imported: 0, skippedDuplicate: 0, rejected: 0 }, rows: [] }), /CSV text/, 'a client-made preview is not accepted');
+  assert.throws(() => run(db, a, 'curriculum.importCsv', `area,name\n${'math,x\n'.repeat(80000)}`), /larger than 512 KB/);
+  assert.equal(db.presentations.length, n);
 });
 
 // ---------------------------------------------------------------- reports
@@ -506,17 +509,88 @@ test('push: a shared observation and a published report go to that child\'s guar
   assert.equal(pushMessages('reports.generate', b2, db, r).length, 0);
 });
 
-test('guardianExport carries the children\'s observations (shared and unshared), photo metadata, progress events and reports', () => {
+test('guardianExport for the principal is the full record: observations (shared and unshared), photo metadata, progress events, every report', () => {
   const { db, t } = reportDb();
   const ph = run(db, t, 'photos.register', { observationId: db.observations[0].id, soloConfirmed: true }).photo.id;
   run(db, t, 'reports.generate', TERM2);
-  const x = guardianExport(db, 'grd-02');
+  const x = guardianExport(db, 'grd-02', { full: true });
   assert.equal(x.observations.length, 2, 'shared and unshared: it is the child\'s record');
   assert.deepEqual(x.photos.map(p => p.id), [ph]);
   assert.ok(!('path' in x.photos[0]), 'no storage path');
   assert.equal(x.progressEvents.length, 2);
   assert.equal(x.reports.length, 1);
-  assert.equal(guardianExport(db, 'grd-01').observations.length, 0, 'another family');
+  assert.equal(guardianExport(db, 'grd-01', { full: true }).observations.length, 0, 'another family');
+  assert.equal(JSON.parse(run(db, admin(db), 'admin.dataExport', 'grd-02')).progressEvents.length, 2, 'admin.dataExport by the principal is full');
+});
+
+test('audit #1: a parent\'s own export holds what the parent can see — shared observations, ready photos of them while consent holds, published reports; no progress, no drafts', () => {
+  const { db, t, o, hidden } = reportDb();
+  Object.assign(db, { invites: [], appUsers: [], erasureRequests: [] });
+  const ready = run(db, t, 'photos.register', { observationId: o.id, soloConfirmed: true }).photo.id;
+  execute('photos.complete', db, [ready], { ...ctxFor(t, at(), TODAY), objectInfo: okInfo() }, t);
+  const pending = run(db, t, 'photos.register', { observationId: o.id, soloConfirmed: true }).photo.id;
+  const draft = run(db, t, 'reports.generate', TERM2);
+  const pa = parent(db, 'grd-02');
+  const mine = () => JSON.parse(run(db, pa, 'admin.dataExport', 'grd-02'));
+  let x = mine();
+  assert.deepEqual(x.observations.map(v => v.id), [o.id], 'shared only');
+  assert.ok(!x.observations.some(v => v.id === hidden.id));
+  assert.deepEqual(x.photos.map(p => p.id), [ready], 'ready photos of shared observations only');
+  assert.ok(!x.photos.some(p => p.id === pending));
+  assert.deepEqual(x.progressEvents, []);
+  assert.deepEqual(x.reports, [], 'no draft or submitted report');
+  assert.match(x.learningNote, /principal on a written request/);
+  run(db, t, 'reports.submit', draft.id); run(db, admin(db), 'reports.publish', draft.id);
+  x = mine();
+  assert.deepEqual(x.reports.map(r => [r.id, r.status]), [[draft.id, 'published']]);
+  db.consents.find(c => c.guardianId === 'grd-02' && c.studentId === 'stu-04' && c.purpose === 'photos').withdrawnAt = at();
+  assert.deepEqual(mine().photos, [], 'no photo metadata once photo consent no longer holds');
+  const full = JSON.parse(run(db, admin(db), 'admin.dataExport', 'grd-02'));
+  assert.equal(full.observations.length, 2);
+  assert.equal(full.progressEvents.length, 2);
+  assert.equal(full.photos.length, 2);
+  assert.equal(full.learningNote, undefined);
+});
+
+test('audit C2: photos.consentStatus answers {studentId: boolean} for staff of the children; the consent rows themselves stay hidden', () => {
+  const db = base();
+  consent(db, 'grd-02', 'stu-04', 'app_account'); consent(db, 'grd-02', 'stu-04', 'photos');
+  consent(db, 'grd-01', 'stu-01', 'app_account');
+  const t = teacherPA(db);
+  const r = run(db, t, 'photos.consentStatus', { programId: 'prog-primary-a' });
+  assert.equal(r['stu-04'], true);
+  assert.equal(r['stu-01'], false);
+  assert.ok(Object.keys(r).every(id => db.students.find(s => s.id === id).programId === 'prog-primary-a'));
+  assert.deepEqual(run(db, t, 'photos.consentStatus', { studentIds: ['stu-04'] }), { 'stu-04': true });
+  assert.throws(() => run(db, t, 'photos.consentStatus', { programId: 'prog-toddler' }), { code: 'NOT_ALLOWED' });
+  assert.throws(() => run(db, t, 'photos.consentStatus', { studentIds: ['stu-03'] }), { code: 'NOT_ALLOWED' });
+  assert.throws(() => run(db, parent(db, 'grd-02'), 'photos.consentStatus', { studentIds: ['stu-04'] }), { code: 'NOT_ALLOWED' });
+  assert.equal(Object.keys(run(db, admin(db), 'photos.consentStatus', { programId: 'prog-toddler' })).length > 0, true);
+  assert.ok(COMMANDS['photos.consentStatus'].readOnly && COMMANDS['photos.consentStatus'].serverOnly);
+});
+
+test('audit C3/C4: viewing needs photo consent to hold; complete re-checks it and rejects the upload when it no longer holds', () => {
+  const { db, t, o } = withObservation();
+  const ph = run(db, t, 'photos.register', { observationId: o.id, soloConfirmed: true }).photo.id;
+  // a second guardian of the child starts using the app without photo consent: consent no longer holds
+  db.students.find(s => s.id === 'stu-04').guardianIds.push('grd-03');
+  consent(db, 'grd-03', 'stu-04', 'app_account');
+  const target = run(db, t, 'photos.uploadTarget', ph);
+  assert.equal(target.consentOk, false, 'the server step learns it must delete the object');
+  const r = execute('photos.complete', db, [ph], { ...ctxFor(t, at(), TODAY), objectInfo: { objectDeleted: true } }, t);
+  assert.match(r.failure.message, /photo consent no longer holds/);
+  assert.equal(db.photos.find(x => x.id === ph).status, 'rejected');
+  assert.ok(db.photos.find(x => x.id === ph).objectDeletedAt);
+  // a ready photo of a shared observation: nobody gets a view URL while consent does not hold
+  db.students.find(s => s.id === 'stu-04').guardianIds.pop();
+  const ph2 = run(db, t, 'photos.register', { observationId: o.id, soloConfirmed: true }).photo.id;
+  execute('photos.complete', db, [ph2], { ...ctxFor(t, at(), TODAY), objectInfo: okInfo() }, t);
+  run(db, t, 'observations.share', o.id);
+  const pa = parent(db, 'grd-02');
+  assert.ok(run(db, pa, 'photos.viewUrl', ph2).path);
+  db.students.find(s => s.id === 'stu-04').guardianIds.push('grd-03');
+  assert.throws(() => run(db, pa, 'photos.viewUrl', ph2), { code: 'NOT_ALLOWED' });
+  assert.throws(() => run(db, t, 'photos.viewUrl', ph2), { code: 'NOT_ALLOWED' });
 });
 
 // ---------------------------------------------------------------- jpeg check, versions
@@ -533,6 +607,11 @@ test('jpeg.js: a canvas-style JPEG passes; EXIF, PNG, truncation and comments ar
   assert.match(objectProblem(png), /not a JPEG/);
   const jpg = new Uint8Array(fixture('tiny.jpg'));
   assert.match(inspectJpeg(jpg.subarray(0, 30)).reason, /cut short|frame header/);
+  assert.match(inspectJpeg(fixture('tiny-truncated.jpg')).reason || '', /cut short|end of image/, 'audit C9: a file cut inside the scan data');
+  assert.equal(inspectJpeg(new Uint8Array([...jpg, 0, 0])).reason, null, 'zero padding after the end marker is allowed');
+  const sos = jpg.findIndex((v, i) => v === 0xff && jpg[i + 1] === 0xda);
+  const sosLen = (jpg[sos + 2] << 8) | jpg[sos + 3];
+  assert.match(inspectJpeg(new Uint8Array([...jpg.subarray(0, sos + 2 + sosLen), 0xff, 0xd9])).reason || '', /no image data/, 'SOS with no scan data');
   const withCom = new Uint8Array([...jpg.subarray(0, 2), 0xff, 0xfe, 0x00, 0x05, 0x61, 0x62, 0x63, ...jpg.subarray(2)]);
   assert.match(inspectJpeg(withCom).reason, /comment/);
   assert.equal(inspectJpeg(new Uint8Array(0)).reason, 'not a JPEG image');

@@ -2,7 +2,8 @@
 // re-encoded the picture on a canvas (which carries no camera or location metadata); this is the second line:
 // JPEG magic, no metadata segments, image size from the frame header, file size. Nothing is decoded or re-encoded.
 // Refused: not a JPEG (SOI), APP1 (EXIF or XMP: camera, time, GPS), APP13 (IPTC: captions, places), a missing frame
-// header, a file cut short, a COM comment segment (free text). Allowed: APP0 (JFIF), other APPn (ICC colour profiles).
+// header, a file cut short (the end-of-image marker must close the file, only zero padding may follow it), a start of
+// scan with no image data after it, a COM comment segment (free text). Allowed: APP0 (JFIF), other APPn (ICC profiles).
 
 const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 const ascii = (b, i, n) => String.fromCharCode(...b.subarray(i, i + n));
@@ -15,7 +16,7 @@ const ascii = (b, i, n) => String.fromCharCode(...b.subarray(i, i + n));
 export function inspectJpeg(bytes) {
   const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const out = { mime: null, bytes: b.length, width: null, height: null, hasExif: false, hasXmp: false, reason: null };
-  let iptc = false, comment = false;
+  let iptc = false, comment = false, scan = 'damaged JPEG (no image data)';
   if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) { out.reason = 'not a JPEG image'; return out; }
   out.mime = 'image/jpeg';
   let i = 2;
@@ -23,7 +24,15 @@ export function inspectJpeg(bytes) {
     if (b[i] !== 0xff) { out.reason = 'damaged JPEG (bad segment marker)'; return out; }
     let m = b[i + 1];
     while (m === 0xff && i + 2 < b.length) { i++; m = b[i + 1]; } // fill bytes
-    if (m === 0xd9 || m === 0xda) break; // end of image / start of scan: the metadata segments are all before it
+    if (m === 0xd9) break; // end of image before any scan: no image data
+    if (m === 0xda) { // start of scan: the metadata segments are all before it; the file must end with EOI after the data
+      const len = i + 4 <= b.length ? (b[i + 2] << 8) | b[i + 3] : 0;
+      let end = b.length;
+      while (end > 0 && b[end - 1] === 0) end--; // zero padding after EOI is tolerated
+      if (len < 2 || i + 2 + len > b.length || end < 2 || b[end - 2] !== 0xff || b[end - 1] !== 0xd9) scan = 'damaged JPEG (cut short: no end of image)';
+      else scan = end - 2 > i + 2 + len ? null : 'damaged JPEG (no image data)';
+      break;
+    }
     if (m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; } // markers without a length
     if (i + 4 > b.length) { out.reason = 'damaged JPEG (cut short)'; return out; }
     const len = (b[i + 2] << 8) | b[i + 3];
@@ -43,5 +52,6 @@ export function inspectJpeg(bytes) {
   else if (iptc) out.reason = 'the file carries IPTC metadata (captions, places)';
   else if (comment) out.reason = 'the file carries a comment';
   else if (out.width === null) out.reason = 'damaged JPEG (no frame header)';
+  else if (scan) out.reason = scan;
   return out;
 }

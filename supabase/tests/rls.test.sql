@@ -5,10 +5,12 @@
 -- events, notice/calendar scoping, cross-slice revision guards, request ids, reminder claims, order slots.
 -- Migration 0005 (Phase 3 learning) from "phase 3" below: observations/photos/progress/reports RLS, consents for
 -- teachers, the private photo bucket, persist's delete allow-list, the v2 snapshot, the realtime publication.
+-- Migration 0006 (Phase 3 audit fixes): teachers read no consent rows (C2); a parent sees a photo only while photo
+-- consent holds for the child across every app-using guardian (C3, photo_consent_flags kept by triggers).
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(132);
+select plan(139);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -294,9 +296,9 @@ select ok((select count(*) from public.observations where id = 'obs-t-hidden') =
 select is((select count(*)::int from public.progress_events where student_id = 'stu-03') + (select count(*)::int from public.photos where student_id = 'stu-03')
   + (select count(*)::int from public.observations where student_id = 'stu-03'), 0, 'p3_teacher_no_toddler_events_photos_observations');
 select is((select array_agg(id order by id) from public.photos where id like 'pho-t-%'), array['pho-t-ok', 'pho-t-pending', 'pho-t-unshared'], 'p3_teacher_sees_every_photo_of_own_program');
-select ok((select count(*) from public.consents) > 0 and (select bool_and(s.program_id = 'prog-primary-a') from public.consents c join public.students s on s.id = c.student_id),
-  'p3_teacher_sees_consents_of_own_students_only');
-select ok((select bool_and(not e ? 'evidence' and not e ? 'textHash') from jsonb_array_elements(public.my_snapshot()->'consents') e), 'p3_snapshot_teacher_consents_carry_ids_and_purposes_only');
+select is((select count(*)::int from public.consents), 0, 'c2_teacher_reads_no_consent_rows');
+select is(jsonb_array_length(public.my_snapshot()->'consents'), 0, 'c2_teacher_snapshot_carries_no_consents');
+select is((select count(*)::int from public.photo_consent_flags), 0, 'c2_teacher_reads_no_photo_consent_flags');
 select ok((select count(*) from public.presentations) > 0, 'p3_teacher_reads_curriculum');
 select ok((select count(*) from public.reports where id like 'rep-t-%') = 2, 'p3_teacher_sees_draft_and_published_reports_of_own_program');
 select is((select count(*)::int from storage.objects), 0, 'p3_teacher_reads_no_storage_objects');
@@ -341,6 +343,23 @@ select is((select count(*)::int from public.photo_objects()), 1, 'p3_photo_objec
 select tests.as_user('00000000-0000-4000-8000-000000000001');
 select throws_ok('select * from public.photo_objects()', '42501', null, 'p3_users_cannot_list_photo_objects');
 reset role;
+
+-- C3: a second guardian of stu-04 starts using the app without photo consent → the flag drops, the parent sees no photo
+select is((select ok from public.photo_consent_flags where student_id = 'stu-04'), true, 'c3_flag_true_while_every_app_guardian_consents');
+insert into public.student_guardians (student_id, guardian_id, ord) values ('stu-04', 'grd-03', 9);
+insert into public.consents (id, doc) values ('cns-t-c3', jsonb_build_object('id', 'cns-t-c3', 'guardianId', 'grd-03', 'studentId', 'stu-04', 'purpose', 'app_account', 'version', 'v2', 'withdrawnAt', null));
+select is((select ok from public.photo_consent_flags where student_id = 'stu-04'), false, 'c3_flag_false_when_an_app_guardian_has_no_photo_consent');
+select tests.as_user('00000000-0000-4000-8000-000000000006');
+select is((select count(*)::int from public.photos where student_id = 'stu-04'), 0, 'c3_parent_sees_no_photo_while_consent_does_not_hold');
+select is((select array_agg(student_id order by student_id) from public.photo_consent_flags), array['stu-03', 'stu-04'], 'c3_parent_reads_flags_of_own_children_only');
+reset role;
+insert into public.consents (id, doc) values ('cns-t-c3p', jsonb_build_object('id', 'cns-t-c3p', 'guardianId', 'grd-03', 'studentId', 'stu-04', 'purpose', 'photos', 'version', 'v2', 'withdrawnAt', null));
+select tests.as_user('00000000-0000-4000-8000-000000000006');
+select is((select array_agg(id order by id) from public.photos where id like 'pho-t-%'), array['pho-t-ok'], 'c3_visible_again_once_every_app_guardian_consents');
+reset role;
+delete from public.student_guardians where student_id = 'stu-04' and guardian_id = 'grd-03';
+update public.consents set doc = doc || '{"withdrawnAt":"2026-10-02T05:00:00.000Z"}'::jsonb where id = 'cns-t-c3p';
+select is((select ok from public.photo_consent_flags where student_id = 'stu-04'), true, 'c3_flags_follow_guardian_links_and_withdrawals');
 
 select * from finish();
 rollback;

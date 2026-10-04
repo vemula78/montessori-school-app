@@ -64,11 +64,19 @@ export function registerPhoto(db, { observationId }, ctx) {
  * Upload verified by the server (ctx.objectInfo) → ready, or rejected with the reason (the server deleted the object
  * first). Returns {photo} or {photo, failure} — a failure is committed (the row is rejected) and then reported.
  * An object that is not there yet changes nothing (the client may retry the upload with the same grant).
+ * consentOk: photo consent for the child still holds (photoConsentFor); when it does not, the upload is rejected
+ * whatever the file — consent can change between register and complete.
  */
-export function completePhoto(db, photoId, info, ctx) {
+export function completePhoto(db, photoId, info, ctx, consentOk = true) {
   const ph = mustGet(db, 'photos', photoId, 'Photo');
   if (ph.status === 'ready') return { photo: ph };
   if (ph.status !== 'pending') fail('VALIDATION', `This photo is ${ph.status}; add it again`);
+  if (!consentOk) {
+    const problem = 'photo consent no longer holds';
+    Object.assign(ph, { status: 'rejected', rejectReason: problem, objectDeletedAt: info && info.objectDeleted ? ctx.now : null });
+    appendAudit(db, ctx, { entity: 'photo', entityId: ph.id, action: 'reject', summary: `photo rejected: ${problem}` });
+    return { photo: ph, failure: { code: 'VALIDATION', message: `Photo refused: ${problem}` } };
+  }
   if (!info) fail('VALIDATION', 'The upload was not verified by the server');
   if (info.missing) fail('VALIDATION', 'No uploaded file was found for this photo; upload it again');
   const problem = objectProblem(info);

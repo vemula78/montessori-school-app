@@ -320,7 +320,7 @@ export function createSurface({ db, me, clock, cmd }) {
   const curriculum = {
     /** list({area?, includeRetired? = true}) → presentations in classroom order (area, sequence, name). Staff only. */
     list: op(({ area, includeRetired = true } = {}) => listPresentations(db(), me(), { area, includeRetired })),
-    /** previewCsv(text) → {rows, duplicates, rejected, counts}: pure, nothing is written; pass the result to importCsv. */
+    /** previewCsv(text) → {rows, duplicates, rejected, counts}: pure, nothing is written. importCsv(text) previews the same text again itself. */
     previewCsv: op(text => { allow('admin'); return previewCurriculumCsv(db(), text); }),
     importCsv: cmd('curriculum.importCsv'),
     loadStarter: cmd('curriculum.loadStarter'),
@@ -361,9 +361,15 @@ export function createSurface({ db, me, clock, cmd }) {
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)).map(photoView);
   };
   const photos = {
-    list: op(observationId => photoRows(me(), db(), observationId)),
+    list: op(observationId => { const p = me(); const rows = photoRows(p, db(), observationId); return p.role === 'parent' && rows.length && !photoConsentFor(db(), rows[0].studentId) ? [] : rows; }),
     /** consent(studentId) → true when photos of this child may be taken (photoConsentFor); staff only. */
     consent: op(studentId => { const p = allow('admin', 'teacher'); mustSee(p, studentId); return photoConsentFor(db(), studentId); }),
+    /** consentStatus({programId} | {studentIds}) → {studentId: boolean} for the staff photo badges. */
+    consentStatus: op(({ programId, studentIds } = {}) => {
+      const p = allow('admin', 'teacher'); const d = db();
+      const ids = programId ? d.students.filter(s => s.programId === programId).map(s => s.id) : (studentIds || []);
+      return Object.fromEntries(ids.map(id => { mustSee(p, id); return [id, photoConsentFor(d, id)]; }));
+    }),
   };
 
   /** Children/fees CSV import helpers that need no server (parsing and the suggested column mapping). */
@@ -590,6 +596,7 @@ export function createApi(opts = {}) {
       const o = (d.observations || []).find(x => x.id === ph.observationId);
       if (!learnerVisible(p, ph.studentId) || (p.role === 'parent' && !(o && o.sharedAt))) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
       if (ph.status !== 'ready') throw new ApiError('NOT_FOUND', 'Photo not available');
+      if (!photoConsentFor(d, ph.studentId)) throw new ApiError('NOT_ALLOWED', 'Photo consent does not hold for this child');
       if (ph.demo && ph.demo.illustration) {
         const svg = (await import('../seed/illustrations.js')).illustrationSvg(ph.demo.illustration);
         if (svg) return new Blob([svg], { type: 'image/svg+xml' });
@@ -640,7 +647,7 @@ export function createApi(opts = {}) {
     dataExport: op(guardianId => {
       const p = allowP(me(), 'admin', 'parent');
       if (p.role === 'parent' && guardianId !== p.guardianId) throw new ApiError('NOT_ALLOWED', 'You can download only your own data');
-      return JSON.stringify(guardianExport(db(), guardianId), null, 2);
+      return JSON.stringify(guardianExport(db(), guardianId, { full: p.role === 'admin', photoOk: sid => photoConsentFor(db(), sid) }), null, 2);
     }),
     erasureRequests: op(() => { allowP(me(), 'admin'); return []; }),
     revokeInvite: op(() => { throw realAppOnly('Invite codes'); }),

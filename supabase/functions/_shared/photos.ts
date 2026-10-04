@@ -111,9 +111,10 @@ export async function cleanupDeleting(photoIds: string[] | null = null) {
 }
 
 /**
- * Both directions of the orphan sweep, with a grace so an upload in flight is never touched: pending rows older than
- * the grace are rejected (abandoned); objects older than the grace whose row is not ready/deleting (or has no row)
- * are deleted.
+ * Both directions of the orphan sweep. Pending rows older than the grace are rejected (abandoned). Objects whose row is
+ * terminal (rejected/deleted/expired) are deleted at once, whatever their age: Storage cannot revoke a signed upload
+ * token, so an old grant can put an object back after its row was closed (audit C5). Objects with no row, or whose row
+ * is still pending, are deleted only after the grace, so an upload in flight is never touched.
  */
 export async function sweepPhotos(nowMs: number) {
   const cutoff = nowMs - PENDING_GRACE_MS;
@@ -121,13 +122,18 @@ export async function sweepPhotos(nowMs: number) {
   let abandoned = 0;
   if (pending.length) abandoned = (await runCommand('photos.markRejected', [{ photoIds: pending.map((r: any) => r.id), reason: 'abandoned: not uploaded within 2 hours' }], system('photos'))).result.rejected;
   const objects: { name: string; created_at: string }[] = await rpc('photo_objects', {});
-  const old = objects.filter(o => Date.parse(o.created_at) < cutoff);
-  const ids = old.map(o => (/^[^/]+\/([^/]+)\.jpg$/.exec(o.name) || [])[1]).filter(Boolean) as string[];
-  const keep = new Set<string>();
+  const idOf = (name: string) => (/^[^/]+\/([^/]+)\.jpg$/.exec(name) || [])[1];
+  const ids = objects.map(o => idOf(o.name)).filter(Boolean) as string[];
+  const status = new Map<string, string>();
   for (let i = 0; i < ids.length; i += 200) {
-    for (const r of await rest(`photos?id=in.${inList(ids.slice(i, i + 200))}&status=in.(ready,deleting)&select=id`)) keep.add(r.id);
+    for (const r of await rest(`photos?id=in.${inList(ids.slice(i, i + 200))}&select=id,status`)) status.set(r.id, r.status);
   }
-  const orphans = old.filter(o => { const m = /^[^/]+\/([^/]+)\.jpg$/.exec(o.name); return !m || !keep.has(m[1]); }).map(o => o.name);
+  const orphans = objects.filter(o => {
+    const st = status.get(idOf(o.name) || '');
+    if (st === 'ready' || st === 'deleting') return false;           // kept / handled by cleanupDeleting
+    if (st && ['rejected', 'deleted', 'expired'].includes(st)) return true; // terminal row: no grace
+    return Date.parse(o.created_at) < cutoff;                         // pending or no row: after the grace
+  }).map(o => o.name);
   const strange = orphans.filter(n => !SAFE_PATH.test(n));
   const orphanObjectsDeleted = orphans.length - strange.length ? await deleteObjects(orphans.filter(n => SAFE_PATH.test(n))) : 0;
   if (strange.length) {

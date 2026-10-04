@@ -7,7 +7,7 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { local, signIn, fn, command, rest, rpcAs, psql } from './helpers.mjs';
+import { local, signIn, fn, command, rest, rpcAs, restAs, psql } from './helpers.mjs';
 import { CONSENT_VERSION } from '../src/domain/commands.js';
 
 let admin, tpa, tpb, parentBus, parentSib;
@@ -206,4 +206,72 @@ test('cron-daily (all steps) reports photosConsentSweep, retention and photosCle
   const r = await cron(null);
   assert.equal(r.status, 200, JSON.stringify(r.data));
   for (const k of ['photosConsentSweep', 'retention', 'photosCleanup']) assert.ok(r.data.report[k] && !r.data.report[k].error, `${k}: ${JSON.stringify(r.data.report[k])}`);
+});
+
+// ================================================================ audit fixes (C2–C6)
+test('C2 teachers read no consent rows; photos.consentStatus answers per child for their own program only', async () => {
+  assert.deepEqual((await restAs(tpa.token, 'consents?select=id')).data, []);
+  const m = ok(await command(tpa.token, 'photos.consentStatus', { programId: 'prog-primary-a' }));
+  assert.equal(m['stu-04'], true);
+  assert.ok(Object.values(m).every(v => typeof v === 'boolean'));
+  assert.equal((await command(tpa.token, 'photos.consentStatus', { programId: 'prog-toddler' })).status, 403);
+  assert.equal((await command(parentBus.token, 'photos.consentStatus', { studentIds: ['stu-04'] })).status, 403);
+  assert.equal(psql(`select count(*) from app.command_requests where name = 'photos.consentStatus'`), '0', 'readOnly: never stored');
+});
+
+test('C3/C4 a second guardian using the app without photo consent: nobody can view the shared photo, and a pending upload is rejected and deleted on complete', async () => {
+  const a = await photoFor(tpa, 'stu-04');
+  ok(await command(tpa.token, 'observations.share', a.o.id));
+  ok(await command(parentBus.token, 'photos.viewUrl', a.id), 'visible while consent holds');
+  const b = await photoFor(tpa, 'stu-04', { complete: false });
+  // grd-21 becomes a second guardian of stu-04 and gives app_account only
+  assert.equal((await rest('POST', 'student_guardians', { student_id: 'stu-04', guardian_id: 'grd-21', ord: 9 }, 'return=minimal')).status, 201);
+  const second = await signIn(`p3-c3-${randomUUID().slice(0, 8)}@example.com`);
+  assert.equal((await rest('POST', 'app_users', { user_id: second.userId, role: 'parent', guardian_id: 'grd-21', status: 'active' }, 'return=minimal')).status, 201);
+  try {
+    ok(await command(second.token, 'consent.give', { purposes: ['app_account'], version: CONSENT_VERSION }));
+    assert.equal((await command(parentBus.token, 'photos.viewUrl', a.id)).status, 403, 'the first guardian no longer gets a URL');
+    assert.equal((await command(second.token, 'photos.viewUrl', a.id)).status, 403, 'nor the second');
+    assert.ok(!(await rpcAs(parentBus.token, 'my_snapshot')).data.photos.some(p => p.id === a.id), 'and the row is hidden by RLS');
+    assert.deepEqual((await restAs(parentBus.token, `photos?id=eq.${a.id}&select=id`)).data, []);
+    const c = await command(tpa.token, 'photos.complete', b.id);
+    assert.equal(c.status, 422, JSON.stringify(c.data));
+    assert.match(c.data.error.message, /photo consent no longer holds/);
+    assert.equal(photoStatus(b.id), 'rejected');
+    assert.equal(objectCount(b.path), 0, 'the uploaded object was deleted');
+  } finally {
+    await rest('DELETE', `student_guardians?student_id=eq.stu-04&guardian_id=eq.grd-21`);
+  }
+  ok(await command(parentBus.token, 'photos.viewUrl', a.id), 'visible again once the second link is gone');
+});
+
+test('C5 re-uploading with an old grant after removal: the next photosCleanup deletes the object (terminal rows get no grace)', async (t) => {
+  const x = await photoFor(tpa, 'stu-04');
+  ok(await command(tpa.token, 'photos.remove', x.id));
+  assert.equal(objectCount(x.path), 0);
+  const again = await put(x.reg.upload, 'tiny.jpg');
+  t.diagnostic(`Storage answered a reused upload grant after deletion with HTTP ${again.status}: ${JSON.stringify(again.data)}`);
+  assert.equal(again.status, 200, 'Storage cannot revoke a signed upload token: the object comes back');
+  assert.equal(objectCount(x.path), 1);
+  const r = await cron(['photosCleanup']);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.ok(r.data.report.photosCleanup.orphanObjectsDeleted >= 1, JSON.stringify(r.data.report.photosCleanup));
+  assert.equal(objectCount(x.path), 0);
+  assert.equal(photoStatus(x.id), 'deleted');
+});
+
+test('C6 cron-daily answers 500 {ok:false, failedSteps} when a step fails, after running every step', async () => {
+  psql('revoke execute on function public.photo_objects() from service_role;');
+  try {
+    const r = await cron(['invites', 'photosCleanup']);
+    assert.equal(r.status, 500, JSON.stringify(r.data));
+    assert.equal(r.data.ok, false);
+    assert.deepEqual(r.data.failedSteps, ['photosCleanup']);
+    assert.ok(r.data.report.invites && !r.data.report.invites.error, 'the other steps still ran');
+  } finally {
+    psql('grant execute on function public.photo_objects() to service_role;');
+  }
+  const fine = await cron(['photosCleanup']);
+  assert.equal(fine.status, 200);
+  assert.equal(fine.data.ok, true);
 });

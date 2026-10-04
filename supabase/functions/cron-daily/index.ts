@@ -15,7 +15,8 @@
 //  10. retention: what school.retention makes due today (counted per category even when nothing is decided); photos
 //      expire, other rows are deleted — only for categories whose period is set; every row re-checked by the command
 //  11. photosCleanup: delete the objects of 'deleting' rows (→ deleted/expired), reject uploads abandoned for 2 hours,
-//      delete objects older than 2 hours that have no ready/deleting row
+//      delete objects of closed rows at once and objects without a row (or with a pending one) after 2 hours
+// Every step runs; if any reports an error the answer is HTTP 500 {ok:false, failedSteps, report}.
 
 import { CORS, errorResponse, json, coded } from '../_shared/http.ts';
 import { rest, restAll, restCount, rpc } from '../_shared/db.ts';
@@ -159,6 +160,9 @@ Deno.serve(async (req) => {
 
     await step(report, only, 'photosCleanup', async () => ({ ...(await cleanupDeleting(null)), ...(await sweepPhotos(nowMs)) }));
 
+    // every step ran; any failure makes the whole run a failure the scheduler can see (audit C6)
+    const failedSteps = ALL_STEPS.filter(k => only.has(k) && (report[k] as any)?.error !== undefined);
+    if (failedSteps.length) return json({ ok: false, failedSteps, report }, 500);
     return json({ ok: true, report });
   } catch (e) {
     return errorResponse(e);

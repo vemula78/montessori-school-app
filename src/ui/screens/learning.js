@@ -95,7 +95,9 @@ async function observationsTab(ctx, host, { programId, students }) {
     api.curriculum.list({ includeRetired: false }),
   ]);
   const noPhoto = new Set();
-  for (const s of students) if (!(await api.photos.consent(s.id))) noPhoto.add(s.id);
+  // one call for the whole list (the real app asks the server; teachers cannot read consent records themselves)
+  const consentOk = students.length ? await api.photos.consentStatus({ studentIds: students.map((s) => s.id) }) : {};
+  for (const s of students) if (!consentOk[s.id]) noPhoto.add(s.id);
   const byStudent = new Map(students.map((s) => [s.id, s]));
   host.innerHTML = `<div class="row" style="margin-bottom:12px">
       <select id="l-child" style="width:auto" aria-label="Child"><option value="">All children</option>${options(students.map((s) => ({ value: s.id, label: fullName(s) })), studentId)}</select>

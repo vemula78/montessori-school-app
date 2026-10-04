@@ -199,6 +199,13 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
       if (status === 400 || status === 401 || status === 403) throw new ApiError('VALIDATION', 'The upload permission has expired; add the photo again');
       throw new ApiError('OFFLINE', 'The upload did not finish; try again');
     }),
+    /**
+     * consentStatus({programId} | {studentIds}) → {studentId: boolean}: may photos of these children be taken. Computed by
+     * the server over every guardian's consents (staff never receive consent rows; audit C2).
+     */
+    consentStatus: read('photos.consentStatus'),
+    /** consent(studentId) → boolean (one child; same server answer). */
+    consent: op(async studentId => Boolean((await command('photos.consentStatus', [{ studentIds: [studentId] }], { reload: false }))[studentId])),
     /** complete(photoId) → {photo} once the server has checked the file (refused: VALIDATION, and the file is deleted). */
     complete: cmd('photos.complete'),
     remove: cmd('photos.remove'),

@@ -111,7 +111,7 @@ export async function renderCurriculum(ctx, host) {
     });
     host.querySelector('#i-prev')?.addEventListener('click', async () => { text = host.querySelector('#i-text')?.value || text; await runPreview(); });
     host.querySelector('#i-go')?.addEventListener('click', async () => {
-      const r = await attempt(() => api.curriculum.importCsv(preview), 'Import complete');
+      const r = await attempt(() => api.curriculum.importCsv(text), 'Import complete');
       if (r.ok) { result = r.value; preview = null; text = ''; importOpen = false; starter = null; await reload(); draw(); }
     });
     host.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', async () => { if (await form(all.find((p) => p.id === b.dataset.edit))) { await reload(); draw(); } }));

@@ -39,6 +39,7 @@ import * as PG from './progress.js';
 import * as RP from './reports.js';
 import * as RT from './retention.js';
 import * as CU from './presentations.js';
+import { previewCurriculumCsv } from './curriculum.js';
 import { isISODate, compareISO } from './dates.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
@@ -464,8 +465,18 @@ export const COMMANDS = {
   'curriculum.save': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [input], ctx) => CU.savePresentation(db, input || {}, ctx) },
   'curriculum.retire': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [id], ctx) => CU.setPresentationActive(db, id, false, ctx) },
   'curriculum.restore': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [id], ctx) => CU.setPresentationActive(db, id, true, ctx) },
-  /** importCsv(preview) — preview from api.curriculum.previewCsv; → {inputRows, imported, skippedDuplicate, rejected, rejectedRows} */
-  'curriculum.importCsv': { slice: 'learning', authorize: p => allow(p, 'admin'), run: (db, [preview], ctx) => CU.importCurriculum(db, preview, ctx) },
+  /**
+   * importCsv(csvText) → {inputRows, imported, skippedDuplicate, rejected, rejectedRows}. The command previews the text
+   * itself (previewCurriculumCsv) against the current list: counts never come from the client. At most 512 KB.
+   */
+  'curriculum.importCsv': {
+    slice: 'learning', authorize: p => allow(p, 'admin'),
+    run(db, [text], ctx) {
+      if (typeof text !== 'string') fail('VALIDATION', 'Send the CSV text itself (the preview is made again on import)');
+      if (new TextEncoder().encode(text).length > CSV_MAX_BYTES) fail('VALIDATION', 'The file is larger than 512 KB');
+      return CU.importCurriculum(db, previewCurriculumCsv(db, text), ctx);
+    },
+  },
 
   /** add({studentId, date, area, presentationId?, text}) — staff-only until shared. */
   'observations.add': {
@@ -519,13 +530,36 @@ export const COMMANDS = {
   'photos.complete': {
     slice: 'learning', load: ([id]) => ({ photoId: String(id ?? '') }),
     authorize: (p, db, [id]) => takerOf(p, db, id),
-    run(db, [id], ctx) { const r = P.completePhoto(db, id, ctx.objectInfo, ctx); return { photo: P.photoView(r.photo), ...(r.failure ? { failure: r.failure } : {}) }; },
+    run(db, [id], ctx) {
+      const r = P.completePhoto(db, id, ctx.objectInfo, ctx, photoConsentFor(db, photoOf(db, id).studentId));
+      return { photo: P.photoView(r.photo), ...(r.failure ? { failure: r.failure } : {}) };
+    },
   },
-  /** Server step before complete: the object path of a photo the caller may complete (never returned to the browser). */
+  /**
+   * Server step before complete: the object path of a photo the caller may complete, and whether photo consent still
+   * holds (when not, the server deletes the object before complete rejects the row). Never returned to the browser.
+   */
   'photos.uploadTarget': {
     slice: 'learning', serverOnly: true, readOnly: true, load: ([id]) => ({ photoId: String(id ?? '') }),
     authorize: (p, db, [id]) => takerOf(p, db, id),
-    run: (db, [id]) => { const ph = byId(db.photos, id); return { photoId: ph.id, path: ph.path, status: ph.status }; },
+    run: (db, [id]) => { const ph = byId(db.photos, id); return { photoId: ph.id, path: ph.path, status: ph.status, consentOk: photoConsentFor(db, ph.studentId) }; },
+  },
+  /**
+   * consentStatus({programId} | {studentIds}) → {studentId: boolean} — may photos of these children be taken
+   * (photoConsentFor, computed here over every guardian's consents). Staff never read the consent rows themselves.
+   */
+  'photos.consentStatus': {
+    slice: 'learning', serverOnly: true, readOnly: true,
+    authorize(p, db, [q = {}]) {
+      staffLearning(p);
+      if (q && q.programId) { if (!byId(db.programs, q.programId)) fail('NOT_FOUND', 'Program not found'); teachesProgram(p, q.programId); return; }
+      if (!q || !Array.isArray(q.studentIds) || !q.studentIds.length) fail('VALIDATION', 'Give a programId or studentIds');
+      for (const sid of q.studentIds) O.mustSeeLearner(p, db, sid);
+    },
+    run(db, [q = {}]) {
+      const ids = q.programId ? activeStudents(db, q.programId).map(s => s.id) : [...new Set(q.studentIds)];
+      return Object.fromEntries(ids.map(sid => [sid, photoConsentFor(db, sid)]));
+    },
   },
   /** remove(photoId, reason?) → deleting; the command function then deletes the object (cron retries). */
   'photos.remove': {
@@ -546,6 +580,8 @@ export const COMMANDS = {
       O.mustSeeLearner(p, db, ph.studentId);
       if (p.role === 'parent' && !byId(db.observations, ph.observationId)?.sharedAt) deny('This photo has not been shared with you');
       if (ph.status !== 'ready' || !ph.path) fail('NOT_FOUND', 'Photo not available'); // demo rows have no stored object
+      // nobody sees a photo while consent does not hold (the daily sweep then deletes it)
+      if (!photoConsentFor(db, ph.studentId)) deny('Photo consent for this child no longer holds');
     },
     run: (db, [id]) => { const ph = byId(db.photos, id); return { photoId: ph.id, path: ph.path }; },
   },
@@ -797,9 +833,11 @@ export const COMMANDS = {
       if (p.role === 'parent' && guardianId !== p.guardianId) deny('You can download only your own data');
       if (!byId(db.guardians, guardianId)) fail('NOT_FOUND', 'Guardian not found');
     },
-    run(db, [guardianId], ctx) {
-      appendAudit(db, ctx, { entity: 'guardian', entityId: guardianId, action: 'dataExport', summary: 'personal data export generated' });
-      return JSON.stringify(guardianExport(db, guardianId), null, 2);
+    // the principal's export is the full record; a parent's holds what the parent can see in the app (audit #1)
+    run(db, [guardianId], ctx, p) {
+      const full = p.role === 'admin';
+      appendAudit(db, ctx, { entity: 'guardian', entityId: guardianId, action: 'dataExport', summary: `personal data export generated (${full ? 'full record' : 'as the parent sees it'})` });
+      return JSON.stringify(guardianExport(db, guardianId, full ? { full: true } : { full: false, photoOk: sid => photoConsentFor(db, sid) }), null, 2);
     },
   },
   'admin.revokeUser': {
@@ -893,6 +931,7 @@ function takerOf(p, db, id) {
   return ph;
 }
 const RETENTION_LOAD = { learningAll: true, diaryAll: true, attendanceAll: true };
+const CSV_MAX_BYTES = 512 * 1024;
 
 /** The DB slice each command needs on the server, and the collections it may write. */
 const BASE = ['academicYears', 'programs', 'students', 'guardians', 'staff', 'routes', 'feeHeads'];

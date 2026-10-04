@@ -104,3 +104,15 @@ test('register/complete/remove are commands (with a refetch); progress history r
   await api.consent.withdraw('photos', { studentIds: ['stu-04'] });
   assert.deepEqual(calls.at(-1).body.args, ['photos', { studentIds: ['stu-04'] }]);
 });
+
+test('audit C2: the photo-consent badge asks the server (staff hold no consent rows); one child or a whole program', async () => {
+  const sb = fakeSb();
+  const { api, calls } = await make(sb, { 'photos.consentStatus': body => (body.args[0].programId ? { 'stu-04': true, 'stu-01': false } : { [body.args[0].studentIds[0]]: body.args[0].studentIds[0] === 'stu-04' }) });
+  const n = sb.snapshots;
+  assert.equal(await api.photos.consent('stu-04'), true);
+  assert.equal(await api.photos.consent('stu-01'), false);
+  assert.deepEqual(await api.photos.consentStatus({ programId: 'prog-primary-a' }), { 'stu-04': true, 'stu-01': false });
+  assert.deepEqual(calls.map(c => c.body.args[0]), [{ studentIds: ['stu-04'] }, { studentIds: ['stu-01'] }, { programId: 'prog-primary-a' }]);
+  assert.ok(calls.every(c => c.body.name === 'photos.consentStatus'));
+  assert.equal(sb.snapshots, n, 'reads: no snapshot refetch');
+});

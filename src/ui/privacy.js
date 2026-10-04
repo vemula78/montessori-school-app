@@ -20,7 +20,7 @@ export const PURPOSES = [
   {
     key: 'photos', required: false,
     title: 'Photos of my child in class',
-    detail: 'Teachers may take a photo of your child’s work and share it with you in the app. Each photo shows one child only and is seen only by your family and the school’s staff. Location and camera details are removed. If you do not agree, no photo of your child is taken or kept, and everything else works as normal. If you agree and later turn it off, the school deletes your child’s photos.',
+    detail: 'Teachers may take a photo of your child’s work and share it with you in the app. Each photo shows one child only and is seen only by your family and the school’s staff. Location and camera details are removed. If you do not agree, no photo of your child is taken or kept, and everything else works as normal. If you agree and later turn it off, the school deletes your child’s photos. Every parent or guardian of your child who uses the app must agree: while one has not, photos of your child are hidden from everyone and deleted at the next nightly clean-up.',
   },
   {
     key: 'bus_live', required: false,
