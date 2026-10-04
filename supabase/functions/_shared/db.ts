@@ -5,10 +5,20 @@ import { coded } from './http.ts';
 import { fetchAllPages } from './paging.js';
 
 const URL_ = Deno.env.get('SUPABASE_URL') ?? '';
-const KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+// the legacy service-role JWT, or (projects on the new key system) the first of SUPABASE_SECRET_KEYS ({"default": "sb_secret_…"})
+function secretKey(): string {
+  const legacy = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  if (legacy) return legacy;
+  try { const m = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}'); return m.default || Object.values(m)[0] || ''; } catch { return ''; }
+}
+const KEY = secretKey();
 if (!URL_ || !KEY) console.error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set');
 
-const headers = (extra: Record<string, string> = {}) => ({ apikey: KEY, Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json', ...extra });
+// a JWT key also goes in Authorization; a new sb_secret_ key is not a JWT and is sent as apikey only
+const headers = (extra: Record<string, string> = {}) => ({ apikey: KEY, ...(KEY.startsWith('ey') ? { Authorization: `Bearer ${KEY}` } : {}), 'Content-Type': 'application/json', ...extra });
+/** For _shared/auth-admin.ts (the auth server's admin API). */
+export const serviceHeaders = headers;
+export const SUPABASE_URL = URL_;
 
 export class DbError extends Error {
   code: string;

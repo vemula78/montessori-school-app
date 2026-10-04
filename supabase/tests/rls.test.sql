@@ -7,10 +7,13 @@
 -- teachers, the private photo bucket, persist's delete allow-list, the v2 snapshot, the realtime publication.
 -- Migration 0006 (Phase 3 audit fixes): teachers read no consent rows (C2); a parent sees a photo only while photo
 -- consent holds for the child across every app-using guardian (C3, photo_consent_flags kept by triggers).
+-- Migration 0008 (administration) from "administration" below: blocked accounts, two-step (aal2) for the principal and the
+-- accountant, the policy row, the authenticator mirror, sign-in events, end_sessions, the data-rights desk.
+-- The definer list is exactly the auth trigger and public.end_sessions. The permission matrix is permissions.test.sql.
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(140);
+select plan(185);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -139,7 +142,7 @@ reset role;
 
 -- ---------------------------------------------------------------- definer functions, views, audit, ledger uniqueness, rev guard, cron
 select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user'], 'no_security_definer_except_auth_trigger');
+           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user', 'public.end_sessions'], 'no_security_definer_except_auth_trigger');
 select is((select array_agg(c.relname) from pg_class c join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'v' and not coalesce(c.reloptions @> array['security_invoker=true'], false)), null, 'no_views_without_security_invoker');
 set local role service_role;
@@ -164,7 +167,7 @@ select ok((select encrypted_password <> extensions.crypt('chosen-by-someone-else
 update auth.users set email_confirmed_at = now() + interval '1 minute' where id = '00000000-0000-4000-8000-0000000000b1';
 select is((select count(*)::int from public.app_users where user_id = '00000000-0000-4000-8000-0000000000b1'), 1, 'auth_links_at_most_once');
 select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user'], 'still_no_other_security_definer_function');
+           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user', 'public.end_sessions'], 'still_no_other_security_definer_function');
 
 -- #6 a linked parent without app_account consent sees the children's names (consent screen) and nothing else
 insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
@@ -282,7 +285,7 @@ select is((select count(*)::int from public.presentations), 0, 'p3_parent_sees_n
 select is((select jsonb_array_length(public.my_snapshot()->'progressEvents')), 0, 'p3_snapshot_parent_has_no_progress_events');
 select ok((select bool_and(e->>'sharedAt' is not null) from jsonb_array_elements(public.my_snapshot()->'observations') e)
   and jsonb_array_length(public.my_snapshot()->'observations') > 0, 'p3_snapshot_parent_observations_all_shared');
-select is((public.my_snapshot()->>'schemaVersion')::int, 2, 'p3_snapshot_schema_version_2');
+select is((public.my_snapshot()->>'schemaVersion')::int, 3, 'p3_snapshot_schema_version (3 since migration 0008)');
 select ok((select bool_and(guardian_id = 'grd-02') from public.consents), 'p3_parent_reads_own_consents_only');
 select is((select count(*)::int from storage.objects), 0, 'p3_parent_reads_no_storage_objects');
 reset role;
@@ -326,7 +329,7 @@ select is((select public from storage.buckets where id = 'child-photos'), false,
 select is((select array[file_size_limit::text, array_to_string(allowed_mime_types, ',')] from storage.buckets where id = 'child-photos'), array['409600', 'image/jpeg'], 'p3_photo_bucket_limits');
 select is((select count(*)::int from pg_policies where schemaname = 'storage'), 0, 'p3_no_storage_policies_at_all');
 select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user'], 'p3_still_no_other_security_definer_function');
+           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user', 'public.end_sessions'], 'p3_still_no_other_security_definer_function');
 select is((select array_agg(c.relname) from pg_class c join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'v' and not coalesce(c.reloptions @> array['security_invoker=true'], false)), null, 'p3_views_still_security_invoker');
 select throws_ok($$select public.persist('pgtap-p3', 0, '{"deletes":{"payments":["pay-x"]}}'::jsonb)$$, '42501', null, 'p3_persist_refuses_deletes_outside_the_allow_list');
@@ -362,6 +365,126 @@ reset role;
 delete from public.student_guardians where student_id = 'stu-04' and guardian_id = 'grd-03';
 update public.consents set doc = doc || '{"withdrawnAt":"2026-10-02T05:00:00.000Z"}'::jsonb where id = 'cns-t-c3p';
 select is((select ok from public.photo_consent_flags where student_id = 'stu-04'), true, 'c3_flags_follow_guardian_links_and_withdrawals');
+
+-- ================================================================ administration (migration 0008)
+create function tests.as_user_aal(uid text, aal text) returns void language sql as $$
+  select set_config('role', 'authenticated', true), set_config('request.jwt.claims', json_build_object('sub', uid, 'role', 'authenticated', 'aal', aal)::text, true);
+$$;
+grant execute on function tests.as_user_aal(text, text) to authenticated;
+
+-- blocked: accepted by the constraint, closes every read at once, the snapshot says so
+update public.app_users set status = 'blocked' where user_id = '00000000-0000-4000-8000-000000000004';
+select is((select status from public.app_users where user_id = '00000000-0000-4000-8000-000000000004'), 'blocked', 'adm_blocked_status_accepted');
+select tests.as_user('00000000-0000-4000-8000-000000000004');
+select is((select count(*)::int from public.students) + (select count(*)::int from public.trip_positions), 0, 'adm_blocked_user_reads_nothing');
+select is(public.my_snapshot()->>'status', 'blocked', 'adm_snapshot_says_blocked');
+reset role;
+update public.app_users set status = 'active' where user_id = '00000000-0000-4000-8000-000000000004';
+select throws_ok($$update public.app_users set status = 'suspended' where user_id = '00000000-0000-4000-8000-000000000004'$$, '23514', null, 'adm_unknown_status_refused');
+
+-- the authenticator mirror follows auth.mfa_factors: unverified → nothing; verified → enrolled; deleted → gone
+insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret)
+values ('00000000-0000-4000-8000-0000000000f1', '00000000-0000-4000-8000-000000000001', 'pgtap', 'totp', 'unverified', now(), now(), 'JBSWY3DPEHPK3PXP');
+select is((select count(*)::int from public.two_step_enrolled where user_id = '00000000-0000-4000-8000-000000000001'), 0, 'adm_unverified_factor_is_not_enrolment');
+update auth.mfa_factors set status = 'verified' where id = '00000000-0000-4000-8000-0000000000f1';
+select is((select count(*)::int from public.two_step_enrolled where user_id = '00000000-0000-4000-8000-000000000001'), 1, 'adm_verified_factor_enrols');
+
+-- an enrolled principal: aal1 reaches nothing (snapshot two_step_required), aal2 everything; a teacher is never asked
+select tests.as_user_aal('00000000-0000-4000-8000-000000000001', 'aal1');
+select is((select count(*)::int from public.students) + (select count(*)::int from public.audit_log) + (select count(*)::int from public.invoices), 0, 'adm_enrolled_principal_aal1_sees_nothing');
+select is(public.my_snapshot()->>'status', 'two_step_required', 'adm_enrolled_principal_aal1_snapshot_two_step_required');
+select is(public.my_snapshot()->'twoStep', '{"enrolled": true, "required": false}'::jsonb, 'adm_two_step_required_snapshot_says_enrolled');
+select is((select count(*)::int from public.two_step_enrolled), 1, 'adm_user_reads_own_enrolment');
+reset role;
+select tests.as_user_aal('00000000-0000-4000-8000-000000000001', 'aal2');
+select is((select count(*) from public.students), (select stu from totals), 'adm_enrolled_principal_aal2_sees_all');
+select is(public.my_snapshot()->>'status', 'active', 'adm_aal2_snapshot_active');
+select is((public.my_snapshot()->>'schemaVersion')::int, 3, 'adm_snapshot_schema_version_3');
+reset role;
+insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret)
+values ('00000000-0000-4000-8000-0000000000f2', '00000000-0000-4000-8000-000000000002', 'pgtap', 'totp', 'verified', now(), now(), 'JBSWY3DPEHPK3PXP');
+select tests.as_user_aal('00000000-0000-4000-8000-000000000002', 'aal1');
+select ok((select count(*) from public.students) > 0, 'adm_enrolled_teacher_at_aal1_unaffected');
+select is((select count(*)::int from public.two_step_enrolled where user_id <> '00000000-0000-4000-8000-000000000002'), 0, 'adm_enrolment_rows_of_others_unreadable');
+reset role;
+delete from auth.mfa_factors where id in ('00000000-0000-4000-8000-0000000000f1', '00000000-0000-4000-8000-0000000000f2');
+select is((select count(*)::int from public.two_step_enrolled where user_id in ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002')), 0, 'adm_deleted_factor_unenrols');
+
+-- the policy row: required = true closes an unenrolled accountant at aal1; aal2 opens; teachers never asked
+update public.app_policy set value = '{"required": true}' where key = 'two_step';
+select tests.as_user_aal('00000000-0000-4000-8000-000000000003', 'aal1');
+select is((select count(*)::int from public.invoices), 0, 'adm_policy_required_closes_unenrolled_accountant_at_aal1');
+select is(public.my_snapshot()->'twoStep'->>'required', 'true', 'adm_policy_required_snapshot_says_required');
+reset role;
+select tests.as_user_aal('00000000-0000-4000-8000-000000000003', 'aal2');
+select is((select count(*) from public.invoices), (select inv from totals), 'adm_policy_required_accountant_aal2_sees_ledger');
+reset role;
+select tests.as_user_aal('00000000-0000-4000-8000-000000000002', 'aal1');
+select ok((select count(*) from public.students) > 0, 'adm_policy_never_asks_teachers');
+select is((select value->>'required' from public.app_policy where key = 'two_step'), 'true', 'adm_policy_readable_by_signed_in_users');
+select throws_ok($$update public.app_policy set value = '{"required": false}' where key = 'two_step'$$, '42501', null, 'adm_policy_not_writable_by_users');
+reset role;
+update public.app_policy set value = '{"required": false}' where key = 'two_step';
+
+-- sign-in events: written when last_sign_in_at moves (the auth server's update); principal only
+update auth.users set last_sign_in_at = now() where id = '00000000-0000-4000-8000-000000000006';
+select is((select count(*)::int from public.sign_in_events where user_id = '00000000-0000-4000-8000-000000000006'), 1, 'adm_sign_in_event_recorded');
+update auth.users set email = email where id = '00000000-0000-4000-8000-000000000006';
+select is((select count(*)::int from public.sign_in_events where user_id = '00000000-0000-4000-8000-000000000006'), 1, 'adm_other_user_updates_record_nothing');
+select ok(has_table_privilege('supabase_auth_admin', 'public.sign_in_events', 'INSERT') and has_sequence_privilege('supabase_auth_admin', 'public.sign_in_events_id_seq', 'USAGE')
+  and has_table_privilege('supabase_auth_admin', 'public.two_step_enrolled', 'INSERT') and has_table_privilege('supabase_auth_admin', 'public.two_step_enrolled', 'DELETE')
+  and has_schema_privilege('supabase_auth_admin', 'app', 'USAGE'), 'adm_auth_server_role_has_the_trigger_grants');
+select tests.as_user('00000000-0000-4000-8000-000000000003');
+select is((select count(*)::int from public.sign_in_events), 0, 'adm_accountant_reads_no_sign_in_events');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000006');
+select is((select count(*)::int from public.sign_in_events), 0, 'adm_parent_reads_no_sign_in_events');
+select ok(not (public.my_snapshot() ? 'signInEvents'), 'adm_snapshot_carries_no_sign_in_events');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000001');
+select ok((select count(*) from public.sign_in_events) > 0, 'adm_principal_reads_sign_in_events');
+reset role;
+
+-- end_sessions: the user's sessions and refresh tokens go; nobody signed in can call it
+insert into auth.sessions (id, user_id, created_at, updated_at, aal) values
+  ('00000000-0000-4000-8000-0000000000e1', '00000000-0000-4000-8000-000000000005', now(), now(), 'aal1'),
+  ('00000000-0000-4000-8000-0000000000e2', '00000000-0000-4000-8000-000000000005', now(), now(), 'aal1'),
+  ('00000000-0000-4000-8000-0000000000e3', '00000000-0000-4000-8000-000000000006', now(), now(), 'aal1');
+insert into auth.refresh_tokens (instance_id, token, user_id, revoked, created_at, updated_at, session_id)
+values ('00000000-0000-0000-0000-000000000000', 'pgtap-refresh-1', '00000000-0000-4000-8000-000000000005', false, now(), now(), '00000000-0000-4000-8000-0000000000e1');
+select is(public.end_sessions('00000000-0000-4000-8000-000000000005'), 2, 'adm_end_sessions_counts_the_sessions');
+select is((select count(*)::int from auth.sessions where user_id = '00000000-0000-4000-8000-000000000005') + (select count(*)::int from auth.refresh_tokens where token = 'pgtap-refresh-1'), 0,
+  'adm_end_sessions_removes_sessions_and_refresh_tokens');
+select is((select count(*)::int from auth.sessions where id = '00000000-0000-4000-8000-0000000000e3'), 1, 'adm_end_sessions_leaves_other_users');
+set local role anon;
+select throws_ok($$select public.end_sessions('00000000-0000-4000-8000-000000000006')$$, '42501', null, 'adm_anon_cannot_end_sessions');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000001');
+select throws_ok($$select public.end_sessions('00000000-0000-4000-8000-000000000006')$$, '42501', null, 'adm_authenticated_cannot_end_sessions');
+reset role;
+select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user', 'public.end_sessions'], 'adm_definer_list_is_exactly_two');
+
+-- the data-rights desk: written through persist; a parent reads their own, the principal all, a teacher none
+select lives_ok($$select public.persist('pgtap-rights', 0, '{"upserts":{"dataRequests":[
+  {"id":"drq-t-1","guardianId":"grd-02","kind":"export","details":"","status":"open","filedAt":"2026-10-03T05:00:00.000Z"},
+  {"id":"drq-t-2","guardianId":"grd-01","kind":"correction","details":"fake","status":"open","filedAt":"2026-10-03T05:00:00.000Z"}]}}'::jsonb)$$, 'adm_persist_writes_data_requests');
+select throws_ok($$insert into public.data_requests (id, doc) values ('drq-t-3', '{"id":"drq-t-3","guardianId":"grd-02","kind":"export","status":"in_progress"}')$$, '23505', null, 'adm_one_open_request_per_kind');
+select throws_ok($$select public.persist('pgtap-rights', 1, '{"deletes":{"dataRequests":["drq-t-1"]}}'::jsonb)$$, '42501', null, 'adm_data_requests_never_deleted');
+select tests.as_user('00000000-0000-4000-8000-000000000006');
+select is((select array_agg(id order by id) from public.data_requests), array['drq-t-1'], 'adm_parent_reads_own_data_requests');
+select is((select jsonb_agg(e->>'id') from jsonb_array_elements(public.my_snapshot()->'dataRequests') e), '["drq-t-1"]'::jsonb, 'adm_snapshot_data_requests_own_only');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000002');
+select is((select count(*)::int from public.data_requests), 0, 'adm_teacher_reads_no_data_requests');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000001');
+select is((select count(*)::int from public.data_requests where id like 'drq-t-%'), 2, 'adm_principal_reads_every_data_request');
+reset role;
+select is((public.load_slice('{dataRequests}'::text[], '{"exportGuardianId":"grd-01"}'::jsonb))->'db'->'dataRequests' @> '[{"id":"drq-t-2"}]'::jsonb
+  and jsonb_array_length((public.load_slice('{dataRequests}'::text[], '{"exportGuardianId":"grd-01"}'::jsonb))->'db'->'dataRequests') = 1, true, 'adm_load_slice_data_requests_of_the_export_guardian');
+select is((public.load_slice('{}'::text[], '{"callerUserId":"00000000-0000-4000-8000-000000000003"}'::jsonb))->'db'->'callerTwoStep', '{"enrolled": false, "required": false}'::jsonb, 'adm_load_slice_returns_caller_two_step');
+select is((public.load_slice('{}'::text[], '{}'::jsonb))->'db'->>'schemaVersion', '3', 'adm_load_slice_schema_version_3');
 
 select * from finish();
 rollback;

@@ -2,7 +2,8 @@
 // Conventions: ids are prefixed strings; money is integer paise; dates are 'YYYY-MM-DD';
 // timestamps are ISO-8601 UTC strings ('2026-10-02T07:42:00.000Z').
 
-export const SCHEMA_VERSION = 2; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
+export const SCHEMA_VERSION = 3; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
+// v3 (administration): dataRequests (the data-rights desk), school.announcement
 
 /**
  * @typedef {{graceDays:number, mode:'flat'|'perDay', amountPaise:number, capPaise:number|null, shiftDueToWorkingDay:boolean}} LateFeeRule
@@ -10,8 +11,11 @@ export const SCHEMA_VERSION = 2; // v2 (Phase 3): learning collections, consents
  *   attendanceMonthsAfterLeaving:number|null, messagesMonthsAfterLeaving:number|null}} Retention
  *   Whole months, or null = the school has not decided (nothing is deleted for a category whose period is null, except photos
  *   which the server always enforces once a period is set).
+ * @typedef {{text:string, tone:'info'|'warn', until:string|null, setBy:string, setAt:string}} Announcement
+ *   The school-wide banner: plain text, at most 280 characters; until = last day it shows (null: until cleared).
  * @typedef {{name:string, address:string, phone:string, weeklyOffs:number[], currentAcademicYearId:string|null,
- *   invoicePrefix:string, receiptPrefix:string, refundPrefix:string, lateFeeRule:LateFeeRule|null, retention:Retention}} School
+ *   invoicePrefix:string, receiptPrefix:string, refundPrefix:string, lateFeeRule:LateFeeRule|null, retention:Retention,
+ *   announcement:Announcement|null}} School
  * @typedef {{id:string, label:string, startDate:string, endDate:string}} AcademicYear
  * @typedef {{id:string, name:string, ageRange:string, teacherIds:string[]}} Program
  * @typedef {{id:string, firstName:string, lastName:string, dob:string, programId:string, admissionNo:string,
@@ -80,6 +84,9 @@ export const SCHEMA_VERSION = 2; // v2 (Phase 3): learning collections, consents
  *   Frozen at publish: names and text are copies, so a published report never changes under a parent.
  * @typedef {{id:string, guardianId:string, studentId:string, purpose:'app_account'|'push'|'bus_live'|'photos', version:string,
  *   textHash:string|null, givenAt:string, withdrawnAt:string|null, evidence:Object}} Consent
+ * @typedef {{id:string, guardianId:string, kind:'export'|'erasure'|'correction', details:string, status:'open'|'in_progress'|'done'|'declined',
+ *   filedAt:string, filedBy:string, updatedAt:string, resolution:string|null, decidedBy:string|null, decidedAt:string|null}} DataRequest
+ *   A guardian's DPDP request (data-rights desk). One open request per guardian and kind; a closed one is final.
  * @typedef {{id:string, ts:string, actorRole:string, actorId:string, entity:string, entityId:string, action:string, summary:string}} AuditRow
  * @typedef {{invoice:Object<string,number>, receipt:Object<string,number>, refund:Object<string,number>}} Counters
  * @typedef {{schemaVersion:number, rev:number, school:School, academicYears:AcademicYear[], programs:Program[],
@@ -88,7 +95,7 @@ export const SCHEMA_VERSION = 2; // v2 (Phase 3): learning collections, consents
  *   feeHeads:FeeHead[], feeStructures:FeeStructure[], invoices:Invoice[], payments:Payment[], refunds:Refund[],
  *   credits:Credit[], attendance:AttendanceRecord[], diaryEntries:DiaryEntry[], auditLog:AuditRow[], counters:Counters,
  *   presentations:Presentation[], observations:Observation[], photos:Photo[], progressEvents:ProgressEvent[], reports:Report[],
- *   consents:Consent[]}} Db
+ *   consents:Consent[], dataRequests:DataRequest[]}} Db
  * @typedef {{role:'admin'|'teacher'|'accountant'|'driver'|'parent'|'system', id:string}} Actor
  * @typedef {{actor:Actor, now:string, today:string}} Ctx  now = ISO timestamp, today = local 'YYYY-MM-DD'
  */
@@ -98,7 +105,7 @@ export const COLLECTIONS = [
   'academicYears', 'programs', 'students', 'guardians', 'staff', 'notices', 'noticeReceipts',
   'threads', 'messages', 'calendarEvents', 'routes', 'trips', 'feeHeads', 'feeStructures',
   'invoices', 'payments', 'refunds', 'credits', 'attendance', 'diaryEntries', 'auditLog',
-  'presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents',
+  'presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'dataRequests',
 ];
 
 export const RETENTION_KEYS = [
@@ -123,6 +130,7 @@ export function createEmptyDb() {
       refundPrefix: 'RFD',
       lateFeeRule: null,
       retention: Object.fromEntries(RETENTION_KEYS.map(k => [k, null])),
+      announcement: null,
     },
     counters: { invoice: {}, receipt: {}, refund: {} },
   };

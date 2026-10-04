@@ -36,6 +36,9 @@ import { listReports, getReport } from '../domain/reports.js';
 import { photoView } from '../domain/photos.js';
 import { retentionPlan } from '../domain/retention.js';
 import { createDemoPhotos } from './demo-photos.js';
+import { twoStepRequired, listDataRequests, whoCanSee, PRIVILEGED_ROLES } from '../domain/admin.js';
+import { PERMISSIONS } from '../domain/permissions.js';
+import { totp, verifyTotp, randomSecret, otpauthUri, secondsLeft } from './totp.js';
 
 export { buildPersonas };
 
@@ -50,6 +53,9 @@ export class ApiError extends Error {
 }
 
 export const SESSION_KEY = 'montessori.session.v1';
+// Demo-only account stores (the real app keeps all of this on the server). Blocks are in the demo's local storage; the
+// password hash, authenticator secret and sign-in list live in the tab's session storage and vanish with the tab.
+export const DEMO_KEYS = { accounts: 'montessori.accounts.v1', password: 'montessori.demo-password.v1', twoStep: 'montessori.demo-two-step.v1', activity: 'montessori.demo-activity.v1' };
 
 export function toApiError(e) {
   if (e instanceof ApiError) return e;
@@ -65,11 +71,13 @@ export const realAppOnly = what => new ApiError('NOT_ALLOWED', `${what} is avail
 
 /**
  * The persona-scoped api surface shared by both modes: every read, plus every registry write via `cmd`.
- * @param {{db:()=>any, me:()=>any, clock:()=>Date, cmd:(name:string)=>Function}} deps
+ * @param {{db:()=>any, me:()=>any, clock:()=>Date, cmd:(name:string)=>Function, appUsers?:()=>any, requireConsent?:boolean}} deps
  *   db()  current Db (throws when not loaded); me() current persona (throws NOT_ALLOWED when none);
  *   cmd(name) → async (...args) running that registry command (demo: local commit; supabase: Edge Function).
+ *   appUsers() (optional, may be async) → the sign-in links [{id, staffId, guardianId, status}] for "who can see this child";
+ *   requireConsent (real app: true) → a parent sees a child only with live app_account consent.
  */
-export function createSurface({ db, me, clock, cmd }) {
+export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = false }) {
   const today = () => todayISO(clock());
   const allow = (...roles) => allowP(me(), ...roles);
   const mustSee = (p, studentId) => mustSeeP(p, db(), studentId);
@@ -119,6 +127,8 @@ export function createSurface({ db, me, clock, cmd }) {
     }),
     /** updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?}) — principal only; the one way a child changes class or leaves. */
     updateStudent: cmd('people.updateStudent'),
+    /** updateGuardian({guardianId, firstName?, lastName?, phone?, relation?}) — principal only; the way a correction request is carried out. */
+    updateGuardian: cmd('people.updateGuardian'),
   };
 
   const withStats = (d, n) => ({ ...n, ...M.noticeStats(d, n.id) });
@@ -314,6 +324,39 @@ export function createSurface({ db, me, clock, cmd }) {
 
   const audit = { list: op(q => { allow('admin', 'accountant'); return listAudit(db(), q || {}); }) };
 
+  // ---------------- administration: data requests, announcement, oversight (same reads and commands in both modes) ----------------
+  const rights = {
+    /** list() → a parent's own requests, or every family's for the principal (newest first, with guardianName). */
+    list: op(() => listDataRequests(db(), allow('admin', 'parent'))),
+    /** file({kind:'export'|'erasure'|'correction', details}) — a parent, for their own data. */
+    file: cmd('rights.file'),
+    /** update(id, {status:'in_progress'|'done'|'declined', resolution?}) — the principal; closing needs a resolution and is final. */
+    update: cmd('rights.update'),
+  };
+  const announcement = {
+    /** set({text, tone:'info'|'warn', until?}) → school.announcement; clear() → null. Plain text, at most 280 characters. */
+    set: cmd('admin.setAnnouncement'),
+    clear: cmd('admin.clearAnnouncement'),
+  };
+  const actorName = (d, r) => {
+    if (r.actorRole === 'system') return 'System';
+    const who = byId(d.staff, r.actorId) || byId(d.guardians, r.actorId);
+    return who ? fullName(who) : null;
+  };
+  const oversight = {
+    /** history({entity?, entityId?, limit?}) → audit rows (newest first) with actorName; reads through audit.list, so the real app's audit_log. */
+    history: op(async q => {
+      allow('admin', 'accountant');
+      const rows = await audit.list(q || {});
+      const d = db();
+      return rows.map(r => ({ ...r, actorName: actorName(d, r) }));
+    }),
+    /** whoCanSee(studentId) → {student, viewers:[{kind, id, name, role, via, signIn, consent?, sees}]}: the authorization rule itself, run for everyone. */
+    whoCanSee: op(async studentId => { allow('admin'); return whoCanSee(db(), studentId, { appUsers: appUsers ? await appUsers() : null, requireConsent }); }),
+    /** permissions() → {actors:[{key,label}], capabilities:[{key,label,allow:{actor:boolean}}]}: the matrix the tests hold equal to the real rules. */
+    permissions: op(() => { allow('admin'); return PERMISSIONS; }),
+  };
+
 
   // ---------------- Phase 3: curriculum, observations, photos, progress, reports ----------------
   // Reads work over the same Db shape in both modes (the real app's snapshot carries the same collections, scoped by RLS).
@@ -384,7 +427,7 @@ export function createSurface({ db, me, clock, cmd }) {
     suggestMapping: op((kind, headers) => { allow('admin', 'accountant'); return I.suggestMapping(kind, headers || []); }),
   };
 
-  return { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports, photos, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
+  return { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
 }
 
 /**
@@ -421,6 +464,28 @@ export function createApi(opts = {}) {
     return storage.db;
   }
 
+  // ---------------- demo account stores (blocks, password, two-step, sign-in activity; every access in try/catch) ----------------
+  const store = (be, key) => ({
+    read(def) { try { const v = be.getItem(key); return v ? JSON.parse(v) : def; } catch { return def; } },
+    write(v) { try { be.setItem(key, JSON.stringify(v)); } catch { /* storage refused: the demo state just does not persist */ } },
+    clear() { try { if (be.removeItem) be.removeItem(key); else be.setItem(key, ''); } catch { /* ignore */ } },
+  });
+  const accountsStore = store(backend, DEMO_KEYS.accounts);         // {blocked:{personaId: isoTime}}
+  const passwordStore = store(sessionBackend, DEMO_KEYS.password);   // {personaId: sha256 hex}
+  const twoStepStore = store(sessionBackend, DEMO_KEYS.twoStep);     // {personaId: {secret, confirmed, aal2}}
+  const activityStore = store(sessionBackend, DEMO_KEYS.activity);   // [{at, userId, aal}] newest last
+  const blockedMap = () => accountsStore.read({}).blocked || {};
+  const twoStepOf = id => twoStepStore.read({})[id] || null;
+  const putTwoStep = (id, v) => { const all = twoStepStore.read({}); if (v) all[id] = v; else delete all[id]; twoStepStore.write(all); };
+  const resetDemoStores = () => { for (const st of [accountsStore, passwordStore, twoStepStore, activityStore]) st.clear(); };
+  const personDoc = (d, p) => (p.staffId ? byId(d.staff, p.staffId) : byId(d.guardians, p.guardianId));
+  const hashPassword = async (personaId, pw) => {
+    const buf = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${personaId}\n${pw}`));
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+  /** The demo's sign-in links, in the shape of the real app's app_users rows (blocked from the demo store). */
+  const demoAppUsers = d => { const b = blockedMap(); return buildPersonas(d).map(p => ({ id: p.id, role: p.role, staffId: p.staffId ?? null, guardianId: p.guardianId ?? null, status: b[p.id] ? 'blocked' : 'active' })); };
+
   // ---------------- session (demo: persona switcher) ----------------
   function readSession() { try { return sessionBackend.getItem(SESSION_KEY); } catch { return null; } }
   const session = {
@@ -431,8 +496,13 @@ export function createApi(opts = {}) {
       return id ? out(buildPersonas(storage.db).find(p => p.id === id) || null) : null;
     },
     set(personaId) {
-      if (!buildPersonas(db()).some(p => p.id === personaId)) throw new ApiError('NOT_FOUND', `Unknown persona: ${personaId}`);
+      const persona = buildPersonas(db()).find(p => p.id === personaId);
+      if (!persona) throw new ApiError('NOT_FOUND', `Unknown persona: ${personaId}`);
+      if (blockedMap()[personaId]) throw new ApiError('NOT_ALLOWED', `${fullName(personDoc(storage.db, persona))} is blocked in the demo (Administration > Accounts)`);
       sessionBackend.setItem(SESSION_KEY, personaId);
+      const log = activityStore.read([]);
+      log.push({ at: nowISO(clock()), userId: personaId, aal: twoStepOf(personaId)?.aal2 ? 'aal2' : 'aal1' });
+      activityStore.write(log.slice(-200));
       emit(storage.db, storage.info());
     },
     clear() { try { sessionBackend.removeItem ? sessionBackend.removeItem(SESSION_KEY) : sessionBackend.setItem(SESSION_KEY, ''); } catch { /* ignore */ } emit(storage?.db ?? null, storage ? storage.info() : null); },
@@ -455,7 +525,7 @@ export function createApi(opts = {}) {
     return storage.commit(d => execute(name, d, args, ctxNow(p), p));
   });
 
-  const surface = createSurface({ db, me, clock, cmd });
+  const surface = createSurface({ db, me, clock, cmd, appUsers: () => demoAppUsers(db()) });
   const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports } = surface;
   const today = () => todayISO(clock());
 
@@ -492,12 +562,83 @@ export function createApi(opts = {}) {
   };
 
   // ---------------- real-app-only namespaces, demo behaviour ----------------
+  // Demo: no server, so no real sign-in. A password is a per-persona SHA-256 in this tab; two-step is real RFC 6238 TOTP against a
+  // per-persona secret in this tab ("demo authenticator" shows the live code); a block is a flag the persona switcher honours.
+  const stateOf = p => {
+    const f = twoStepOf(p.id);
+    const enrolled = Boolean(f && f.confirmed), verified = enrolled && Boolean(f.aal2);
+    return { enrolled, verified, required: false, factorId: f ? `demo-factor-${p.id}` : null }; // policy: never forced in the demo
+  };
+  const gateState = p => {
+    if (blockedMap()[p.id]) return 'blocked';
+    const t = stateOf(p);
+    return twoStepRequired({ role: p.role, aal: t.verified ? 'aal2' : 'aal1', enrolled: t.enrolled, policyRequired: t.required }) ? 'two_step_required' : 'demo';
+  };
+  const privilegedMe = () => { const p = me(); if (!PRIVILEGED_ROLES.includes(p.role)) throw new ApiError('NOT_ALLOWED', 'Two-step sign-in is for the principal and the accountant'); return p; };
+  const twoStep = {
+    status: op(() => stateOf(privilegedMe())),
+    /** enroll() → {factorId, secret, uri}: a fresh secret (shown as text, no QR); an earlier unfinished one is replaced. */
+    enroll: op(() => {
+      const p = privilegedMe(); db();
+      if (stateOf(p).enrolled) throw new ApiError('VALIDATION', 'Two-step sign-in is already set up; turn it off first to set it up again');
+      const secret = randomSecret();
+      putTwoStep(p.id, { secret, confirmed: false, aal2: false });
+      return { factorId: `demo-factor-${p.id}`, secret, uri: otpauthUri({ secret, account: personDoc(db(), p)?.email || p.id, issuer: db().school?.name || 'School app' }) };
+    }),
+    /** verify(factorId, code) → {verified:true}; the first correct code also completes set-up. */
+    verify: op(async (factorId, code) => {
+      const p = privilegedMe(); const f = twoStepOf(p.id);
+      if (!f || factorId !== `demo-factor-${p.id}`) throw new ApiError('NOT_FOUND', 'Set up an authenticator first');
+      if (!(await verifyTotp(f.secret, code, clock().getTime()))) throw new ApiError('VALIDATION', 'That code was not accepted. Codes change every 30 seconds; try the current one.');
+      putTwoStep(p.id, { ...f, confirmed: true, aal2: true });
+      return { verified: true };
+    }),
+    disable: op(factorId => {
+      const p = privilegedMe();
+      if (factorId !== `demo-factor-${p.id}`) throw new ApiError('NOT_FOUND', 'No such authenticator');
+      putTwoStep(p.id, null);
+    }),
+    /** demoCode() → {code, secondsLeft}: what the phone would show (demo only; the real app answers NOT_ALLOWED). */
+    demoCode: op(async () => {
+      const p = privilegedMe(); const f = twoStepOf(p.id);
+      if (!f) throw new ApiError('NOT_FOUND', 'Set up an authenticator first');
+      const now = clock().getTime();
+      return { code: await totp(f.secret, now), secondsLeft: secondsLeft(now) };
+    }),
+  };
   const auth = {
-    status: op(() => ({ state: 'demo', email: null })),
+    status: op(() => {
+      const p = storage && storage.db ? session.current() : null;
+      if (!p) return { state: 'demo', email: null };
+      return { state: gateState(p), email: personDoc(storage.db, p)?.email ?? null, ...(PRIVILEGED_ROLES.includes(p.role) ? { twoStep: stateOf(p) } : {}) };
+    }),
     signInWithOtp: op(() => { throw realAppOnly('Sign-in with an email code'); }),
     verifyOtp: op(() => { throw realAppOnly('Sign-in with an email code'); }),
+    /** signInWithPassword(email, password): demo — the persona whose email it is, if a password was set for it in this tab. */
+    signInWithPassword: op(async (email, password) => {
+      const d = db();
+      const p = buildPersonas(d).find(x => String(personDoc(d, x)?.email || '').toLowerCase() === String(email || '').trim().toLowerCase());
+      const stored = p ? passwordStore.read({})[p.id] : null;
+      if (!stored || stored !== await hashPassword(p.id, String(password ?? ''))) throw new ApiError('VALIDATION', 'The email or password is not right');
+      session.set(p.id); // refuses a blocked person
+      return { state: gateState(p), email: personDoc(d, p)?.email ?? null };
+    }),
+    /** requestPasswordReset(email) / verifyRecoveryCode(email, code): an emailed recovery code needs the real mail server. */
+    requestPasswordReset: op(() => { throw realAppOnly('Password recovery by emailed code'); }),
+    verifyRecoveryCode: op(() => { throw realAppOnly('Password recovery by emailed code'); }),
+    /** setPassword(newPassword) — at least 8 characters; the principal never sees or sets anyone else's. */
+    setPassword: op(async newPassword => {
+      const p = me();
+      if (typeof newPassword !== 'string' || newPassword.length < 8) throw new ApiError('VALIDATION', 'Choose a password of at least 8 characters');
+      const all = passwordStore.read({});
+      all[p.id] = await hashPassword(p.id, newPassword);
+      passwordStore.write(all);
+    }),
     redeemInvite: op(() => { throw realAppOnly('Linking with an invite code'); }),
     signOut: op(() => { session.clear(); }),
+    /** Demo: ends this person's session in this tab (the real app ends every device). */
+    signOutEverywhere: op(() => { const p = me(); const f = twoStepOf(p.id); if (f) putTwoStep(p.id, { ...f, aal2: false }); session.clear(); }),
+    twoStep,
   };
   const consent = {
     // The demo holds no personal data; live bus tracking is shown, so the demo reports it as given.
@@ -622,11 +763,77 @@ export function createApi(opts = {}) {
     if (!p || p.role !== 'admin') throw new ApiError('NOT_ALLOWED', 'Only the principal can do this');
     return ctxNow(p);
   };
+  // The account desk, demo edition: the SAME registry commands run (self / last-principal / email-collision rules and audit rows included),
+  // against sign-in links built from the demo account store; the outcome is then written back to that store, never to the Db.
+  const runAccountCmd = (name, args) => {
+    const p = allowP(me(), 'admin');
+    let after = null;
+    const r = storage.commit(d => {
+      d.appUsers = demoAppUsers(d);
+      try { return execute(name, d, args, ctxNow(p), p); } finally { after = d.appUsers; delete d.appUsers; }
+    });
+    const b = blockedMap();
+    for (const u of after) { if (u.status === 'blocked') b[u.id] ||= nowISO(clock()); else delete b[u.id]; }
+    accountsStore.write({ blocked: b });
+    return r;
+  };
+  const noteAccountAction = (p, userId, action, detail) => storage.commit(d => execute('admin.noteAccountAction', d, [{ userId, action, outcome: 'ok', detail, by: p.staffId }], ctxNow(systemPersona('demo')), systemPersona('demo')));
+  const accounts = {
+    /** list() → one row per person (staff and guardians) with the demo's sign-in state; userId is the persona id. */
+    list: op(() => {
+      allowP(me(), 'admin'); const d = db(); const b = blockedMap(); const log = activityStore.read([]);
+      return buildPersonas(d).map(p => {
+        const person = personDoc(d, p);
+        const last = log.filter(x => x.userId === p.id).at(-1);
+        return {
+          userId: p.id, personKind: p.staffId ? 'staff' : 'guardian', personId: p.staffId || p.guardianId, name: fullName(person), role: p.role,
+          email: person?.email ?? null, status: b[p.id] ? 'blocked' : 'active', lastSignInAt: last ? last.at : null, confirmedAt: null,
+          twoStep: twoStepOf(p.id)?.confirmed ? 'verified' : 'none', bannedUntil: null,
+        };
+      });
+    }),
+    block: op(userId => { runAccountCmd('admin.blockUser', [userId]); return { userId, status: 'blocked' }; }),
+    unblock: op(userId => { runAccountCmd('admin.unblockUser', [userId]); return { userId, status: 'active' }; }),
+    /** signOutEverywhere(userId) → demo: ends that person's two-step session and, if it is the current persona, this tab's session. */
+    signOutEverywhere: op(userId => {
+      const p = allowP(me(), 'admin');
+      if (!buildPersonas(db()).some(x => x.id === userId)) throw new ApiError('NOT_FOUND', 'Account not found');
+      const f = twoStepOf(userId); if (f) putTwoStep(userId, { ...f, aal2: false });
+      const current = readSession() === userId;
+      noteAccountAction(p, userId, 'signOutEverywhere', 'demo: this tab only');
+      if (current) session.clear();
+      return { userId, sessionsEnded: current ? 1 : 0 };
+    }),
+    changeEmail: op((userId, email) => { const r = runAccountCmd('admin.changeSignInEmail', [{ userId, email }]); return { userId, email: r.email }; }),
+    resendInvite: op(() => { throw realAppOnly('Sending an invite'); }),
+    resetTwoStep: op(userId => {
+      const p = allowP(me(), 'admin');
+      if (!buildPersonas(db()).some(x => x.id === userId)) throw new ApiError('NOT_FOUND', 'Account not found');
+      const had = Boolean(twoStepOf(userId));
+      putTwoStep(userId, null);
+      noteAccountAction(p, userId, 'resetTwoStep', had ? 'factors=1' : 'factors=0');
+      return { userId, factorsRemoved: had ? 1 : 0 };
+    }),
+    twoStepPolicy: op(() => {
+      allowP(me(), 'admin'); const d = db();
+      return { required: false, privileged: buildPersonas(d).filter(p => PRIVILEGED_ROLES.includes(p.role)).map(p => ({ userId: p.id, name: fullName(personDoc(d, p)), role: p.role, enrolled: Boolean(twoStepOf(p.id)?.confirmed) })) };
+    }),
+    setTwoStepPolicy: op(() => { throw realAppOnly('Requiring two-step sign-in'); }),
+  };
+  /** signInActivity({limit=200}) → [{at, userId, name, role, aal}] newest first; demo: the persona switches made in this tab. */
+  surface.oversight.signInActivity = op(({ limit = 200 } = {}) => {
+    allowP(me(), 'admin'); const d = db(); const ps = new Map(buildPersonas(d).map(p => [p.id, p]));
+    return activityStore.read([]).filter(x => ps.has(x.userId)).reverse().slice(0, Math.max(1, Math.min(Number(limit) || 200, 200)))
+      .map(x => ({ at: x.at, userId: x.userId, name: fullName(personDoc(d, ps.get(x.userId))), role: ps.get(x.userId).role, aal: x.aal }));
+  });
+
   const admin = {
+    accounts, announcement: surface.announcement,
     resetToSeed: op(async () => {
       await ensureStorage();
       const ctx = adminCtx();
       storage.resetToSeed(ctx);
+      resetDemoStores();
       try { await demoPhotos.clear(); } catch { /* the seed's photos are drawn, not stored; nothing else to clear */ }
       readyPromise = Promise.resolve();
     }),
@@ -689,7 +896,7 @@ export function createApi(opts = {}) {
     /** Real app: refetch the server snapshot. Demo: nothing to fetch. */
     refresh: op(() => undefined),
     session, people, notices, threads, calendar, transport, fees, attendance, diary, audit, admin,
-    curriculum, observations, progress, reports, photos,
+    curriculum, observations, progress, reports, photos, rights: surface.rights, oversight: surface.oversight,
     auth, consent, push, import: imports, reminders,
     /** test hook */
     _storage: () => storage,

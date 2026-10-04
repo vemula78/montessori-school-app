@@ -65,7 +65,7 @@ You need:
 
 ## Step 3. Sign-in by emailed code
 
-Parents and staff sign in with a 6-digit code sent by email (no passwords). The app never uses password sign-up.
+Parents and staff sign in with a 6-digit code sent by email. A password is optional (anyone can set one in **Account**; step 13); the app never uses password sign-up, and the principal never sees or sets anyone's password.
 
 1. **Authentication > Providers > Email**: switch it **on**; leave **Confirm email ON** (do **not** switch it off: with it off, anyone could create an account with a staff member's email address without proving they own the mailbox, and be given that staff role); set **Email OTP expiration** to **600** seconds; Save.
 2. **Authentication > Email Templates**: there are two templates to change, **Magic Link** and **Confirm signup**. In **both**, replace the body so it contains the code, for example:
@@ -146,7 +146,7 @@ supabase functions deploy
 **Do not set `RAZORPAY_API_BASE` in the cloud.** It exists only for testing on a developer's Mac against a pretend payment server; in the cloud the real Razorpay address must be used, so leave it unset.
 
 `APP_GATEWAY_MODE=test` must match the `rzp_test_` key; the server refuses to start if a test key is used in live mode or the other way round.
-Then check **Edge Functions** in the dashboard: you should see `command`, `pay-create-order`, `pay-verify`, `pay-status`, `rzp-webhook` and `cron-daily`.
+Then check **Edge Functions** in the dashboard: you should see `command`, `pay-create-order`, `pay-verify`, `pay-status`, `rzp-webhook`, `cron-daily` and `admin-accounts`.
 
 ## Step 9. Publish the app
 
@@ -205,6 +205,21 @@ Do these only when the school has decided to go ahead. Do not skip any.
 - [ ] **Test with two phones:** one parent, one driver; run a simulated trip, make a Rs 100 test payment in test mode, check the receipt says TEST MODE, then repeat with a live Rs 1 payment after step above and refund it from the Razorpay dashboard.
 - [ ] **SMS / WhatsApp alerts** are not included (they need regulator-approved sender registration and cost money per message). Say so to parents: notifications work through the app only.
 
+## Step 13. Administration: passwords, two-step sign-in and the account desk
+
+Migration `0008_admin_module.sql` and the `admin-accounts` function add the principal's **Administration** screen (accounts, oversight, data requests, announcement, two-step policy) and the optional password. Do this once, after `supabase db push` (step 4) and `supabase functions deploy` (step 8) have run with this version.
+
+1. **Authentication > Providers > Email** (or **Authentication > Policies**): set **Minimum password length** to **8**; switch **Secure password change** **off** (people who signed in with an email code have no old password to type). Save.
+2. **Authentication > Email Templates**: change two more templates so they carry the code, exactly as in step 3:
+   - **Reset Password** (subject "Your school app password reset code"): `<p>Enter this code in the school app to choose a new password: <strong>{{ .Token }}</strong></p><p>It expires in 10 minutes. If you did not ask, ignore this email.</p>`
+   - **Invite user** (subject "You are invited to the school app"): `<p>Open the school app and sign in with this email address. You can also use this code for your first sign-in: <strong>{{ .Token }}</strong></p>`
+   Save each. Without `{{ .Token }}` the reset and the staff invite cannot be completed in the app.
+3. **Authentication > Multi-Factor** (or **Sign In / Providers > Multi-Factor Authentication**): check **TOTP (App Authenticator)** is **enabled**. It is part of the Free plan.
+4. **Each principal and the accountant, one at a time:** sign in, open **Account > Two-step sign-in > Set up**, add the shown key to an authenticator app on their own phone (Google Authenticator, Microsoft Authenticator, 1Password …), type the 6-digit code. From that moment their account asks for a code at every sign-in. The **Administration > Accounts** desk works only for a principal who has done this.
+5. **When every principal and the accountant has set it up:** a principal opens **Administration > Two-step policy** and presses **Require for all**. The server refuses while anyone privileged has no authenticator, so nobody is locked out by it.
+6. **Lost phone:** another principal opens **Administration > Accounts**, finds the person and presses **Reset two-step**; the person sets up a new authenticator at their next sign-in. **If no principal can sign in** (both phones lost): Supabase dashboard > **Authentication > Users** > the principal > delete the **MFA factor** (or, in **SQL Editor**: `delete from auth.mfa_factors where user_id = (select id from auth.users where email = '<the principal''s email>');`). The principal then signs in with an email code and sets up a new authenticator on the gate screen.
+7. **Sign-in activity** (Administration > Oversight) is kept 90 days; the daily job deletes older entries (`signInEventsPruned` in the cron report).
+
 ## If something goes wrong
 
 | What you see | Likely cause | What to do |
@@ -215,4 +230,7 @@ Do these only when the school has decided to go ahead. Do not skip any.
 | Parent says "invite code not recognised" | typo, code used, or expired (14 days) | issue a new code (the old one stops working) |
 | Payment taken but no receipt | browser closed before confirming | wait a minute: the app and the webhook record it; check Online settlements |
 | No notifications on iPhone | app not on Home Screen | step 11 |
+| Principal sees "Enter the code from your authenticator" after every sign-in | two-step is set up for this account (as intended) | open the authenticator app; lost phone: step 13.6 |
+| "Require for all" is refused | a principal or the accountant has no authenticator yet | step 13.4 for that person first |
+| Password reset email has no code | Reset Password template lacks `{{ .Token }}` | step 13.2 |
 | Whole app empty after school holiday | free project was paused | dashboard > Restore project (and upgrade, step 12) |

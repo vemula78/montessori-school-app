@@ -10,13 +10,16 @@
 // SQL over payments.doc / invoices.doc / refunds.doc / credits.doc must equal the JS totals. Counts are printed.
 // Then one photo through Storage (Phase 3): teacher observation → register → upload → server check → share → the
 // parent's signed download returns the same bytes; second path: the row and the stored object agree in SQL.
+// Then Administration: the principal sets up two-step (aal1 refused, aal2 passes), a parent's data request is filed and
+// closed, the parent is blocked and unblocked through the account desk, an announcement reaches the parent; second path:
+// the same facts read back in SQL (statuses and audit rows). The principal's authenticator is removed afterwards.
 // Finally prints two unredeemed invite codes for the browser smoke test. Exit 1 on any mismatch.
 
 import { readFileSync } from 'node:fs';
 import { reconcile } from '../src/domain/reconcile.js';
 import { invoiceBalance } from '../src/domain/fees.js';
 import { startMock } from './mock-razorpay.mjs';
-import { signIn, command, fn, rpcAs, http, psql, MOCK } from '../tests-supabase/helpers.mjs';
+import { signIn, command, fn, rpcAs, http, psql, rest, enrollTotp, unenrollAll, MOCK } from '../tests-supabase/helpers.mjs';
 import { signWebhook } from '../supabase/functions/_shared/razorpay.js';
 import { local } from '../tests-supabase/helpers.mjs';
 
@@ -114,6 +117,37 @@ try {
   check(row === `ready|${jpeg.length}` && obj === String(jpeg.length), `second path (SQL): row ${row}, stored object ${obj} bytes`);
   must(await command(teacher.token, 'photos.remove', reg.photo.id, 'e2e clean-up'), 'photos.remove');
   check(psql(`select count(*) from storage.objects where bucket_id = 'child-photos' and name = '${reg.upload.path}'`) === '0', 'removed: the object is gone, the row stays as evidence');
+
+  // ---------------------------------------------------------------- administration (two-step, account desk, data rights, announcement)
+  console.log('\nAdministration (admin-accounts and command functions, two-step sign-in)');
+  try {
+    const refused = await command(admin.token, 'admin.invites');
+    const a2 = { ...admin, ...(await enrollTotp(admin)) };
+    check(refused.status === 200 && (await command(admin.token, 'admin.invites')).data?.error?.code === 'TWO_STEP_REQUIRED', 'enrolled principal: the aal1 session is refused (TWO_STEP_REQUIRED)');
+    check((await command(a2.token, 'admin.invites')).status === 200, 'after the second step (aal2) the principal works again');
+    const p = await signIn(`e2e-admin-${Date.now()}@example.com`);
+    if ((await rest('POST', 'app_users', { user_id: p.userId, role: 'parent', guardian_id: 'grd-17', status: 'active' }, 'return=minimal')).status !== 201) throw new Error('link parent: refused');
+    must(await command(p.token, 'consent.give', { purposes: ['app_account'], version: 'v2' }), 'consent');
+    const req = must(await command(p.token, 'rights.file', { kind: 'export' }), 'rights.file');
+    must(await command(a2.token, 'rights.update', req.id, { status: 'done', resolution: 'Export sent (fake).' }), 'rights.update');
+    const desk = (action, extra) => fn('admin-accounts', { action, requestId: `e2e-${action}-${Date.now()}`, ...extra }, a2.token);
+    must(await desk('block', { userId: p.userId }), 'block');
+    const blockedSnap = (await rpcAs(p.token, 'my_snapshot')).data.status;
+    must(await desk('unblock', { userId: p.userId }), 'unblock');
+    check(blockedSnap === 'blocked', `blocked parent's snapshot says ${blockedSnap}`);
+    must(await command(a2.token, 'admin.setAnnouncement', { text: 'E2E fake announcement.', tone: 'info' }), 'announcement');
+    const p2 = await signIn(p.email);
+    const seen = (await rpcAs(p2.token, 'my_snapshot')).data.school?.announcement?.text;
+    must(await command(a2.token, 'admin.clearAnnouncement'), 'clear announcement');
+    check(seen === 'E2E fake announcement.', 'the announcement reached the parent\'s snapshot');
+    const sql = psql(`select (select status from data_requests where id = '${req.id}') || '|' || (select status from app_users where user_id = '${p.userId}') || '|' ||
+      (select count(*) from audit_log where doc->>'entityId' = '${p.userId}' and doc->>'action' in ('block', 'unblock')) || '|' ||
+      (select count(*) from sign_in_events where user_id = '${p.userId}')`);
+    check(/^done\|active\|2\|[2-9]/.test(sql), `second path (SQL): request|link|block audit rows|sign-ins = ${sql}`);
+  } finally {
+    await unenrollAll(admin.userId);
+    await rest('PATCH', 'app_policy?key=eq.two_step', { value: { required: false } });
+  }
 
   // ---------------------------------------------------------------- invite codes for the browser smoke test
   console.log('\nUnredeemed invite codes (local, fake families) — sign in at /app/ with any @example.com email, then redeem:');

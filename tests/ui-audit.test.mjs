@@ -62,6 +62,16 @@ test('#4 app.js clears slips on sign-out / lost session, and role-checks bare ro
   assert.ok(roleCheckBare > 0 && bareRender > roleCheckBare, 'role check for bare routes comes before they are rendered');
 });
 
+// ---------------------------------------------------------------- administration module: gate and links keep the earlier guarantees
+test('administration: blocked / two-step gate states clear issued invite codes like every non-active state; the real settings page links to Account', () => {
+  const app = read('src/ui/app.js');
+  const clear = app.indexOf("if (st.state !== 'active') clearSlips()");
+  const sw = app.indexOf("switch (st.state)");
+  assert.ok(clear > 0 && sw > clear, 'slips are cleared before any state is drawn');
+  assert.ok(app.includes("case 'blocked':") && app.includes("case 'two_step_required':"));
+  assert.match(read('src/ui/screens/settings-real.js'), /href="#\/account"/);
+});
+
 // ---------------------------------------------------------------- #10 retention wording
 test('#10 the retention section of the privacy notice is marked as a draft pending decision and enforcement', async () => {
   const { SECTIONS } = await import('../src/ui/privacy.js');

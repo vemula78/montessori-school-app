@@ -5,7 +5,7 @@
 //
 // Entry shape:
 //   slice      which revision-guarded slice the command writes ('ledger'|'messaging'|'calendar'|'transport'|
-//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'); the server
+//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'); the server
 //              loads that slice's collections.
 //   authorize(p, db, args)   throws DomainError NOT_ALLOWED / NOT_FOUND; p = persona (see personaFor)
 //   run(db, args, ctx, p)    mutates db and returns the api result (same shape in both modes)
@@ -41,6 +41,7 @@ import * as RT from './retention.js';
 import * as CU from './presentations.js';
 import { previewCurriculumCsv } from './curriculum.js';
 import { isISODate, compareISO } from './dates.js';
+import * as AD from './admin.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
@@ -439,8 +440,9 @@ export const COMMANDS = {
       const reqs = (db.erasureRequests || []).filter(r => r.guardianId === guardianId && ['open', 'cleanup'].includes(r.status));
       if (!reqs.length) { const r = { id: newId('era'), guardianId, requestedAt: ctx.now, requestedBy: ctx.actor.id, status: 'open', doneAt: null, doneBy: null }; db.erasureRequests.push(r); reqs.push(r); }
       for (const r of reqs) Object.assign(r, { status: 'cleanup', erasedAt: ctx.now, doneBy: ctx.actor.id, erased, retained, pendingUserIds: [...new Set([...(r.pendingUserIds || []), ...revokedUserIds])] });
-      appendAudit(db, ctx, { entity: 'guardian', entityId: g.id, action: 'anonymise', summary: `guardian erased (${label}): ${messages} message(s), ${revokedUserIds.length} sign-in(s), ${invitesRevoked} invite(s), ${importRows} import row(s); ledger kept` });
-      return { guardianId: g.id, label, revokedUserIds, erased, retained };
+      const dataRequestsClosed = AD.closeErasureRequests(db, g.id, ctx); // the data-rights desk's erasure requests are done
+      appendAudit(db, ctx, { entity: 'guardian', entityId: g.id, action: 'anonymise', summary: `guardian erased (${label}): ${messages} message(s), ${revokedUserIds.length} sign-in(s), ${invitesRevoked} invite(s), ${importRows} import row(s), ${dataRequestsClosed} data request(s) closed; ledger kept` });
+      return { guardianId: g.id, label, revokedUserIds, erased, retained, dataRequestsClosed };
     },
   },
   /** Erasure clean-up outcome (command function / cron): done when no server step failed, else kept with the error. */
@@ -704,6 +706,29 @@ export const COMMANDS = {
     run: (db, [request], ctx) => RT.purgeRetention(db, request || {}, ctx),
   },
 
+  // ---- administration: data-rights desk, announcement, guardian corrections (both modes)
+  /** file({kind:'export'|'erasure'|'correction', details?}) — a parent, about their own data; one open request per kind. */
+  'rights.file': {
+    slice: 'rights', beforeConsent: true, authorize: p => allow(p, 'parent'),
+    run: (db, [a], ctx, p) => AD.fileDataRequest(db, p.guardianId, a || {}, ctx),
+  },
+  /** update(id, {status, resolution?}) — the principal; done/declined need a resolution and are final. */
+  'rights.update': { slice: 'rights', authorize: p => allow(p, 'admin'), run: (db, [id, a], ctx) => AD.updateDataRequest(db, id, a || {}, ctx) },
+  /** setAnnouncement({text, tone:'info'|'warn', until:'YYYY-MM-DD'|null}) → school.announcement (plain text, ≤ 280 characters). */
+  'admin.setAnnouncement': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => AD.setAnnouncement(db, a || {}, ctx) },
+  'admin.clearAnnouncement': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, args, ctx) => AD.clearAnnouncement(db, ctx) },
+  /** updateGuardian({guardianId, firstName?, lastName?, phone?, relation?}) → guardian (the correction desk). */
+  'people.updateGuardian': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => AD.updateGuardian(db, a || {}, ctx) },
+
+  // ---- administration: sign-in accounts (server only; the admin-accounts function pairs each with the auth server)
+  /** blockUser(userId) → {userId, status:'blocked'} — never yourself, never the last active principal. */
+  'admin.blockUser': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'admin'), run: (db, [userId], ctx, p) => AD.blockUser(db, userId, ctx, p) },
+  'admin.unblockUser': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'admin'), run: (db, [userId], ctx) => AD.unblockUser(db, userId, ctx) },
+  /** changeSignInEmail({userId, email}) — after the auth server took the new address; refused when another person uses it. */
+  'admin.changeSignInEmail': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => AD.changeSignInEmail(db, a || {}, ctx) },
+  /** System (admin-accounts function): the audit row of an auth-server-only action, attributed to the principal (by). */
+  'admin.noteAccountAction': { slice: 'account', serverOnly: true, authorize: p => allow(p, 'system'), run: (db, [a], ctx) => AD.noteAccountAction(db, a || {}, ctx) },
+
   // ---- account: consent, invites (server only: these tables do not exist in the demo document)
   'consent.give': {
     slice: 'account', serverOnly: true, beforeConsent: true, authorize: p => allow(p, 'parent'),
@@ -944,13 +969,16 @@ export const SLICES = {
   transport: { reads: [...BASE, 'calendarEvents', 'trips'], writes: ['trips'] },
   classroom: { reads: [...BASE, 'calendarEvents', 'attendance', 'diaryEntries'], writes: ['attendance', 'diaryEntries'] },
   people: { reads: [...BASE, 'invoices', 'importBatches'], writes: ['importBatches', 'importRows'] },
-  account: { reads: [...BASE, 'consents', 'invites', 'appUsers', 'erasureRequests', 'photos'], writes: ['guardians', 'consents', 'invites', 'appUsers', 'erasureRequests', 'photos'] },
+  // staff: admin.changeSignInEmail writes the staff member's sign-in email (staff_contacts)
+  account: { reads: [...BASE, 'consents', 'invites', 'appUsers', 'erasureRequests', 'photos'], writes: ['staff', 'guardians', 'consents', 'invites', 'appUsers', 'erasureRequests', 'photos'] },
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
   export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
     'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents',
-    ...LEARNING], writes: [] },
-  erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows'],
-    writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows'] },
+    'dataRequests', ...LEARNING], writes: [] },
+  erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'dataRequests'],
+    writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows', 'dataRequests'] },
+  // the data-rights desk (schema v3); erasure also writes it (anonymise closes the guardian's erasure requests)
+  rights: { reads: [...BASE, 'dataRequests', 'erasureRequests', 'consents'], writes: ['dataRequests'] },
   // learning records are loaded per child (hints) except for system sweeps; consents are read for the photo rule
   learning: { reads: [...BASE, 'consents', ...LEARNING], writes: LEARNING },
   // the only slice whose command removes rows (retention.purge, system only); persist's allow-list matches PURGEABLE

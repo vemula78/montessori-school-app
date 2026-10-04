@@ -30,3 +30,4 @@ app/*.local.js
 first-run.json
 first-run.sql
 PLAN-PHASE3.md
+PLAN-ADMIN.md

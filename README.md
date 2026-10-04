@@ -158,6 +158,25 @@ security_invoker", append-only audit, unique receipt numbers, stale-rev rejectio
   kept, and the erasure request records both lists. The request stays `cleanup` until the sign-in deletion and gateway
   scrubbing succeed (cron-daily retries them), then `done`. Exports and invites are audited.
 
+### Administration (principal) and My account
+
+- **Password is optional**: the emailed code stays the default sign-in. Anyone can set or change a password under **Account**
+  (`api.auth.setPassword`, at least 8 characters), use it from the sign-in page (*Use a password*), and reset it with an emailed
+  recovery code (*Forgot password*). The principal never sees or sets anyone's password.
+- **Two-step sign-in (TOTP)** for the principal and accountant: set up under Account (the key and the `otpauth://` link are shown
+  as text, no QR library), then every sign-in needs the app's 6-digit code. `src/api/totp.js` is the pure RFC 6238 implementation
+  (WebCrypto, runs in browsers and Node 20+). A principal or accountant who has set it up sees only the two-step screen until the
+  code is entered (`api.auth.status()` → `state: 'two_step_required'`; `'blocked'` for a blocked account).
+- **Administration** (`#/admin`, principal): *Accounts* (block / unblock, sign out everywhere, change sign-in email, invites, reset
+  two-step), *Oversight* (sign-in activity, change history, who can see a child, the permission matrix), *Data requests* (the DPDP
+  desk: parents file export / erasure / correction requests under Account; the principal answers; closing needs an answer and is
+  final), *Announcement* (one plain-text banner, 280 characters, shown to everyone) and *Two-step policy*.
+- **In the demo** the same registry commands and domain reads run, with these stand-ins (all cleared by *Reset to demo data*):
+  a password is a per-persona SHA-256 in `sessionStorage` (`montessori.demo-password.v1`; recovery by email is real-app-only);
+  two-step is real TOTP against a per-persona secret in `sessionStorage` with a **demo authenticator** panel showing the live code;
+  a block is a flag in `localStorage` (`montessori.accounts.v1`) that the persona switcher honours; sign-in activity is the persona
+  switches made in this tab.
+
 ### Payments (Razorpay test mode)
 
 `pay-create-order` computes the amount from current invoice balances (a client amount can only lower it, ≥ ₹100;

@@ -30,7 +30,7 @@ export async function render(ctx) {
           <dt class="muted">Role</dt><dd style="margin:0">${esc(ROLE[persona.role] || persona.role)}</dd>
           <dt class="muted">Signed in as</dt><dd style="margin:0">${esc(auth.ok ? auth.value.email || DASH : DASH)}</dd>
         </dl>
-        <div><button class="btn" id="st-out">Sign out</button></div></div>
+        <div class="row"><a class="btn" href="#/account">Password, two-step sign-in and sessions</a><button class="btn" id="st-out">Sign out</button></div></div>
 
       <div class="card stack" id="st-push"><h2>Notifications on this device</h2><div id="st-push-body"></div></div>
 

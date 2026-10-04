@@ -15,6 +15,7 @@ const N = {
   structures: { path: '/fees/structures', label: 'Fee structures', icon: 'receipt' },
   reports: { path: '/reports', label: 'Reports', icon: 'chart' },
   audit: { path: '/audit', label: 'Audit log', icon: 'shield' },
+  administration: { path: '/admin', label: 'Administration', icon: 'users', short: 'Admin' },
   settings: { path: '/settings', label: 'Settings', icon: 'gear' },
   // real app only (see REAL_EXTRA)
   invites: { path: '/invites', label: 'Invite codes', icon: 'users' },
@@ -22,7 +23,7 @@ const N = {
 };
 
 export const NAV = {
-  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'settings'],
+  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'administration', 'settings'],
   teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'learning'],
   accountant: ['home', 'fees', 'structures', 'reports', 'calendar', 'audit'],
   parent: ['home', 'notices', 'messages', 'diary', 'learning', 'bus', 'fees'],
@@ -95,6 +96,7 @@ function personaBlock(personas, current, real) {
           <optgroup label="Demo personas">${personas.featured.map((p) => `<option value="${esc(p.id)}"${p.id === current?.id ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</optgroup>
           <optgroup label="All people">${personas.others.map((p) => `<option value="${esc(p.id)}"${p.id === current?.id ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</optgroup>
         </select>
+        <a class="btn sm" href="#/account">Account</a>
       </div>`;
 }
 const DASHCHAR = '\u2014';

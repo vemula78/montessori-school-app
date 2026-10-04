@@ -16,6 +16,7 @@
 //      expire, other rows are deleted — only for categories whose period is set; every row re-checked by the command
 //  11. photosCleanup: delete the objects of 'deleting' rows (→ deleted/expired), reject uploads abandoned for 2 hours,
 //      delete objects of closed rows at once and objects without a row (or with a pending one) after 2 hours
+//  12. signInEventsPruned: sign-in activity older than 90 days is deleted (data minimisation)
 // Every step runs; the answer is HTTP 500 {ok:false, failedSteps, report} if any step threw, or if a privacy step (photo
 // consent sweep, retention, photo cleanup, erasure clean-up) reports errors[] / failed > 0. A failed push in the reminders
 // step is routine (phones go offline) and is retried by the next run, so it is counted in the report, not failed.
@@ -36,8 +37,8 @@ import { dateInZone, IST_OFFSET_MIN } from '../_shared/domain/dates.js';
 import { byId } from '../_shared/domain/people.js';
 
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
-const TRIP_MAX_MS = 3 * 3600_000, STALE_MS = 20 * 60_000, POSITIONS_DAYS = 30, MAX_EVENT_ATTEMPTS = 10, STRANDED_MS = 10 * 60_000;
-const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup', 'photosConsentSweep', 'retention', 'photosCleanup'];
+const TRIP_MAX_MS = 3 * 3600_000, STALE_MS = 20 * 60_000, POSITIONS_DAYS = 30, SIGN_IN_DAYS = 90, MAX_EVENT_ATTEMPTS = 10, STRANDED_MS = 10 * 60_000;
+const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup', 'photosConsentSweep', 'retention', 'photosCleanup', 'signInEventsPruned'];
 
 async function step<T>(report: Record<string, unknown>, only: Set<string>, name: string, fn: () => Promise<T>) {
   if (!only.has(name)) return;
@@ -115,6 +116,12 @@ Deno.serve(async (req) => {
     await step(report, only, 'positionsPruned', async () => {
       const cutoff = new Date(nowMs - POSITIONS_DAYS * 86400_000).toISOString();
       const deleted = await restCount(`trip_positions?ts=lt.${encodeURIComponent(cutoff)}`, { method: 'DELETE' });
+      return { olderThan: cutoff, deleted };
+    });
+
+    await step(report, only, 'signInEventsPruned', async () => {
+      const cutoff = new Date(nowMs - SIGN_IN_DAYS * 86400_000).toISOString();
+      const deleted = await restCount(`sign_in_events?at=lt.${encodeURIComponent(cutoff)}`, { method: 'DELETE' });
       return { olderThan: cutoff, deleted };
     });
 

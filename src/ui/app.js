@@ -3,10 +3,12 @@ import { api } from '../api/index.js';
 import { parseHash, matchRoute, go, setQuery, href, startRouter } from './router.js';
 import { renderShell, markActive, setBadges, curatePersonas } from './shell.js';
 import * as runner from './sim-runner.js';
-import { esc, banner, empty, toast, onQuotaError, downloadText, readFileText, attempt, errMessage } from './components.js';
+import { esc, banner, announcementBanner, empty, toast, onQuotaError, downloadText, readFileText, attempt, errMessage } from './components.js';
 import { isRealMode } from './mode.js';
+import { todayISO } from '../domain/dates.js';
 import { renderLogin, renderBlocked } from './login.js';
 import { renderInvite } from './invite.js';
+import { renderTwoStep } from './two-step.js';
 import { renderConsent } from './consent.js';
 import * as push from './push.js';
 import { clearSlips } from './screens/invites-print.js';
@@ -40,6 +42,8 @@ const ROUTES = [
   { pattern: '/reports', roles: ['admin', 'accountant'], load: () => import('./screens/reports.js') },
   { pattern: '/audit', roles: ['admin', 'accountant'], load: () => import('./screens/audit.js') },
   { pattern: '/settings', roles: ALL, demoRoles: ['admin'], load: () => import('./screens/settings.js') },
+  { pattern: '/admin', roles: ['admin'], load: () => import('./screens/admin.js') },
+  { pattern: '/account', roles: ALL, demoRoles: ALL, load: () => import('./screens/account.js') },
   // ---- real app only (the demo has no such routes) ----
   { pattern: '/privacy', roles: ALL, realOnly: true, load: () => import('./privacy.js') },
   { pattern: '/reports/settlements', roles: ['admin', 'accountant'], realOnly: true, load: () => import('./screens/settlements.js') },
@@ -52,7 +56,7 @@ const ROUTES = [
 ];
 
 const ROLE_BLURB = {
-  admin: 'Notices, calendar, attendance, learning and curriculum, fees overview, reports, audit, settings.',
+  admin: 'Notices, calendar, attendance, learning and curriculum, fees overview, reports, audit, administration, settings.',
   teacher: 'Own programme only: attendance, daily diary, observations and photos, progress, termly reports, parent messages.',
   accountant: 'Fee structures, invoices, payments, receipts, reports.',
   parent: 'Notices, messages, diary, learning (shared observations and termly reports), bus tracking, fees - for own children.',
@@ -107,6 +111,8 @@ function refreshBanners() {
   if (ck.length) {
     parts.push(banner('warn', `<div class="row between"><span><strong>A damaged copy of earlier data was preserved</strong> (${ck.length}). Nothing was deleted.</span><a class="btn sm" href="#/settings">Review in Settings</a></div>`));
   }
+  const notice = announcementBanner(api.getDb()?.school?.announcement, todayISO()); // plain text set by the principal (Administration)
+  if (notice) parts.push(notice);
   if (reconcileFailing === -1) {
     parts.push(banner('bad', `<div class="row between"><span><strong>Money reconciliation could not be computed.</strong> The fee data may be malformed.</span><a class="btn sm" href="#/reports?tab=reconcile">Details</a></div>`));
   } else if (reconcileFailing) {
@@ -202,7 +208,8 @@ async function signOutNow() {
 
 // Returns true when the person is signed in, linked and has given the required consent; otherwise draws the right screen.
 async function gate() {
-  if (!REAL || gateOk) return true;
+  if (!REAL) return demoGate();
+  if (gateOk) return true;
   const my = ++token;
   runCleanups();
   shell = null; shellFor = null;
@@ -218,6 +225,8 @@ async function gate() {
     case 'pending': renderBlocked(root, 'pending', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false;
     case 'withdrawn': renderBlocked(root, 'withdrawn', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false;
     case 'revoked': renderBlocked(root, 'revoked', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false;
+    case 'blocked': renderBlocked(root, 'blocked', { email: st.email, onRetry: retry, onSignOut: signOutNow }); return false;
+    case 'two_step_required': renderTwoStep(root, { email: st.email, onDone: again, onSignOut: signOutNow }); return false;
     case 'active': break;
     default: renderBlocked(root, 'unavailable', { error: new Error(`Unexpected account state: ${st.state}`), onRetry: retry, onSignOut: signOutNow }); return false;
   }
@@ -235,11 +244,27 @@ async function gate() {
   return true;
 }
 
+// Demo: there is no sign-in, but the same two gates exist: a blocked person is refused, and a principal or accountant
+// who set up two-step must enter the code (shown on the "demo authenticator" panel) before the app opens.
+async function demoGate() {
+  const persona = api.session.current();
+  if (!persona) return true; // the chooser follows
+  const my = ++token;
+  runCleanups();
+  let st;
+  try { st = await api.auth.status(); } catch (e) { console.error(e); return true; }
+  if (my !== token) return false;
+  const again = () => renderRoute();
+  const choose = async () => { await attempt(() => api.session.clear()); shell = null; shellFor = null; location.hash = ''; renderRoute(); };
+  if (st.state === 'blocked') { shell = null; shellFor = null; renderBlocked(root, 'blocked', { onRetry: again, onSignOut: choose }); return false; }
+  if (st.state === 'two_step_required') { shell = null; shellFor = null; renderTwoStep(root, { onDone: again, onSignOut: choose, signOutLabel: 'Choose another person' }); return false; }
+  return true;
+}
+
 async function renderRoute({ keepScroll = false } = {}) {
   if (recovering) return;
-  if (REAL) {
-    if (!(await gate())) return;
-  } else if (!api.getDb()) { enterRecovery(); return; }
+  if (!REAL && !api.getDb()) { enterRecovery(); return; }
+  if (!(await gate())) return;
   const my = ++token;
   const scrollY = keepScroll ? window.scrollY : 0;
   runCleanups();

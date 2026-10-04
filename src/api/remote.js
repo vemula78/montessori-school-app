@@ -17,6 +17,8 @@ import { tripOut, consentStatus, allow, mustRoute, STAFF_SEES_ALL } from '../dom
 import { makeClient, functionCaller } from './supabase/client.js';
 import { fetchSnapshot } from './supabase/snapshot.js';
 import { subscribeNudges, subscribeTripFeed } from './supabase/realtime.js';
+import { createRemoteAdmin } from './remote-admin.js';
+import { PRIVILEGED_ROLES } from '../domain/admin.js';
 
 /** deps.sb / deps.call: test doubles for the supabase client and the function caller (tests only). */
 export async function createRemoteApi(config, { createSurface, ApiError, toApiError, op, sb: sbTest = null, call: callTest = null }) {
@@ -25,7 +27,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   const call = callTest || functionCaller(sb, config, ApiError);
   const clock = () => new Date();
   const listeners = new Set();
-  const SIGNED_OUT = () => ({ status: 'signedOut', db: null, persona: null, me: null });
+  const SIGNED_OUT = () => ({ status: 'signedOut', db: null, persona: null, me: null, twoStep: null });
   let snap = SIGNED_OUT();
   let email = null;
   let readyPromise = null;
@@ -87,8 +89,12 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   const cmd = name => op((...args) => command(name, args));
   const read = name => op((...args) => command(name, args, { reload: false }));
 
-  const surface = createSurface({ db, me, clock, cmd });
-  const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports } = surface;
+  // the administration module (remote-admin.js): appUsers for who-can-see come from the account desk; parents see a child
+  // only with live app_account consent, as the server authorizes them
+  let adminRemote = null;
+  const surface = createSurface({ db, me, clock, cmd, appUsers: () => adminRemote.appUsers(), requireConsent: true });
+  const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports, rights, announcement } = surface;
+  const oversight = surface.oversight;
 
   // ---------------- audit: read from audit_log (RLS: principal, accountant), never from the snapshot ----------------
   audit.list = op(async ({ entity, entityId, limit = 100 } = {}) => {
@@ -222,11 +228,29 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   };
 
   // ---------------- auth ----------------
+  // state: 'signedOut' | 'unlinked' | 'active' | 'revoked' | 'withdrawn' | 'pending' | 'blocked' | 'two_step_required';
+  // twoStep {enrolled, verified, required} for the principal and the accountant (verified: this session did the second step)
+  let aalNow = null; // the session's assurance level as last read by auth.status()
+  const statusNow = () => {
+    if (snap.status === 'signedOut') return { state: 'signedOut', email: null };
+    const role = (snap.persona && snap.persona.role) || (snap.me && snap.me.role) || null;
+    const t = snap.twoStep;
+    return { state: snap.status, email, ...(t && PRIVILEGED_ROLES.includes(role) ? { twoStep: { enrolled: Boolean(t.enrolled), verified: snap.status === 'active' && Boolean(t.enrolled) && aalNow === 'aal2', required: Boolean(t.required) } } : {}) };
+  };
+  const signedOut = () => {
+    gen++;
+    shownUserId = null;
+    if (stopNudges) { stopNudges(); stopNudges = null; }
+    snap = SIGNED_OUT();
+    emit();
+  };
   const auth = {
     status: op(async () => {
       if (!readyPromise) await api.ready();
-      if (snap.status === 'signedOut') return { state: 'signedOut', email: null };
-      return { state: snap.status, email };
+      if (snap.status !== 'signedOut') {
+        try { const { data } = await sb.auth.mfa.getAuthenticatorAssuranceLevel(); aalNow = data ? data.currentLevel : null; } catch { aalNow = null; }
+      }
+      return statusNow();
     }),
     signInWithOtp: op(async address => {
       const e = String(address || '').trim().toLowerCase();
@@ -238,7 +262,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
       const { error } = await sb.auth.verifyOtp({ email: String(address || '').trim().toLowerCase(), token: String(code || '').trim(), type: 'email' });
       if (error) throw new ApiError('VALIDATION', 'That code is not right or has expired; request a new one');
       await refresh();
-      return snap.status === 'signedOut' ? { state: 'signedOut', email: null } : { state: snap.status, email };
+      return statusNow();
     }),
     signOut: op(async () => {
       gen++;
@@ -248,11 +272,21 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
       snap = SIGNED_OUT();
       emit();
     }),
+    // optional password (the email code stays the default), sign out everywhere, two-step sign-in: remote-admin.js
+    signInWithPassword: (...a) => adminRemote.passwords.signInWithPassword(...a),
+    requestPasswordReset: (...a) => adminRemote.passwords.requestPasswordReset(...a),
+    verifyRecoveryCode: (...a) => adminRemote.passwords.verifyRecoveryCode(...a),
+    setPassword: (...a) => adminRemote.passwords.setPassword(...a),
+    signOutEverywhere: (...a) => adminRemote.passwords.signOutEverywhere(...a),
     redeemInvite: op(async (code, childDob) => {
       const r = await command('auth.redeemInvite', [code, childDob]);
       return { guardianId: r.guardianId, children: r.children };
     }),
   };
+
+  adminRemote = createRemoteAdmin({ sb, call, ApiError, op, me, snap: () => snap, refresh, newRequestId, statusNow, signedOut, command });
+  auth.twoStep = adminRemote.twoStep;
+  oversight.signInActivity = adminRemote.signInActivity;
 
   // ---------------- consent (DPDP) ----------------
   const consent = {
@@ -330,6 +364,10 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     resetToSeed: demoOnly('Reset to demo data'),
     exportJson: demoOnly('Export of the whole database'),
     importJson: demoOnly('Import of a whole database'),
+    /** The account desk (admin-accounts function; the principal with two-step done this session). */
+    accounts: adminRemote.accounts,
+    /** set({text, tone, until}) / clear() → school.announcement */
+    announcement,
   };
 
   // ---------------- session: the signed-in user only ----------------
@@ -370,7 +408,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     /** Refetch the snapshot now (after a payment window closes, etc.). */
     refresh: op(() => refresh().then(() => undefined)),
     session, people, notices, threads, calendar, transport, fees, attendance, diary, audit, admin,
-    auth, consent, push, import: imports, reminders, curriculum, observations, progress, reports, photos,
+    auth, consent, push, import: imports, reminders, curriculum, observations, progress, reports, photos, rights, oversight,
     _supabase: sb,
   };
   return api;

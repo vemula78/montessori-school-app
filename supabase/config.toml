@@ -181,7 +181,8 @@ enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts
 enable_manual_linking = false
 # Passwords shorter than this value will be rejected as weak. Minimum 6, recommended 8 or more.
-minimum_password_length = 6
+# 8: the optional password (Account → Password); the email code stays the default sign-in. Same in the cloud dashboard.
+minimum_password_length = 8
 # Passwords that do not meet the following requirements will be rejected as weak. Supported values
 # are: `letters_digits`, `lower_upper_letters_digits`, `lower_upper_letters_digits_symbols`
 password_requirements = ""
@@ -297,15 +298,15 @@ message_service_sid = ""
 # DO NOT commit your Twilio auth token to git. Use environment variable substitution instead:
 auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
 
-# Multi-factor-authentication is available to Supabase Pro plan.
+# Two-step sign-in for the principal and the accountant: authenticator-app codes (TOTP), on the Free plan too.
 [auth.mfa]
 # Control how many MFA factors can be enrolled at once per user.
 max_enrolled_factors = 10
 
 # Control MFA via App Authenticator (TOTP)
 [auth.mfa.totp]
-enroll_enabled = false
-verify_enabled = false
+enroll_enabled = true
+verify_enabled = true
 
 # Configure MFA via Phone Messaging
 [auth.mfa.phone]
@@ -433,3 +434,13 @@ content_path = "./supabase/templates/otp.html"
 [auth.email.template.confirmation]
 subject = "Your school app sign-in code"
 content_path = "./supabase/templates/otp.html"
+
+# Optional password: "Forgot password" mails a 6-digit code ({{ .Token }}), entered in the app (verifyOtp type recovery).
+[auth.email.template.recovery]
+subject = "Your school app password reset code"
+content_path = "./supabase/templates/recovery.html"
+
+# Administration → Accounts → Resend invite (staff): the code plus "sign in with this email".
+[auth.email.template.invite]
+subject = "You are invited to the school app"
+content_path = "./supabase/templates/invite.html"

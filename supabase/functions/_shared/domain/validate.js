@@ -66,6 +66,7 @@ const ENUMS = {
   photos: ['pending', 'ready', 'rejected', 'deleting', 'deleted', 'expired'],
   progressEvents: ['introduced', 'practising', 'mastered'],
   reports: ['draft', 'submitted', 'published'],
+  dataRequests: ['open', 'in_progress', 'done', 'declined'],
 };
 const AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
 const TERMS = ['Term 1', 'Term 2', 'Term 3'];
@@ -113,6 +114,9 @@ function checks(db, add, v) {
   }
   if (!isObj(sc.retention)) add('BAD_SCHOOL', 'school', '-', 'retention must be an object');
   else for (const k of RETENTION_KEYS) if (sc.retention[k] !== null && !(isInt(sc.retention[k]) && sc.retention[k] > 0)) add('BAD_SCHOOL', 'school', '-', `retention.${k} must be whole months above zero, or null (not decided)`);
+  const an = sc.announcement;
+  if (an !== null && an !== undefined && !(isObj(an) && typeof an.text === 'string' && an.text.length > 0 && an.text.length <= 280 && ['info', 'warn'].includes(an.tone)
+    && (an.until === null || isISODate(an.until)))) add('BAD_SCHOOL', 'school', '-', 'announcement must be null or {text ≤ 280 characters, tone info/warn, until date or null}');
   for (const ay of db.academicYears) {
     if (!isISODate(ay.startDate) || !isISODate(ay.endDate) || compareISO(ay.endDate, ay.startDate) < 0) add('BAD_DATE', 'academicYear', ay.id, 'invalid date range');
     try { ayShort(ay.id); } catch { add('BAD_ID', 'academicYear', ay.id, 'id must look like AY2026-27'); }
@@ -383,6 +387,11 @@ function checks(db, add, v) {
     reportKeys.add(k);
     if (r.status === 'published' && !(r.publishedAt && r.publishedBy)) add('PUBLISHED_WITHOUT_STAMP', 'report', r.id, 'a published report needs publishedAt and publishedBy');
     if (r.status !== 'published' && r.publishedAt) add('PUBLISHED_STAMP_ON_DRAFT', 'report', r.id, 'publishedAt set on a report that is not published');
+  }
+  for (const r of db.dataRequests) {
+    ref('dataRequest', r.id, 'guardianId', 'guardians', r.guardianId);
+    if (!['export', 'erasure', 'correction'].includes(r.kind)) add('BAD_KIND', 'dataRequest', r.id, `kind ${String(r.kind).slice(0, 30)}`);
+    if (['done', 'declined'].includes(r.status) && !r.resolution) add('CLOSED_WITHOUT_RESOLUTION', 'dataRequest', r.id, 'a closed request needs a resolution');
   }
   const consentKeys = new Set();
   for (const c of db.consents) {

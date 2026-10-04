@@ -162,7 +162,7 @@ test('a stored v1 document is migrated on load: new collections empty, leftOn nu
   const s = new Storage({ backend: be, seedFn: seed, clock });
   assert.equal(s.load().status, 'ok');
   assert.equal(s.db.schemaVersion, SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 2);
+  assert.equal(SCHEMA_VERSION, 3);
   for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents']) assert.deepEqual(s.db[c], [], c);
   assert.ok(s.db.students.every(x => x.leftOn === null));
   assert.deepEqual(Object.values(s.db.school.retention), [null, null, null, null, null]);
@@ -172,7 +172,7 @@ test('a stored v1 document is migrated on load: new collections empty, leftOn nu
   assert.equal(JSON.parse(be.getItem(DB_KEY)).schemaVersion, 1, 'load itself does not rewrite the stored blob');
   s.commit(d => { d.school.phone = '+91-90000-00997'; });
   const after = JSON.parse(be.getItem(DB_KEY));
-  assert.equal(after.schemaVersion, 2, 'the first commit stores v2');
+  assert.equal(after.schemaVersion, SCHEMA_VERSION, 'the first commit stores the current version');
   assert.deepEqual(after.observations, []);
 });
 
@@ -182,11 +182,11 @@ test('a v1 backup imports (migrated); garbage v1 is still refused; migrate is id
   s.load();
   const r = s.importJson(JSON.stringify(v1Blob()), ctx);
   assert.deepEqual(r.violations.filter(v => v.severity !== 'warning'), []);
-  assert.equal(s.db.schemaVersion, 2);
+  assert.equal(s.db.schemaVersion, SCHEMA_VERSION);
   assert.throws(() => s.importJson('{"schemaVersion":1,"rev":0}', ctx), { code: 'VALIDATION' });
   assert.throws(() => s.importJson(JSON.stringify({ ...v1Blob(), school: 'x' }), ctx), { code: 'VALIDATION' });
   const twice = migrate(migrate(v1Blob()));
-  assert.equal(twice.schemaVersion, 2);
+  assert.equal(twice.schemaVersion, SCHEMA_VERSION);
   assert.throws(() => migrate({ schemaVersion: 7 }), { code: 'STORAGE_CORRUPT' });
   assert.throws(() => migrate({ schemaVersion: 0 }), { code: 'STORAGE_CORRUPT' });
 });

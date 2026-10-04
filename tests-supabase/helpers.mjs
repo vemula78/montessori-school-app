@@ -54,3 +54,33 @@ export function psql(sql) {
 }
 
 export const MOCK = `http://127.0.0.1:${process.env.MOCK_RAZORPAY_PORT || 54399}`;
+
+// ---------------------------------------------------------------- two-step sign-in (authenticator app = src/api/totp.js)
+import { totp } from '../src/api/totp.js';
+const authAs = (who, method, path, body) => http(method, `${local().url}/auth/v1${path}`, { body, headers: { apikey: local().anon, Authorization: `Bearer ${who.token}` } });
+
+/** Set up a TOTP authenticator for a signed-in user and verify it: returns {factorId, secret, token (aal2), refresh}. */
+export async function enrollTotp(who) {
+  const e = await authAs(who, 'POST', '/factors', { factor_type: 'totp', friendly_name: `test-${randomUUID().slice(0, 8)}` });
+  if (e.status !== 200) throw new Error(`enroll failed: ${e.status} ${JSON.stringify(e.data)}`);
+  const factorId = e.data.id, secret = e.data.totp.secret;
+  return { factorId, secret, ...(await stepUp(who, factorId, secret)) };
+}
+
+/** Challenge + verify with the current code: a new aal2 session for the same user ({token, refresh}). */
+export async function stepUp(who, factorId, secret) {
+  const c = await authAs(who, 'POST', `/factors/${factorId}/challenge`, {});
+  if (c.status !== 200) throw new Error(`challenge failed: ${c.status} ${JSON.stringify(c.data)}`);
+  const v = await authAs(who, 'POST', `/factors/${factorId}/verify`, { challenge_id: c.data.id, code: await totp(secret) });
+  if (v.status !== 200) throw new Error(`verify failed: ${v.status} ${JSON.stringify(v.data)}`);
+  return { token: v.data.access_token, refresh: v.data.refresh_token };
+}
+
+/** Remove every authenticator of a user (admin API: works whatever their session level). */
+export async function unenrollAll(userId) {
+  const u = await http('GET', `${local().url}/auth/v1/admin/users/${userId}`, { headers: svc() });
+  for (const f of u.data?.factors || []) await http('DELETE', `${local().url}/auth/v1/admin/users/${userId}/factors/${f.id}`, { headers: svc() });
+}
+
+/** The claims of an access token (tests only; the server never trusts them without the auth server). */
+export const claimsOf = token => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));

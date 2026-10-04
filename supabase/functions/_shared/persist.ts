@@ -8,9 +8,11 @@
 // request id. A repeated id returns the stored result — only after the caller passes the same access checks again,
 // and only for the same arguments (else CONFLICT). A change is guarded by the revision of every slice that writes the
 // collections it touches, and persist re-checks the caller's link inside its transaction (a revoke or role change
-// that commits first refuses the write).
+// that commits first refuses the write). A principal or accountant whose session lacks a required second step
+// (twoStepRequired) is refused with TWO_STEP_REQUIRED before anything is read or run.
 
 import { COMMANDS, SLICES, execute, personaFor, revKey, guardSlices, consentScopedPersona } from './domain/commands.js';
+import { twoStepRequired } from './domain/admin.js';
 import { COLLECTIONS } from './store/schema.js';
 import { dateInZone, IST_OFFSET_MIN } from './domain/dates.js';
 import { diffChanges, isEmptyChange } from './slices.js';
@@ -44,10 +46,15 @@ export async function runCommand(name: string, args: unknown[], who: Caller, ext
   for (let attempt = 1; ; attempt++) {
     const loaded = await rpc('load_slice', { p_collections: slice.reads, p_hints: hints });
     const db = loaded.db;
-    const { callerLink: link = null, callerConsents: consents = [], priorRequest = null } = db;
-    delete db.callerLink; delete db.callerConsents; delete db.priorRequest;
+    const { callerLink: link = null, callerConsents: consents = [], priorRequest = null, callerTwoStep = null } = db;
+    delete db.callerLink; delete db.callerConsents; delete db.priorRequest; delete db.callerTwoStep;
     if (who.kind === 'user' && link && link.status !== 'active' && !cmd.allowUnlinked) {
       throw coded('NOT_ALLOWED', `Your access to the app is ${link.status}`);
+    }
+    // the principal and the accountant: aal2 once they have an authenticator or the school requires it (same rule as RLS)
+    if (who.kind === 'user' && link && link.status === 'active'
+      && twoStepRequired({ role: link.role, aal: who.user.aal, enrolled: callerTwoStep?.enrolled === true, policyRequired: callerTwoStep?.required === true })) {
+      throw coded('TWO_STEP_REQUIRED', 'Enter the code from your authenticator app first (two-step sign-in)');
     }
     for (const c of [...COLLECTIONS, ...slice.writes]) if (c !== 'school' && c !== 'counters' && !Array.isArray(db[c])) db[c] = [];
     let persona: any = null;

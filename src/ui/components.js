@@ -28,6 +28,12 @@ export function banner(kind, html) {
   return `<div class="banner ${esc(kind)}" role="${kind === 'bad' ? 'alert' : 'status'}">${html}</div>`;
 }
 
+/** The school-wide notice as a banner, or '' when nothing is showing on `today` (until = the last day shown). Plain text, always escaped. */
+export function announcementBanner(note, today) {
+  if (!note || !note.text || (note.until && String(note.until).slice(0, 10) < today)) return '';
+  return banner(note.tone === 'warn' ? 'warn' : 'info', `<strong>School notice:</strong> ${esc(note.text)}`);
+}
+
 export function pageHead(title, sub = '', actionsHtml = '') {
   return `<div class="page-head"><div><h1>${esc(title)}</h1>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>${actionsHtml ? `<div class="row">${actionsHtml}</div>` : ''}</div>`;
 }

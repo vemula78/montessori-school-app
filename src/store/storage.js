@@ -36,7 +36,7 @@ export function memoryBackend(map = new Map()) {
 /**
  * Versioned migration hook (runs on load, commit and import of an older document).
  * v1 -> v2 (Phase 3): the six new collections as empty arrays, students.leftOn = null (unknown), school.retention all
- * null (not decided). Nothing is dropped or rewritten. Never throws on a malformed document: checkStructure reports it.
+ * null (not decided). v2 -> v3 (administration): dataRequests = [], school.announcement = null. Nothing is dropped or rewritten. Never throws on a malformed document: checkStructure reports it.
  * Newer versions are refused by parse().
  */
 export function migrate(db) {
@@ -45,6 +45,11 @@ export function migrate(db) {
     if (Array.isArray(db.students)) for (const s of db.students) if (s && typeof s === 'object' && s.leftOn === undefined) s.leftOn = null;
     if (db.school && typeof db.school === 'object' && !db.school.retention) db.school.retention = Object.fromEntries(RETENTION_KEYS.map(k => [k, null]));
     db.schemaVersion = 2;
+  }
+  if (db.schemaVersion === 2) {
+    if (!Array.isArray(db.dataRequests)) db.dataRequests = [];
+    if (db.school && typeof db.school === 'object' && db.school.announcement === undefined) db.school.announcement = null;
+    db.schemaVersion = 3;
   }
   if (db.schemaVersion === SCHEMA_VERSION) return db;
   throw new DomainError('STORAGE_CORRUPT', `No migration from schemaVersion ${db.schemaVersion}`);
