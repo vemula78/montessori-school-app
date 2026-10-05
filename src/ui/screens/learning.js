@@ -8,11 +8,15 @@ import { AREA_KEYS, AREA_LABEL, STATUS_KEYS, STATUS_LABEL, STATUS_KIND, TERM_NAM
 import { photoImg, loadPhotos } from '../photo-view.js';
 import { preparePhoto, sizeText } from '../photo-prep.js';
 import { renderCurriculum } from './learning-curriculum.js';
+import { isRealMode } from '../mode.js';
 
 const TABS = [['observations', 'Observations'], ['progress', 'Progress'], ['reports', 'Reports'], ['curriculum', 'Curriculum']];
 
 // ---------------------------------------------------------------- photo helpers
-const NO_CONSENT_NOTE = 'No photo consent for this child: every guardian using the app must agree to photos (Settings > My privacy choices). You can still write the observation.';
+// the real app's parents choose photos in Settings > My privacy choices; the demo has no such page (consents come from the sample data)
+const NO_CONSENT_NOTE = isRealMode()
+  ? 'No photo consent for this child: every guardian using the app must agree to photos (Settings > My privacy choices). You can still write the observation.'
+  : 'No photo consent for this child: every guardian using the app must agree to photos. In this demo the consents come from the sample data; in the real app parents choose in their privacy settings. You can still write the observation.';
 
 /** The photo part of a form: file, the "only this child" tick, a status line. Returns {html, wire(d, getStudentId)}. */
 export function photoBlock(noPhoto) {

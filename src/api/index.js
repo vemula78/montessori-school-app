@@ -868,7 +868,24 @@ export function createApi(opts = {}) {
     erasureRequests: op(() => { allowP(me(), 'admin'); return []; }),
     revokeInvite: op(() => { throw realAppOnly('Invite codes'); }),
     users: op(() => { allowP(me(), 'admin'); return []; }),
-    anonymiseGuardian: op(() => { throw realAppOnly('Erasing a guardian'); }),
+    /**
+     * Erasure, demo edition: the SAME registry commands as the server (people.anonymiseGuardian, then people.finishErasure).
+     * The demo has no sign-ins or gateway copies to clean up, so the clean-up finishes at once. Erasure requests are a
+     * server-side table, so a transient list carries them through the two commands and is dropped before saving.
+     */
+    anonymiseGuardian: op(guardianId => {
+      const p = me();
+      db();
+      return storage.commit(d => {
+        d.erasureRequests = [];
+        try {
+          const r = execute('people.anonymiseGuardian', d, [guardianId], ctxNow(p), p);
+          const sys = systemPersona('demo');
+          execute('people.finishErasure', d, [guardianId, { errors: [] }], ctxNow(sys), sys);
+          return { ...r, server: { errors: [] } };
+        } finally { delete d.erasureRequests; }
+      });
+    }),
     setStaffRole: op(() => { throw realAppOnly('Changing a staff role'); }),
     /** setRetention({photosMonthsAfterLeaving, diaryMonthsAfterLeaving, …}) — whole months, or null = not decided. */
     setRetention: cmd('admin.setRetention'),

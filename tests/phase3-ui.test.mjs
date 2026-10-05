@@ -896,3 +896,14 @@ test('R9 demo photos.consentStatus({programId}) matches the server: unknown prog
   const active = db.students.filter(s => s.programId === 'prog-primary-a' && s.status === 'active').map(s => s.id).sort();
   assert.deepEqual(Object.keys(st).sort(), active);
 });
+
+test('demo: the no-photo-consent note does not send the teacher to a settings page the demo does not have', async () => {
+  const blk = Learning.photoBlock(new Set(['stu-blocked']));
+  const d = fake();
+  const w = blk.wire(d, () => 'stu-blocked');
+  w.sync();
+  const t = d.querySelector('#ph-status').textContent;
+  assert.match(t, /No photo consent/);
+  assert.doesNotMatch(t, /Settings > My privacy choices/);
+  assert.match(t, /sample data/);
+});

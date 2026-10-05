@@ -182,14 +182,15 @@ async function requests(ctx, host) {
           <td><strong>${esc(KIND_LABEL[r.kind] || r.kind)}</strong>${r.details ? `<br><small>${esc(r.details)}</small>` : ''}${r.resolution ? `<br><small><strong>Answer:</strong> ${esc(r.resolution)}</small>` : ''}</td><td>${badge(label, kind)}</td>
           <td><div class="row" style="gap:6px">
             ${r.status === 'open' ? `<button class="btn sm" data-act="start" data-id="${esc(r.id)}">Start</button>` : ''}
-            ${isOpen(r) ? `<button class="btn sm primary" data-act="done" data-id="${esc(r.id)}">Mark done</button><button class="btn sm" data-act="declined" data-id="${esc(r.id)}">Decline</button>` : ''}
+            ${isOpen(r) && r.kind !== 'erasure' ? `<button class="btn sm primary" data-act="done" data-id="${esc(r.id)}">Mark done</button>` : ''}
+            ${r.kind === 'erasure' && isOpen(r) ? `<button class="btn sm danger" data-act="erase" data-guardian="${esc(r.guardianId)}">Erase personal details</button>` : ''}
+            ${isOpen(r) ? `<button class="btn sm" data-act="declined" data-id="${esc(r.id)}">Decline</button>` : ''}
             ${r.kind === 'export' ? `<button class="btn sm" data-act="export" data-guardian="${esc(r.guardianId)}">Download data</button>` : ''}
-            ${r.kind === 'erasure' && isOpen(r) ? '<a class="btn sm" href="#/settings">Erase in Settings</a>' : ''}
             ${r.kind === 'correction' && isOpen(r) ? `<small>Correct the details in the people records, then mark done.</small>` : ''}
           </div></td></tr>`;
       }).join('')}
     </tbody></table></div>` : empty(showClosed ? 'No requests' : 'No open requests')}
-    <small>Closing a request needs a written answer and cannot be undone. For an erasure, erase the details first, then mark it done.</small>`;
+    <small>Closing a request needs a written answer and cannot be undone. An erasure request closes by itself once the erasure has finished.</small>`;
   host.querySelector('#rq-closed').addEventListener('change', (e) => ctx.setQuery({ tab: 'requests', closed: e.target.checked ? '1' : '' }));
   host.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-act]');
@@ -209,6 +210,14 @@ async function requests(ctx, host) {
         },
       });
       if (ok) { toast('Request closed'); ctx.rerender(); }
+    } else if (act === 'erase') {
+      if (!(await confirmDialog('Erase personal details', 'Erase this parent’s name, phone, email, their own messages and their sign-in? This cannot be undone. Fee numbers and amounts, and the children’s school records, are kept.', { okLabel: 'Erase', kind: 'danger' }))) return;
+      const r = await attempt(() => api.admin.anonymiseGuardian(b.dataset.guardian));
+      if (!r.ok) return;
+      // the sign-in and gateway copies are removed after the erasure is saved; a failure there is shown, and erasing again retries it
+      const errs = r.value?.server?.errors || [];
+      toast(errs.length ? `Details erased, but ${errs.length} clean-up step(s) failed: ${errs.join('; ')}. Erase again to retry.` : 'Personal details erased', errs.length ? 'bad' : undefined);
+      ctx.rerender();
     } else if (act === 'export') {
       const r = await attempt(() => api.admin.dataExport(b.dataset.guardian));
       if (r.ok) { downloadText(`family-data_${new Date().toISOString().slice(0, 10)}.json`, r.value, 'application/json'); toast('Downloaded'); }

@@ -351,3 +351,25 @@ test('account-desk audit rows (entity appUser) are the principal\'s only: the ac
   assert.equal(rows.filter(r => r.entity === 'appUser').length, 0);
   assert.equal((await api.audit.list({ entity: 'appUser' })).length, 0);
 });
+
+test('erasure in the demo: the principal erases a parent from the desk with the same registry commands, and the parent\'s request closes as done', async () => {
+  const { api } = await mk();
+  as(api, PARENT);
+  await api.rights.file({ kind: 'erasure', details: 'Please erase my details' });
+  as(api, TEACHER);
+  const gid = api.getDb().guardians.find((g) => `persona-${g.id}` === PARENT).id;
+  await assert.rejects(api.admin.anonymiseGuardian(gid), { code: 'NOT_ALLOWED' });
+  as(api, ADMIN);
+  const [req] = (await api.rights.list()).filter((r) => r.kind === 'erasure');
+  const r = await api.admin.anonymiseGuardian(gid);
+  assert.match(r.label, /^Erased-\d+$/);
+  assert.deepEqual(r.server.errors, []);
+  const g = api.getDb().guardians.find((x) => x.id === gid);
+  assert.equal(g.firstName, r.label);
+  assert.equal(g.email, '');
+  const after = (await api.rights.list()).find((x) => x.id === req.id);
+  assert.equal(after.status, 'done');
+  assert.match(after.resolution, /Erased/);
+  assert.equal(api.getDb().erasureRequests, undefined, 'no server-only collection is left in the demo document');
+  assert.ok((await api.audit.list({ entity: 'guardian' })).some((a) => a.action === 'anonymise'));
+});

@@ -80,6 +80,7 @@ const noRaw = (html, what) => {
 const Admin = await import('../src/ui/screens/admin.js');
 const Account = await import('../src/ui/screens/account.js');
 const Audit = await import('../src/ui/screens/audit.js');
+const Receipt = await import('../src/ui/screens/receipt-print.js');
 const { renderTwoStep } = await import('../src/ui/two-step.js');
 const { renderLogin } = await import('../src/ui/login.js');
 const { announcementBanner } = await import('../src/ui/components.js');
@@ -484,4 +485,33 @@ test('UI source: new screens keep the project rules (no app config / remote / ne
   const css = read('app.css');
   const section = css.slice(css.indexOf('administration: two-step setup'), css.indexOf('.consent-row'));
   assert.ok(section.length > 200 && !/#[0-9a-fA-F]{3,8}\b/.test(section), 'tokens only');
+});
+
+// ---------------------------------------------------------------- demo fixes (05-Oct-2026)
+test('data requests: an erasure request has an Erase personal details button on the desk, not a link to a Settings page that does not list it', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  await api.rights.file({ kind: 'erasure', details: 'Please erase my details' });
+  const ctx = await draw(api, ADMIN, 'requests');
+  const html = page(ctx);
+  assert.match(html, /data-act="erase"/);
+  assert.match(html, /Erase personal details/);
+  assert.doesNotMatch(html, /Erase in Settings/);
+});
+
+test('demo receipt for a mock online payment carries the mock stamp the payment dialog promised, beside the demo stamp', async () => {
+  const api = await mkApi();
+  api.session.set(ADMIN);
+  const pays = api.getDb().payments;
+  const mock = pays.find((p) => p.mode === 'online-mock');
+  assert.ok(mock, 'the seed has a mock online payment');
+  const ctx = makeCtx(api, { params: { id: mock.id } });
+  await Receipt.render(ctx);
+  assert.match(ctx.el.innerHTML, /MOCK ONLINE PAYMENT &mdash; NO MONEY MOVED/);
+  assert.match(ctx.el.innerHTML, /DEMO &mdash; NOT A REAL RECEIPT/);
+  const cash = pays.find((p) => p.mode === 'cash');
+  const c2 = makeCtx(api, { params: { id: cash.id } });
+  await Receipt.render(c2);
+  assert.doesNotMatch(c2.el.innerHTML, /MOCK ONLINE PAYMENT/);
+  assert.match(c2.el.innerHTML, /DEMO &mdash; NOT A REAL RECEIPT/);
 });

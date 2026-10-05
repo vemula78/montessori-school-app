@@ -15,7 +15,7 @@ export async function render(ctx) {
       <button class="btn primary" id="r-print">Print / Save as PDF</button>
     </div>
     <article class="receipt" aria-label="Fee receipt ${esc(v.receiptNumber)}">
-      ${v.isTestMode ? '<div class="stamp">TEST MODE &mdash; NO MONEY MOVED</div>' : !isRealMode() ? '<div class="stamp">DEMO &mdash; NOT A REAL RECEIPT &middot; SAMPLE FEES</div>' : v.isMock ? '<div class="stamp">MOCK ONLINE PAYMENT &mdash; NO MONEY MOVED</div>' : ''}
+      ${v.isTestMode ? '<div class="stamp">TEST MODE &mdash; NO MONEY MOVED</div>' : ''}${!v.isTestMode && !isRealMode() ? '<div class="stamp">DEMO &mdash; NOT A REAL RECEIPT &middot; SAMPLE FEES</div>' : ''}${v.isMock ? '<div class="stamp">MOCK ONLINE PAYMENT &mdash; NO MONEY MOVED</div>' : ''}
       ${cancelled ? '<div class="cancelled-mark">CANCELLED</div>' : ''}
       <h1>${esc(v.school.name)}</h1>
       <div class="addr">${esc(v.school.address)}${v.school.phone ? ' &middot; ' + esc(v.school.phone) : ''}</div>
