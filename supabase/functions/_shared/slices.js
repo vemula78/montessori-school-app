@@ -8,8 +8,10 @@ const KEY = {
   attendance: r => `${r.date}|${r.studentId}`,
 };
 const keyOf = (c, r) => (KEY[c] ? KEY[c](r) : r.id);
-// Phase 3: retention.purge (slice 'retention', system only) deletes learning, diary, attendance and message rows
-const DELETABLE = new Set(['calendarEvents', 'importRows', 'observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages']);
+// Phase 3: retention.purge (slice 'retention', system only) deletes learning, diary, attendance and message rows;
+// schema v4 adds the care rows of a child who left (absences, pick-up people, pick-ups), under the attendance period
+const DELETABLE = new Set(['calendarEvents', 'importRows', 'observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages',
+  'leaveRequests', 'pickupContacts', 'pickups']);
 const stable = x => JSON.stringify(x);
 
 /**

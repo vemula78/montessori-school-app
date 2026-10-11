@@ -70,7 +70,8 @@ async function parentHome(ctx) {
         <a class="kpi" href="#/diary?student=${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${esc(diaryToday)}</div><div class="l">diary entries today</div></a>
         <a class="kpi" href="#/fees/student/${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${money(balance)}</div><div class="l">${api.mode === 'demo' ? 'sample fees due' : 'fees due'}</div></a>
         <a class="kpi" href="#/bus" style="text-decoration:none;color:inherit"><div class="v">${k.routeId ? 'Bus' : DASH}</div><div class="l">${k.routeId ? 'tracking' : 'no bus'}</div></a>
-      </div></div>`);
+      </div>
+      <a class="btn sm" href="#/care?student=${esc(k.id)}">Absences &amp; pick-up</a></div>`);
   }
   return `
     <div class="page-head"><div><h1>Hello${g ? ', ' + esc(g.firstName) : ''}</h1><div class="sub">${fdate(today)}</div></div></div>
@@ -78,7 +79,7 @@ async function parentHome(ctx) {
     <div class="stack">${cards.join('') || empty('No children linked to this account')}</div>
     <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}
     <h2 style="margin-top:20px">Quick links</h2>
-    <div class="grid cols-2">${tile('#/notices', 'bell', 'Notices')}${tile('#/messages', 'chat', 'Messages')}${tile('#/calendar', 'calendar', 'Calendar')}${tile('#/diary', 'book', 'Daily diary')}${tile('#/learning', 'learn', 'Learning', 'Shared observations and termly reports')}</div>`;
+    <div class="grid cols-2">${tile('#/notices', 'bell', 'Notices')}${tile('#/messages', 'chat', 'Messages')}${tile('#/calendar', 'calendar', 'Calendar')}${tile('#/diary', 'book', 'Daily diary')}${tile('#/learning', 'learn', 'Learning', 'Shared observations and termly reports')}${tile('#/care', 'door', 'Absences & pick-up', 'Report an absence; who may collect your child')}</div>`;
 }
 
 async function teacherHome(ctx) {
@@ -96,17 +97,20 @@ async function teacherHome(ctx) {
     const head = working === false ? badge('Not a working day', 'mute') : list ? badge(`${marked}/${list.length} marked`, marked === list.length && list.length ? 'ok' : 'warn') : badge('Register unavailable', 'bad');
     rows.push(`<div class="card stack"><div class="row between"><h3>${esc(progs.get(pid)?.name || pid)}</h3>${head}</div>
       <div class="grid cols-3">${kpi('children', list ? list.length : DASH)}${kpi('absent today', absent ?? DASH, absent ? 'bad' : '')}${kpi('unmarked', list ? list.length - marked : DASH)}</div>
-      <div class="row"><a class="btn primary sm" href="#/attendance?program=${esc(pid)}">Attendance</a><a class="btn sm" href="#/diary?program=${esc(pid)}">Daily diary</a><a class="btn" href="#/learning?program=${esc(pid)}">Observations</a></div></div>`);
+      <div class="row"><a class="btn primary sm" href="#/attendance?program=${esc(pid)}">Attendance</a><a class="btn sm" href="#/diary?program=${esc(pid)}">Daily diary</a><a class="btn sm" href="#/learning?program=${esc(pid)}">Observations</a><a class="btn sm" href="#/pickup?program=${esc(pid)}">Going home</a></div></div>`);
   }
   const myThreads = db.threads.filter((t) => (persona.programIds || []).includes(t.programId));
   const unread = db.messages.filter((m) => myThreads.some((t) => t.id === m.threadId) && m.senderRole === 'parent' && !m.readAt).length;
   const evs = await upcomingEvents(ctx);
   const me = db.staff.find((x) => x.id === persona.staffId);
+  let unseen = 0;
+  try { unseen = (await api.care.leave({ from: today })).filter((r) => r.status === 'active' && !r.seenAt).length; } catch { /* the attendance page shows them */ }
   return `
     <div class="page-head"><div><h1>Good day, ${esc(me?.firstName || 'teacher')}</h1><div class="sub">${fdate(today)}</div></div></div>
     ${unread ? `<div class="banner"><div class="row between"><span><strong>${esc(unread)} unread parent message${unread === 1 ? '' : 's'}.</strong></span><a class="btn sm" href="#/messages">Open messages</a></div></div>` : ''}
+    ${unseen ? `<div class="banner"><div class="row between"><span><strong>${esc(unseen)} absence${unseen === 1 ? '' : 's'} reported by parents, not yet seen.</strong></span><a class="btn sm" href="#/attendance">Open the register</a></div></div>` : ''}
     <div class="stack">${rows.join('') || empty('No programme assigned')}</div>
-    <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}`;
+    <div class="row between" style="margin-top:20px"><h2 style="margin:0">Coming up</h2><a class="btn sm" href="#/calendar">Calendar</a></div>${eventList(evs)}`;
 }
 
 async function adminHome(ctx) {

@@ -14,6 +14,7 @@ import { saveStructure, generateInvoices, recordPayment, cancelPayment, refund, 
 import { sendNotice, markNoticeRead, acknowledgeNotice, openThread, replyThread, markThreadRead, closeThread } from '../domain/messaging.js';
 import { markAttendance } from '../domain/attendance.js';
 import { addDiaryEntry } from '../domain/diary.js';
+import { requestLeave, markLeaveSeen, addPickupContact, recordPickup } from '../domain/care.js';
 import { addObservation, shareObservation } from '../domain/observations.js';
 import { recordProgress } from '../domain/progress.js';
 import { generateReport, saveNarratives, submitReport, publishReport } from '../domain/reports.js';
@@ -394,6 +395,32 @@ export function buildSeed(now = new Date()) {
       if ((si + di) % 11 === 0) addDiaryEntry(db, { studentId: s.id, date: d, type: 'health', data: { temperatureC: Number((36.6 + (si % 3) * 0.1).toFixed(1)), note: 'Routine check, no concerns.' } }, c);
     });
   });
+
+  // ---------------------------------------------------------------- absences reported in advance, pick-up people, recent pick-ups
+  {
+    const par = (gid) => ({ role: 'parent', id: gid });
+    const nextWorking = (from, pid) => { let d = addDays(from, 1); for (let i = 0; i < 14 && !isWorkingDay(db, d, pid); i++) d = addDays(d, 1); return d; };
+    const day1 = nextWorking(today, P.pa), day2 = nextWorking(day1, P.pa);
+    const gOf = (first) => db.students.find((s) => s.id === stu[first]).guardianIds[0];
+    // Neel: reported yesterday evening, not yet seen; Ira: seen by the teacher; Dev: today, if today is a school day
+    requestLeave(db, { studentId: stu.Neel, fromDate: day1, toDate: day1, reason: 'Family function out of town' }, ctxAt(addDays(today, -1), par(gOf('Neel')), 19, 30), gOf('Neel'));
+    const ira = requestLeave(db, { studentId: stu.Ira, fromDate: day2, toDate: day2, reason: '' }, ctxAt(addDays(today, -2), par(gOf('Ira')), 20, 5), gOf('Ira'));
+    markLeaveSeen(db, ira.id, ctxAt(addDays(today, -1), tea(ID.tPA), 9, 5));
+    if (isWorkingDay(db, today, P.pa)) requestLeave(db, { studentId: stu.Dev, fromDate: today, toDate: today, reason: 'Dentist appointment' }, { actor: par(gOf('Dev')), now: isoAt(today, 7, 30), today }, gOf('Dev'));
+    const contact = (first, name, relation, n) => addPickupContact(db, { studentId: stu[first], name, relation, phone: fakePhone(n) }, ctxAt('2026-06-03', par(gOf(first)), 18, 0));
+    const grandma = contact('Neel', 'Sarla Notrealsen', 'Grandmother', 301);
+    contact('Ira', 'Ramesh Demoson', 'Uncle', 302);
+    contact('Aarav', 'Lata Demoson', 'Grandmother', 303);
+    // the last two school days of Primary A: who collected each child who was there (Neel by his grandmother once)
+    for (const d of workingDays.filter((x) => x < today && isWorkingDay(db, x, P.pa)).slice(-2)) {
+      active.filter((s) => s.programId === P.pa).forEach((s, i) => {
+        const a = db.attendance.find((x) => x.date === d && x.studentId === s.id);
+        if (!a || a.status === 'absent' || a.status === 'leave') return;
+        const by = s.id === stu.Neel && d === workingDays.filter((x) => x < today).at(-1) ? { kind: 'contact', id: grandma.id } : { kind: 'guardian', id: s.guardianIds[0] };
+        recordPickup(db, { studentId: s.id, date: d, collectedBy: by, time: `15:${pad(30 + i)}` }, ctxAt(d, tea(ID.tPA), 15, 30 + i));
+      });
+    }
+  }
 
   // ---------------------------------------------------------------- learning history for a few children (June to September)
   // Observations over four weeks (alternate ones shared with the family) and the progress that goes with them, so the

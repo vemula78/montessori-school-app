@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PERMISSIONS, MATRIX_ACTORS, FIXTURE } from '../src/domain/permissions.js';
+import { PERMISSIONS, MATRIX_ACTORS, FIXTURE, CARE_TABLES } from '../src/domain/permissions.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const target = join(root, 'supabase/tests/permissions.test.sql');
@@ -38,6 +38,9 @@ values ('00000000-0000-0000-0000-000000000000', ${q(nc.userId)}, 'authenticated'
   for (const e of FIXTURE.signInEvents) lines.push(`insert into public.sign_in_events (user_id, aal) values (${q(e.userId)}, ${q(e.aal)});`);
   for (const r of FIXTURE.dataRequests) {
     lines.push(`insert into public.data_requests (id, doc) values (${q(r.id)}, ${q(JSON.stringify({ ...r, filedAt: '2026-10-01T05:00:00.000Z', filedBy: r.guardianId }))}::jsonb);`);
+  }
+  for (const [c, rows] of Object.entries(FIXTURE.care)) {
+    for (const r of rows) lines.push(`insert into public.${CARE_TABLES[c]} (id, doc) values (${q(r.id)}, ${q(JSON.stringify(r))}::jsonb) on conflict (id) do nothing;`);
   }
   for (const a of actors) {
     const x = MATRIX_ACTORS[a];

@@ -12,10 +12,14 @@ export async function render(ctx) {
   const today = todayISO();
   const date = isISODate(query.date) ? query.date : today;
 
-  const [rows, working] = await Promise.all([
+  const [rows, working, leave] = await Promise.all([
     api.attendance.forDate(date, programId),
     api.calendar.isWorkingDay(date, programId),
+    api.care.leave({ programId, from: date }).catch(() => []),
   ]);
+  // absences parents reported: shown above the register; an unmarked child on one is pre-ticked "On leave" (not saved)
+  const reported = leave.filter((r) => r.status === 'active');
+  const leaveToday = new Map(reported.filter((r) => r.fromDate <= date && date <= r.toDate).map((r) => [r.studentId, r]));
   const stu = indexBy(db.students);
 
   let reason = '';
@@ -48,6 +52,9 @@ export async function render(ctx) {
       ${date !== today ? '<button class="btn sm" id="a-today">Today</button>' : ''}
       <span class="muted">${fdate(date)}</span>
     </div>
+    ${reported.length ? `<div class="card stack" style="margin-bottom:12px"><h2 style="margin:0">Absences reported by parents</h2><ul class="list">${reported.map((r) => `<li><div class="row between"><div><div class="item-title">${esc(fullName(stu.get(r.studentId)))}</div>
+      <small>${fdate(r.fromDate)}${r.toDate !== r.fromDate ? ` to ${fdate(r.toDate)}` : ''}${r.reason ? ` &middot; ${esc(r.reason)}` : ''}</small></div>
+      ${r.seenAt ? '<span class="badge ok">Seen</span>' : `<button class="btn sm" data-seen="${esc(r.id)}">Mark seen</button>`}</div></li>`).join('')}</ul></div>` : ''}
     ${working ? '' : `<div class="banner warn"><strong>${esc(reason)}.</strong> This is not a working day, so attendance cannot be saved.
       <div class="row" style="margin-top:6px"><button class="btn sm" id="a-lastwork">Go to previous working day</button></div></div>`}
     ${rows.length ? `
@@ -55,8 +62,10 @@ export async function render(ctx) {
       ${rows.map((r) => {
         const s = stu.get(r.studentId);
         const sm = summaries.get(r.studentId);
-        return `<div class="att-row"><div><div class="item-title">${esc(fullName(s))}</div><small>last 14 days: ${sc(sm, 'present')} present, ${sc(sm, 'absent')} absent</small></div>
-          <div class="att-opts" role="radiogroup" aria-label="Attendance for ${esc(fullName(s))}">${OPTS.map(([val, short, cls, label]) => `<label title="${label}"><input type="radio" name="st-${esc(r.studentId)}" value="${val}"${r.status === val ? ' checked' : ''}><span class="${cls}">${short}</span></label>`).join('')}</div></div>`;
+        const lv = leaveToday.get(r.studentId);
+        const pick = r.status || (lv ? 'leave' : null);
+        return `<div class="att-row"><div><div class="item-title">${esc(fullName(s))}</div><small>last 14 days: ${sc(sm, 'present')} present, ${sc(sm, 'absent')} absent</small>${lv ? `<br><small><strong>Absence reported</strong>${lv.reason ? `: ${esc(lv.reason)}` : ''}${r.status ? '' : ' (pre-ticked; save to record)'}</small>` : ''}</div>
+          <div class="att-opts" role="radiogroup" aria-label="Attendance for ${esc(fullName(s))}">${OPTS.map(([val, short, cls, label]) => `<label title="${label}"><input type="radio" name="st-${esc(r.studentId)}" value="${val}"${pick === val ? ' checked' : ''}><span class="${cls}">${short}</span></label>`).join('')}</div></div>`;
       }).join('')}
     </div>
     <div class="sticky-actions row"><button type="button" class="btn" id="a-allp">Mark all present</button><button type="submit" class="btn primary">Save attendance</button>
@@ -69,7 +78,16 @@ export async function render(ctx) {
   ctx.el.querySelector('#a-next').addEventListener('click', () => go({ date: addDays(date, 1) }));
   ctx.el.querySelector('#a-today')?.addEventListener('click', () => go({ date: today }));
   ctx.el.querySelector('#a-lastwork')?.addEventListener('click', async () => { const d = await prevWorking(); d ? go({ date: d }) : toast('No working day found in the last 30 days', 'bad'); });
-  ctx.el.querySelector('#a-allp')?.addEventListener('click', () => ctx.el.querySelectorAll('input[value="present"]').forEach((i) => { i.checked = true; }));
+  ctx.el.querySelector('#a-allp')?.addEventListener('click', () => rows.forEach((r) => {
+    // children with a reported absence keep "On leave"; everyone else unmarked becomes present
+    if (leaveToday.has(r.studentId) && !r.status) return;
+    const i = ctx.el.querySelector(`input[name="st-${CSS.escape(r.studentId)}"][value="present"]`);
+    if (i) i.checked = true;
+  }));
+  ctx.el.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-seen]');
+    if (b && (await attempt(() => api.care.markLeaveSeen(b.dataset.seen), 'Marked seen')).ok) ctx.rerender();
+  });
   ctx.el.querySelector('#a-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const marks = rows.map((r) => ({ studentId: r.studentId, status: e.target.querySelector(`input[name="st-${CSS.escape(r.studentId)}"]:checked`)?.value })).filter((x) => x.status);

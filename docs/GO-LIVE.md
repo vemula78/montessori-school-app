@@ -220,6 +220,14 @@ Migration `0008_admin_module.sql` and the `admin-accounts` function add the prin
 6. **Lost phone:** another principal opens **Administration > Accounts**, finds the person and presses **Reset two-step**; the person sets up a new authenticator at their next sign-in. **If no principal can sign in** (both phones lost): Supabase dashboard > **Authentication > Users** > the principal > delete the **MFA factor** (or, in **SQL Editor**: `delete from auth.mfa_factors where user_id = (select id from auth.users where email = '<the principal''s email>');`). The principal then signs in with an email code and sets up a new authenticator on the gate screen.
 7. **Sign-in activity** (Administration > Oversight) is kept 90 days; the daily job deletes older entries (`signInEventsPruned` in the cron report).
 
+## Step 14. Absences and pick-up
+
+Migration `0009_care.sql` adds three tables: absences parents report in advance, the people a family allows to collect a child, and the pick-up log. It goes up with the same `supabase db push` as step 13 (run it once; it applies 0008 and 0009 in order), then deploy the changed functions again: `supabase functions deploy command` and `supabase functions deploy cron-daily`. Nothing to set in the dashboard.
+
+- [ ] **Privacy notice first.** The notice parents accept (privacy notice v2) does not yet mention absence reasons, the names and phone numbers of people allowed to collect a child, or the pick-up log. Update it (a new notice version) before families use these screens; no family has accepted v2 yet, so doing it before go-live costs nobody a second acceptance.
+- [ ] Tell parents: an absence reported in the app is a message to the teacher, not an approval; the teacher still marks the register. Add a person to the pick-up list only with their agreement.
+- [ ] Tell teachers: **Going home** (bottom bar: **Pick-up**) records who collected each child. Someone not on the list needs a note of how the family confirmed it, and the principal sees it in the audit log.
+
 ## If something goes wrong
 
 | What you see | Likely cause | What to do |

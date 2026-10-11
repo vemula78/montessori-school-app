@@ -29,6 +29,8 @@ const ROUTES = [
   { pattern: '/attendance', roles: ['admin', 'teacher'], load: () => import('./screens/attendance.js') },
   { pattern: '/diary', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/diary.js') },
   { pattern: '/learning', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/learning.js') },
+  { pattern: '/pickup', roles: ['admin', 'teacher'], load: () => import('./screens/pickup.js') },
+  { pattern: '/care', roles: ['parent'], load: () => import('./screens/care.js') },
   { pattern: '/print/report/:id', roles: ['admin', 'teacher', 'parent'], bare: true, load: () => import('./screens/report-print.js') },
   {
     pattern: '/bus', roles: ['admin', 'driver', 'parent'],

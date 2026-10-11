@@ -9,6 +9,7 @@ const N = {
   attendance: { path: '/attendance', label: 'Attendance', icon: 'check', short: 'Register' },
   diary: { path: '/diary', label: 'Daily diary', icon: 'book', short: 'Diary' },
   learning: { path: '/learning', label: 'Learning', icon: 'learn', short: 'Learn' },
+  pickup: { path: '/pickup', label: 'Going home', icon: 'door', short: 'Pick-up' },
   bus: { path: '/bus', label: 'Bus', icon: 'bus' },
   trip: { path: '/bus', label: 'Trip', icon: 'bus' },
   fees: { path: '/fees', label: 'Fees', icon: 'rupee' },
@@ -23,8 +24,8 @@ const N = {
 };
 
 export const NAV = {
-  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'administration', 'settings'],
-  teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'learning'],
+  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'administration', 'settings'],
+  teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning'],
   accountant: ['home', 'fees', 'structures', 'reports', 'calendar', 'audit'],
   parent: ['home', 'notices', 'messages', 'diary', 'learning', 'bus', 'fees'],
   driver: ['home', 'trip', 'calendar'],
@@ -37,8 +38,10 @@ const REAL_EXTRA = {
 };
 
 export const isTouchRole = (role) => role === 'parent' || role === 'driver';
-// Teachers keep the rail on a wide screen but get the bottom tab bar on a phone (their menu fits in one row).
+// Teachers keep the rail on a wide screen but get the bottom tab bar on a phone: seven tabs fit in one row, so the
+// calendar stays in the rail and on the home page (Coming up).
 const PHONE_TABS = (role) => role === 'teacher';
+const PHONE_TAB_SKIP = new Set(['/calendar']);
 export function navFor(role, real = false) {
   const keys = [...(NAV[role] || ['home'])];
   if (real) {
@@ -125,7 +128,7 @@ export function renderShell(root, { school, personas, current, real = false }) {
       </main>
     </div>
     ${touch ? `<nav class="tabbar no-print" aria-label="Main">${items.map((i) => link(i)).join('')}</nav>` : ''}
-    ${tabbed ? `<nav class="tabbar no-print" aria-label="Main">${items.map((i) => link(i, true)).join('')}</nav>` : ''}
+    ${tabbed ? `<nav class="tabbar no-print" aria-label="Main">${items.filter((i) => !PHONE_TAB_SKIP.has(i.path)).map((i) => link(i, true)).join('')}</nav>` : ''}
   </div>`;
   return {
     screen: root.querySelector('#screen'),

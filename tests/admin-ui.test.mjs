@@ -68,8 +68,10 @@ function makeCtx(api, { query = {}, params = {} } = {}) {
   return ctx;
 }
 const page = (ctx, bodyId = '#ad-body') => ctx.el.innerHTML + (ctx.el.children.get(bodyId)?.innerHTML ?? '');
+// waits for the handlers themselves (a fixed delay was flaky under load: the two-step check can take longer than 20 ms)
 const fire = async (el, type, matches = {}, target = {}) => {
-  for (const f of [...(el.handlers[type] || [])]) Promise.resolve(f({ target: { closest: (sel) => matches[sel] ?? null, ...target }, preventDefault() {} })).catch((e) => { el.lastError = e; });
+  const runs = [...(el.handlers[type] || [])].map((f) => Promise.resolve().then(() => f({ target: { closest: (sel) => matches[sel] ?? null, ...target }, preventDefault() {} })).catch((e) => { el.lastError = e; }));
+  await Promise.all(runs);
   await new Promise((r) => setTimeout(r, 20));
 };
 const noRaw = (html, what) => {

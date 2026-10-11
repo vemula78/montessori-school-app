@@ -2,8 +2,9 @@
 // Conventions: ids are prefixed strings; money is integer paise; dates are 'YYYY-MM-DD';
 // timestamps are ISO-8601 UTC strings ('2026-10-02T07:42:00.000Z').
 
-export const SCHEMA_VERSION = 3; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
+export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
 // v3 (administration): dataRequests (the data-rights desk), school.announcement
+// v4 (care): leaveRequests, pickupContacts, pickups
 
 /**
  * @typedef {{graceDays:number, mode:'flat'|'perDay', amountPaise:number, capPaise:number|null, shiftDueToWorkingDay:boolean}} LateFeeRule
@@ -87,6 +88,17 @@ export const SCHEMA_VERSION = 3; // v2 (Phase 3): learning collections, consents
  * @typedef {{id:string, guardianId:string, kind:'export'|'erasure'|'correction', details:string, status:'open'|'in_progress'|'done'|'declined',
  *   filedAt:string, filedBy:string, updatedAt:string, resolution:string|null, decidedBy:string|null, decidedAt:string|null}} DataRequest
  *   A guardian's DPDP request (data-rights desk). One open request per guardian and kind; a closed one is final.
+ * @typedef {{id:string, studentId:string, guardianId:string, fromDate:string, toDate:string, reason:string, status:'active'|'withdrawn',
+ *   createdAt:string, seenBy:string|null, seenAt:string|null, withdrawnAt:string|null}} LeaveRequest
+ *   An absence a parent reports in advance (at most 31 days, from today on). Informational: the teacher still marks attendance.
+ * @typedef {{id:string, studentId:string, name:string, relation:string, phone:string, status:'active'|'removed', addedBy:string,
+ *   addedByRole:string, addedAt:string, removedBy:string|null, removedAt:string|null}} PickupContact
+ *   A person the family authorises to collect the child (besides the guardians); at most 6 active per child. Removing
+ *   someone blanks the phone (the name stays for older pick-up records).
+ * @typedef {{id:string, studentId:string, date:string, kind:'guardian'|'contact'|'other', personId:string|null, name:string|null,
+ *   note:string, time:string|null, at:string, recordedBy:string, correctedAt:string|null}} Pickup
+ *   Who collected the child that day; id = 'pck-<date>-<studentId>' (one per child and day). name only for kind 'other'.
+ *   time = when collected ('HH:MM', required for an earlier day); at = when it was recorded.
  * @typedef {{id:string, ts:string, actorRole:string, actorId:string, entity:string, entityId:string, action:string, summary:string}} AuditRow
  * @typedef {{invoice:Object<string,number>, receipt:Object<string,number>, refund:Object<string,number>}} Counters
  * @typedef {{schemaVersion:number, rev:number, school:School, academicYears:AcademicYear[], programs:Program[],
@@ -95,7 +107,7 @@ export const SCHEMA_VERSION = 3; // v2 (Phase 3): learning collections, consents
  *   feeHeads:FeeHead[], feeStructures:FeeStructure[], invoices:Invoice[], payments:Payment[], refunds:Refund[],
  *   credits:Credit[], attendance:AttendanceRecord[], diaryEntries:DiaryEntry[], auditLog:AuditRow[], counters:Counters,
  *   presentations:Presentation[], observations:Observation[], photos:Photo[], progressEvents:ProgressEvent[], reports:Report[],
- *   consents:Consent[], dataRequests:DataRequest[]}} Db
+ *   consents:Consent[], dataRequests:DataRequest[], leaveRequests:LeaveRequest[], pickupContacts:PickupContact[], pickups:Pickup[]}} Db
  * @typedef {{role:'admin'|'teacher'|'accountant'|'driver'|'parent'|'system', id:string}} Actor
  * @typedef {{actor:Actor, now:string, today:string}} Ctx  now = ISO timestamp, today = local 'YYYY-MM-DD'
  */
@@ -106,6 +118,7 @@ export const COLLECTIONS = [
   'threads', 'messages', 'calendarEvents', 'routes', 'trips', 'feeHeads', 'feeStructures',
   'invoices', 'payments', 'refunds', 'credits', 'attendance', 'diaryEntries', 'auditLog',
   'presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'dataRequests',
+  'leaveRequests', 'pickupContacts', 'pickups',
 ];
 
 export const RETENTION_KEYS = [

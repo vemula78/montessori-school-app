@@ -17,8 +17,9 @@ import { validateDb, checkStructure } from '../domain/validate.js';
 
 // v2: the school was renamed (03-Oct-2026). v3: Phase 3 added Learning (04-Oct-2026); migrate() would give a returning
 // visitor empty Learning lists, so a fresh key gives every demo visitor the full sample data instead.
-export const DB_KEY = 'montessori.db.v3';
-export const OLD_DB_KEYS = ['montessori.db.v1', 'montessori.db.v2'];
+// v4: absences and pick-up (11-Oct-2026), for the same reason.
+export const DB_KEY = 'montessori.db.v4';
+export const OLD_DB_KEYS = ['montessori.db.v1', 'montessori.db.v2', 'montessori.db.v3'];
 export const CORRUPT_PREFIX = 'montessori.db.corrupt.';
 export const APPROX_QUOTA_BYTES = 5 * 1024 * 1024;
 
@@ -36,7 +37,8 @@ export function memoryBackend(map = new Map()) {
 /**
  * Versioned migration hook (runs on load, commit and import of an older document).
  * v1 -> v2 (Phase 3): the six new collections as empty arrays, students.leftOn = null (unknown), school.retention all
- * null (not decided). v2 -> v3 (administration): dataRequests = [], school.announcement = null. Nothing is dropped or rewritten. Never throws on a malformed document: checkStructure reports it.
+ * null (not decided). v2 -> v3 (administration): dataRequests = [], school.announcement = null.
+ * v3 -> v4 (care): leaveRequests, pickupContacts, pickups = []. Nothing is dropped or rewritten. Never throws on a malformed document: checkStructure reports it.
  * Newer versions are refused by parse().
  */
 export function migrate(db) {
@@ -50,6 +52,10 @@ export function migrate(db) {
     if (!Array.isArray(db.dataRequests)) db.dataRequests = [];
     if (db.school && typeof db.school === 'object' && db.school.announcement === undefined) db.school.announcement = null;
     db.schemaVersion = 3;
+  }
+  if (db.schemaVersion === 3) {
+    for (const c of ['leaveRequests', 'pickupContacts', 'pickups']) if (!Array.isArray(db[c])) db[c] = [];
+    db.schemaVersion = 4;
   }
   if (db.schemaVersion === SCHEMA_VERSION) return db;
   throw new DomainError('STORAGE_CORRUPT', `No migration from schemaVersion ${db.schemaVersion}`);

@@ -10,10 +10,12 @@
 -- Migration 0008 (administration) from "administration" below: blocked accounts, two-step (aal2) for the principal and the
 -- accountant, the policy row, the authenticator mirror, sign-in events, end_sessions, the data-rights desk.
 -- The definer list is exactly the auth trigger and public.end_sessions. The permission matrix is permissions.test.sql.
+-- Migration 0009 (care) from "care" below: absences, pick-up people and pick-ups read like the diary; persist upserts and
+-- retention deletes them; the pick-up id names the child and the day.
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(200);
+select plan(214);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -285,7 +287,7 @@ select is((select count(*)::int from public.presentations), 0, 'p3_parent_sees_n
 select is((select jsonb_array_length(public.my_snapshot()->'progressEvents')), 0, 'p3_snapshot_parent_has_no_progress_events');
 select ok((select bool_and(e->>'sharedAt' is not null) from jsonb_array_elements(public.my_snapshot()->'observations') e)
   and jsonb_array_length(public.my_snapshot()->'observations') > 0, 'p3_snapshot_parent_observations_all_shared');
-select is((public.my_snapshot()->>'schemaVersion')::int, 3, 'p3_snapshot_schema_version (3 since migration 0008)');
+select is((public.my_snapshot()->>'schemaVersion')::int, 4, 'p3_snapshot_schema_version (4 since migration 0009)');
 select ok((select bool_and(guardian_id = 'grd-02') from public.consents), 'p3_parent_reads_own_consents_only');
 select is((select count(*)::int from storage.objects), 0, 'p3_parent_reads_no_storage_objects');
 reset role;
@@ -403,7 +405,7 @@ reset role;
 select tests.as_user_aal('00000000-0000-4000-8000-000000000001', 'aal2');
 select is((select count(*) from public.students), (select stu from totals), 'adm_enrolled_principal_aal2_sees_all');
 select is(public.my_snapshot()->>'status', 'active', 'adm_aal2_snapshot_active');
-select is((public.my_snapshot()->>'schemaVersion')::int, 3, 'adm_snapshot_schema_version_3');
+select is((public.my_snapshot()->>'schemaVersion')::int, 4, 'adm_snapshot_schema_version_4 (4 since migration 0009)');
 reset role;
 insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret)
 values ('00000000-0000-4000-8000-0000000000f2', '00000000-0000-4000-8000-000000000002', 'pgtap', 'totp', 'verified', now(), now(), 'JBSWY3DPEHPK3PXP');
@@ -522,7 +524,38 @@ reset role;
 select is((public.load_slice('{dataRequests}'::text[], '{"exportGuardianId":"grd-01"}'::jsonb))->'db'->'dataRequests' @> '[{"id":"drq-t-2"}]'::jsonb
   and jsonb_array_length((public.load_slice('{dataRequests}'::text[], '{"exportGuardianId":"grd-01"}'::jsonb))->'db'->'dataRequests') = 1, true, 'adm_load_slice_data_requests_of_the_export_guardian');
 select is((public.load_slice('{}'::text[], '{"callerUserId":"00000000-0000-4000-8000-000000000003"}'::jsonb))->'db'->'callerTwoStep', '{"enrolled": false, "required": false}'::jsonb, 'adm_load_slice_returns_caller_two_step');
-select is((public.load_slice('{}'::text[], '{}'::jsonb))->'db'->>'schemaVersion', '3', 'adm_load_slice_schema_version_3');
+select is((public.load_slice('{}'::text[], '{}'::jsonb))->'db'->>'schemaVersion', '4', 'adm_load_slice_schema_version_4');
+
+-- ---------------------------------------------------------------- care (0009): absences, pick-up people, pick-ups
+-- read like the diary: principal all, teacher own programmes, parent own consented children; accountant and driver nothing
+select lives_ok($$select public.persist('pgtap-care', 0, '{"upserts":{
+  "leaveRequests":[{"id":"lv-t-1","studentId":"stu-02","guardianId":"grd-01","fromDate":"2026-10-20","toDate":"2026-10-20","reason":"fake","status":"active"},
+                   {"id":"lv-t-2","studentId":"stu-04","guardianId":"grd-02","fromDate":"2026-10-21","toDate":"2026-10-21","reason":"","status":"active"}],
+  "pickupContacts":[{"id":"pkc-t-1","studentId":"stu-02","name":"Fake Notrealsen","relation":"Aunt","phone":"+91-90000-00398","status":"active"}],
+  "pickups":[{"id":"pck-2026-10-02-stu-02","studentId":"stu-02","date":"2026-10-02","kind":"contact","personId":"pkc-t-1","name":null,"note":""}]}}'::jsonb)$$, 'care_persist_writes_the_three_tables');
+select throws_ok($$insert into public.pickups (id, doc) values ('pck-x', '{"id":"pck-x","studentId":"stu-02","date":"2026-10-03"}')$$, '23514', null, 'care_pickup_id_names_child_and_day');
+select tests.as_user('00000000-0000-4000-8000-000000000002'); -- teacher, Primary A
+select is((select count(*)::int from public.leave_requests where student_id = 'stu-02') + (select count(*)::int from public.pickup_contacts where student_id = 'stu-02')
+  + (select count(*)::int from public.pickups where student_id = 'stu-02'), 0, 'care_teacher_reads_nothing_of_another_programme');
+select ok(exists (select 1 from public.leave_requests where id = 'lv-t-2'), 'care_teacher_reads_own_programme_absences');
+reset role;
+-- grd-01 (stu-01, stu-02); a fresh token: this user was signed out everywhere above
+select tests.as_user_iat('00000000-0000-4000-8000-000000000005', 'aal1', extract(epoch from now())::bigint + 5);
+select is((select array_agg(id order by id) from public.leave_requests where id like 'lv-t-%'), array['lv-t-1'], 'care_parent_reads_own_child_absences_only');
+select ok(exists (select 1 from public.pickup_contacts where id = 'pkc-t-1') and exists (select 1 from public.pickups where student_id = 'stu-02'), 'care_parent_reads_own_pickup_people_and_log');
+select is(public.my_snapshot()->>'schemaVersion', '4', 'care_snapshot_schema_version_4');
+select ok(public.my_snapshot()->'leaveRequests' @> '[{"id":"lv-t-1"}]'::jsonb and not (public.my_snapshot()->'leaveRequests' @> '[{"id":"lv-t-2"}]'::jsonb), 'care_snapshot_absences_own_only');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000003'); -- accountant
+select is((select count(*)::int from public.leave_requests) + (select count(*)::int from public.pickup_contacts) + (select count(*)::int from public.pickups), 0, 'care_accountant_reads_none');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000004'); -- driver
+select is((select count(*)::int from public.leave_requests) + (select count(*)::int from public.pickup_contacts) + (select count(*)::int from public.pickups), 0, 'care_driver_reads_none');
+select throws_ok($$insert into public.leave_requests (id, doc) values ('lv-x', '{"id":"lv-x","studentId":"stu-01","fromDate":"2026-10-20","toDate":"2026-10-20","status":"active"}')$$, '42501', null, 'care_no_client_writes');
+reset role;
+select is(jsonb_array_length((public.load_slice('{leaveRequests,pickupContacts,pickups}'::text[], '{}'::jsonb))->'db'->'pickupContacts') >= 1, true, 'care_load_slice_returns_the_collections');
+select lives_ok($$select public.persist('pgtap-care', 1, '{"deletes":{"pickups":["pck-2026-10-02-stu-02"],"leaveRequests":["lv-t-1"],"pickupContacts":["pkc-t-1"]}}'::jsonb)$$, 'care_retention_may_delete_the_three');
+select is((select count(*)::int from public.pickups where id = 'pck-2026-10-02-stu-02') + (select count(*)::int from public.leave_requests where id = 'lv-t-1'), 0, 'care_rows_deleted');
 
 select * from finish();
 rollback;

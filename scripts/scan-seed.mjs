@@ -45,6 +45,12 @@ for (const [kind, p] of people) {
   if (p.phone !== undefined) { phones++; if (!PHONE_RE.test(p.phone)) hit('phone not fake pattern', `${kind} ${p.id}`, mask(String(p.phone))); }
   if (p.email !== undefined) { emails++; if (!String(p.email).endsWith('@example.com')) hit('email not @example.com', `${kind} ${p.id}`, String(p.email).replace(/^[^@]*/, '…')); }
 }
+// pick-up people (schema v4) have one name field: its last word must be a fake surname too
+for (const c of db.pickupContacts) {
+  const last = String(c.name || '').trim().split(/\s+/).at(-1);
+  if (!FAKE_SURNAMES.includes(last)) hit('surname not in FAKE_SURNAMES', `pickupContact ${c.id}`, last);
+  phones++; if (!PHONE_RE.test(c.phone)) hit('phone not fake pattern', `pickupContact ${c.id}`, mask(String(c.phone)));
+}
 phones++;
 if (!PHONE_RE.test(db.school.phone)) hit('phone not fake pattern', 'school', mask(String(db.school.phone)));
 
@@ -145,7 +151,7 @@ if (forbiddenWord(`${SCHOOL.name} ${SCHOOL.address}`)) hit('real name in SCHOOL'
 
 // ---------------- report ----------------
 console.log('Seed scan');
-console.log(`  people checked      ${people.length} (students ${db.students.length}, guardians ${db.guardians.length}, staff ${db.staff.length})`);
+console.log(`  people checked      ${people.length + db.pickupContacts.length} (students ${db.students.length}, guardians ${db.guardians.length}, staff ${db.staff.length}, pick-up people ${db.pickupContacts.length})`);
 console.log(`  surnames checked    ${people.length} against ${FAKE_SURNAMES.length} allowed`);
 console.log(`  phones checked      ${phones}`);
 console.log(`  emails checked      ${emails}`);

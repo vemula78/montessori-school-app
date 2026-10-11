@@ -5,7 +5,7 @@
 //
 // Entry shape:
 //   slice      which revision-guarded slice the command writes ('ledger'|'messaging'|'calendar'|'transport'|
-//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'); the server
+//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'|'care'); the server
 //              loads that slice's collections.
 //   authorize(p, db, args)   throws DomainError NOT_ALLOWED / NOT_FOUND; p = persona (see personaFor)
 //   run(db, args, ctx, p)    mutates db and returns the api result (same shape in both modes)
@@ -44,6 +44,7 @@ import * as CU from './presentations.js';
 import { previewCurriculumCsv } from './curriculum.js';
 import { isISODate, compareISO } from './dates.js';
 import * as AD from './admin.js';
+import * as CA from './care.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
@@ -363,6 +364,38 @@ export const COMMANDS = {
     run: (db, [entryId], ctx) => D.markDiaryRead(db, entryId, ctx),
   },
 
+  // ---- care: absences reported in advance, who may collect a child, who did (slice 'care')
+  'leave.request': {
+    slice: 'care',
+    authorize: (p, db, [a]) => { allow(p, 'parent'); mustSee(p, db, a && a.studentId); },
+    run: (db, [a], ctx, p) => CA.requestLeave(db, a || {}, ctx, p.guardianId),
+  },
+  'leave.withdraw': {
+    slice: 'care',
+    authorize: (p, db, [id]) => { allow(p, 'parent'); mustSee(p, db, careRow(db, 'leaveRequests', id, 'Absence').studentId); },
+    run: (db, [id], ctx) => CA.withdrawLeave(db, id, ctx),
+  },
+  'leave.markSeen': {
+    slice: 'care',
+    authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher'); mustSee(p, db, careRow(db, 'leaveRequests', id, 'Absence').studentId); },
+    run: (db, [id], ctx) => CA.markLeaveSeen(db, id, ctx),
+  },
+  'pickup.addContact': {
+    slice: 'care',
+    authorize: (p, db, [a]) => { allow(p, 'parent', 'admin'); mustSee(p, db, a && a.studentId); },
+    run: (db, [a], ctx) => CA.addPickupContact(db, a || {}, ctx),
+  },
+  'pickup.removeContact': {
+    slice: 'care',
+    authorize: (p, db, [id]) => { allow(p, 'parent', 'admin'); mustSee(p, db, careRow(db, 'pickupContacts', id, 'Pick-up person').studentId); },
+    run: (db, [id], ctx) => CA.removePickupContact(db, id, ctx),
+  },
+  'pickup.record': {
+    slice: 'care',
+    authorize: (p, db, [a]) => { allow(p, 'admin', 'teacher'); mustSee(p, db, a && a.studentId); },
+    run: (db, [a], ctx) => CA.recordPickup(db, a || {}, ctx),
+  },
+
   // ---- gateway settlement report (CSV from the gateway dashboard)
   'fees.importSettlementCsv': {
     slice: 'settlement', serverOnly: true, authorize: p => allow(p, ...FIN),
@@ -412,7 +445,7 @@ export const COMMANDS = {
     },
   },
   /**
-   * DPDP erasure of a guardian. Erased: the guardian's name/phone/email/relation, the messages they wrote, their
+   * DPDP erasure of a guardian. Erased: the guardian's name/phone/email/relation, the messages and absence reasons they wrote, their
    * sign-in links (revoked here; the command function then deletes the sign-in itself, its push devices and the
    * payer details in stored gateway events), their open invites, and their columns in raw import rows.
    * Retained (and recorded on the request, with the reason): fee records, the children's school records, staff
@@ -434,15 +467,18 @@ export const COMMANDS = {
       for (const m of db.messages) {
         if (threadIds.has(m.threadId) && m.senderRole === 'parent' && m.senderId === g.id && m.body !== ERASED_MESSAGE) { m.body = ERASED_MESSAGE; messages++; }
       }
+      let leaveReasons = 0;
+      for (const r of db.leaveRequests || []) if (r.guardianId === g.id && r.reason && r.reason !== CA.ERASED_REASON) { r.reason = CA.ERASED_REASON; leaveReasons++; }
       const revokedUserIds = [];
       for (const u of db.appUsers || []) if (u.guardianId === g.id) { u.status = 'revoked'; revokedUserIds.push(u.id); }
       let invitesRevoked = 0;
       for (const i of db.invites || []) if (i.guardianId === g.id && !i.redeemedAt && !i.revokedAt) { i.revokedAt = ctx.now; invitesRevoked++; }
       const importRows = was ? 0 : I.redactGuardianInImportRows(db, prior, kids.map(k => k.admissionNo));
-      const erased = { guardianDetails: true, messages, signIns: revokedUserIds.length, invitesRevoked, importRows };
+      const erased = { guardianDetails: true, messages, leaveReasons, signIns: revokedUserIds.length, invitesRevoked, importRows };
       const retained = [
         `Fee records (invoices, payments, refunds, receipts) are kept as the law requires; the payer now shows as ${label}.`,
-        "The children's own school records (enrolment, attendance, diary, fees) stay under the school's retention schedule.",
+        "The children's own school records (enrolment, attendance, diary, fees, absences and pick-ups) stay under the school's retention schedule; the reasons this guardian gave for absences were erased.",
+        "People this guardian listed as allowed to collect a child stay on the list until the other guardian or the school removes them.",
         "Messages written by school staff in this guardian's conversations are kept; the guardian's own messages were erased.",
         'Consent records are kept as evidence of what was agreed and when (they carry ids, not names).',
         'Audit log entries are kept; they carry ids and amounts, not names.',
@@ -968,12 +1004,18 @@ function takerOf(p, db, id) {
   if (p.role !== 'admin' && ph.takenBy !== p.staffId) deny('Only the person who took the photo can finish its upload');
   return ph;
 }
+function careRow(db, collection, id, label) {
+  const r = byId(db[collection] || [], id);
+  if (!r) fail('NOT_FOUND', `${label} not found`);
+  return r;
+}
 const RETENTION_LOAD = { learningAll: true, diaryAll: true, attendanceAll: true };
 const CSV_MAX_BYTES = 512 * 1024;
 
 /** The DB slice each command needs on the server, and the collections it may write. */
 const BASE = ['academicYears', 'programs', 'students', 'guardians', 'staff', 'routes', 'feeHeads'];
 const LEARNING = ['presentations', 'observations', 'photos', 'progressEvents', 'reports'];
+const CARE = ['leaveRequests', 'pickupContacts', 'pickups'];
 export const SLICES = {
   ledger: { reads: [...BASE, 'calendarEvents', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'importRows', 'erasureRequests'],
     writes: ['school', 'counters', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests'] },
@@ -987,15 +1029,18 @@ export const SLICES = {
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
   export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
     'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents',
-    'dataRequests', ...LEARNING], writes: [] },
-  erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'dataRequests'],
-    writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows', 'dataRequests'] },
+    'dataRequests', ...LEARNING, ...CARE], writes: [] },
+  // erasure scrubs the absence reasons the guardian wrote (leaveRequests)
+  erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'dataRequests', 'leaveRequests'],
+    writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows', 'dataRequests', 'leaveRequests'] },
   // the data-rights desk (schema v3); erasure also writes it (anonymise closes the guardian's erasure requests)
   rights: { reads: [...BASE, 'dataRequests', 'erasureRequests', 'consents'], writes: ['dataRequests'] },
   // learning records are loaded per child (hints) except for system sweeps; consents are read for the photo rule
   learning: { reads: [...BASE, 'consents', ...LEARNING], writes: LEARNING },
   // the only slice whose command removes rows (retention.purge, system only); persist's allow-list matches PURGEABLE
-  retention: { reads: [...BASE, ...LEARNING, 'diaryEntries', 'attendance', 'threads', 'messages'], writes: RT.PURGEABLE },
+  retention: { reads: [...BASE, ...LEARNING, 'diaryEntries', 'attendance', 'threads', 'messages', ...CARE], writes: RT.PURGEABLE },
+  // schema v4: absences reported in advance, pick-up people and the pick-up log (small tables: loaded whole)
+  care: { reads: [...BASE, ...CARE], writes: CARE },
 };
 /** Server-only collections (not part of the Db document; consents joined it in schema v2). */
 export const SERVER_COLLECTIONS = ['invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'];

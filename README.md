@@ -31,10 +31,10 @@ so two tabs can be two different people (e.g. Driver and Parent) at once.
 | Persona | Try this |
 |---|---|
 | Principal — Kavita Exampleton | Calendar → import `data/holidays-2026-27.csv`; Notices → send to Primary A + Primary B with acknowledgement; Learning → Curriculum → import `data/curriculum-sample.csv`, publish a submitted termly report |
-| Teacher — Anita Demoson (Primary A) | Attendance (blocked on holidays/weekends with the reason), Daily diary, **Learning**: observations with a photo (a file from your device, or the drawn demo photos), share one, record progress, start a termly report; reply to parent threads |
+| Teacher — Anita Demoson (Primary A) | Attendance (blocked on holidays/weekends with the reason; absences parents reported are listed and pre-ticked "On leave"), Daily diary (**Whole class** entry), **Going home** (who collected each child), **Learning**: observations with a photo (a file from your device, or the drawn demo photos), share one, record progress, start a termly report; reply to parent threads |
 | Accountant — Mohan Samplekar | Generate invoices, record cash/UPI payments, print an A5 receipt, cancel/refund, late fees, Reports → Reconciliation, data import |
 | Driver — Sunil Samplekar / Imran Fakeswaran | Start a trip (real GPS or "simulated trip"), mark children boarded |
-| Parent — Meena Notrealsen | Two children in two programs: one notice "about both children", one message thread per child; **Learning**: shared observations with photos and a published termly report to read and print (no progress grid) |
+| Parent — Meena Notrealsen | Two children in two programs: one notice "about both children", one message thread per child; **Learning**: shared observations with photos and a published termly report to read and print (no progress grid); **Absences & pick-up**: report an absence, keep the list of people who may collect each child, see who collected them |
 | Parent — Priyanka Demoson | A bus child: live map, "nearing / arrived", boarded time; mock online payment |
 
 All names come from an allow-listed set of obviously fake surnames; phones are `+91-90000-00NNN`, emails
@@ -118,6 +118,17 @@ an iPhone — is **[docs/GO-LIVE.md](docs/GO-LIVE.md)**. This section is the tec
   Kept apart from the docs: health notes (`student_health`), staff phone/email (`staff_contacts`, admin only),
   guardian links (`student_guardians`, the RLS truth), trip hysteresis state (`trip_state`) and positions
   (`trip_positions`). `audit_log` is append-only for every role, including the service role (trigger + grants).
+
+### Absences and pick-up (schema v4, migration 0009)
+
+Slice `care`: `leave.request` / `leave.withdraw` (a parent, own child; from today, at most 31 days, no overlap),
+`leave.markSeen` (teacher, principal), `pickup.addContact` / `pickup.removeContact` (the family or the principal; at most
+6 people per child, phone stored as `+91-XXXXX-XXXXX`, removal blanks the number), `pickup.record` (teacher, principal;
+one row per child and day, id `pck-<date>-<studentId>`; up to 7 days late with the time collected; someone not on the
+list needs a note and is audited). An absence never marks attendance: the register pre-ticks "On leave" and the teacher
+saves. `diary.addMany` (slice classroom) writes the same diary entry for every ticked child of one programme, all or none.
+The three tables read like the diary (RLS below); retention deletes them under the attendance period after a child
+leaves; the family export includes them; a guardian's erasure blanks the absence reasons they wrote.
 
 ### Access model (RLS)
 

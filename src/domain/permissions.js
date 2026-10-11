@@ -33,7 +33,18 @@ export const FIXTURE = {
     { id: 'drq-matrix-1', guardianId: 'grd-01', kind: 'export', details: '', status: 'open' },
     { id: 'drq-matrix-2', guardianId: 'grd-02', kind: 'correction', details: 'Fake: phone number changed.', status: 'open' },
   ],
+  // schema v4 (care): one row of each for stu-04 (Primary A, grd-02), whatever day the seed was generated on
+  care: {
+    leaveRequests: [{ id: 'lv-matrix-1', studentId: 'stu-04', guardianId: 'grd-02', fromDate: '2026-10-05', toDate: '2026-10-05', reason: '', status: 'active',
+      createdAt: '2026-10-01T05:00:00.000Z', seenBy: null, seenAt: null, withdrawnAt: null }],
+    pickupContacts: [{ id: 'pkc-matrix-1', studentId: 'stu-04', name: 'Matrix Demoson', relation: 'Uncle', phone: '+91-90000-00399', status: 'active',
+      addedBy: 'grd-02', addedByRole: 'parent', addedAt: '2026-10-01T05:00:00.000Z', removedBy: null, removedAt: null }],
+    pickups: [{ id: 'pck-2026-10-01-stu-04', studentId: 'stu-04', date: '2026-10-01', kind: 'guardian', personId: 'grd-02', name: null, note: '', time: '15:30',
+      at: '2026-10-01T10:00:00.000Z', recordedBy: 'stf-teacher-pa', correctedAt: null }],
+  },
 };
+/** Table of each care collection (scripts/permissions-sql.mjs inserts FIXTURE.care there). */
+export const CARE_TABLES = { leaveRequests: 'leave_requests', pickupContacts: 'pickup_contacts', pickups: 'pickups' };
 
 const Y = true, N = false;
 const row = (p2, p1, t, a, d, pc, pn) => ({ principal_aal2: p2, principal_aal1_enrolled: p1, teacher: t, accountant: a, driver: d, parent_consented: pc, parent_no_consent: pn });
@@ -79,6 +90,12 @@ export const PERMISSIONS = {
       js: { kind: 'read', name: 'signInActivity' }, sql: 'select count(*) from public.sign_in_events' },
     { key: 'data_requests_all', label: "Every family's data requests", allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'read', name: 'otherDataRequests' }, sql: "select count(*) from public.data_requests where guardian_id <> coalesce(app.my_guardian_id(), '')" },
+    { key: 'absences_reported', label: 'Absences parents reported', allow: row(Y, N, Y, N, N, Y, N),
+      js: { kind: 'read', name: 'leaveRequests' }, sql: 'select count(*) from public.leave_requests' },
+    { key: 'pickup_people', label: 'People allowed to collect a child (names and phone numbers)', allow: row(Y, N, Y, N, N, Y, N),
+      js: { kind: 'read', name: 'pickupContacts' }, sql: 'select count(*) from public.pickup_contacts' },
+    { key: 'pickup_log', label: 'Who collected each child', allow: row(Y, N, Y, N, N, Y, N),
+      js: { kind: 'read', name: 'pickups' }, sql: 'select count(*) from public.pickups' },
     { key: 'curriculum', label: 'Curriculum', allow: row(Y, N, Y, N, N, N, N),
       js: { kind: 'read', name: 'curriculum' }, sql: 'select count(*) from public.presentations' },
     { key: 'bus_positions', label: 'Bus trips and positions', allow: row(Y, N, N, Y, Y, Y, N),
@@ -98,6 +115,10 @@ export const PERMISSIONS = {
       js: { kind: 'command', name: 'rights.file', args: [{ kind: 'export' }] }, sql: null },
     { key: 'set_announcement', label: 'Set the school announcement', allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'command', name: 'admin.setAnnouncement', args: [{ text: 'x' }] }, sql: null },
+    { key: 'report_absence', label: 'Report an absence (own child)', allow: row(N, N, N, N, N, Y, N),
+      js: { kind: 'command', name: 'leave.request', args: [{ studentId: 'stu-04', fromDate: TODAY, toDate: TODAY }] }, sql: null },
+    { key: 'record_pickup', label: 'Record who collected a child', allow: row(Y, N, Y, N, N, N, N),
+      js: { kind: 'command', name: 'pickup.record', args: [{ studentId: 'stu-04', date: TODAY, collectedBy: { kind: 'guardian', id: 'grd-02' } }] }, sql: null },
     { key: 'export_family', label: "Download a family's data (grd-02)", allow: row(Y, N, N, N, N, Y, N),
       js: { kind: 'command', name: 'admin.dataExport', args: ['grd-02'] }, sql: null },
   ],
@@ -107,7 +128,7 @@ export const PERMISSIONS = {
 
 const anyOf = (list, pred) => (list || []).some(pred);
 const learner = (p, sid) => p.role === 'admin' || ((p.role === 'teacher' || p.role === 'parent') && p.studentIds.includes(sid));
-/** Read rules as RLS states them (migrations 0001–0008), over the persona's scope. */
+/** Read rules as RLS states them (migrations 0001–0009), over the persona's scope. */
 const READS = {
   children: (db, p) => STAFF_SEES_ALL.includes(p.role) || p.studentIds.length > 0,
   healthNotes: (db, p) => ['admin', 'teacher', 'parent'].includes(p.role) && anyOf(db.students, s => s.healthNotes && (p.role === 'admin' || p.studentIds.includes(s.id))),
@@ -125,6 +146,10 @@ const READS = {
   accountAudit: (db, p) => p.role === 'admin' && db.auditLog.some(r => r.entity === 'appUser'),
   signInActivity: (db, p, extra) => p.role === 'admin' && extra.signInEvents.length > 0,
   otherDataRequests: (db, p) => p.role === 'admin' && db.dataRequests.length > 0,
+  // schema v4 (0009): read like the diary
+  leaveRequests: (db, p) => anyOf(db.leaveRequests, r => learner(p, r.studentId)),
+  pickupContacts: (db, p) => anyOf(db.pickupContacts, r => learner(p, r.studentId)),
+  pickups: (db, p) => anyOf(db.pickups, r => learner(p, r.studentId)),
   curriculum: (db, p) => ['admin', 'teacher'].includes(p.role) && db.presentations.length > 0,
   busPositions: (db, p) => anyOf(db.trips, t => (t.positions || []).length > 0 && (STAFF_SEES_ALL.includes(p.role)
     || (p.role === 'driver' && anyOf(db.routes, r => r.id === t.routeId && (r.driverId === p.staffId || r.attendantId === p.staffId)))
@@ -166,5 +191,6 @@ export function evaluateJs(db, actorKey, capKey, { now, today, policyRequired = 
 export function withFixture(db) {
   for (const [sid, notes] of Object.entries(FIXTURE.healthNotes)) { const s = byId(db.students, sid); if (s) s.healthNotes = notes; }
   for (const r of FIXTURE.dataRequests) db.dataRequests.push({ ...r, filedAt: '2026-10-01T05:00:00.000Z', filedBy: r.guardianId, updatedAt: '2026-10-01T05:00:00.000Z', resolution: null, decidedBy: null, decidedAt: null });
+  for (const [c, rows] of Object.entries(FIXTURE.care)) for (const r of rows) if (!db[c].some(x => x.id === r.id)) db[c].push({ ...r });
   return db;
 }

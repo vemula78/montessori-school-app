@@ -67,6 +67,8 @@ const ENUMS = {
   progressEvents: ['introduced', 'practising', 'mastered'],
   reports: ['draft', 'submitted', 'published'],
   dataRequests: ['open', 'in_progress', 'done', 'declined'],
+  leaveRequests: ['active', 'withdrawn'],
+  pickupContacts: ['active', 'removed'],
 };
 const AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
 const TERMS = ['Term 1', 'Term 2', 'Term 3'];
@@ -392,6 +394,19 @@ function checks(db, add, v) {
     ref('dataRequest', r.id, 'guardianId', 'guardians', r.guardianId);
     if (!['export', 'erasure', 'correction'].includes(r.kind)) add('BAD_KIND', 'dataRequest', r.id, `kind ${String(r.kind).slice(0, 30)}`);
     if (['done', 'declined'].includes(r.status) && !r.resolution) add('CLOSED_WITHOUT_RESOLUTION', 'dataRequest', r.id, 'a closed request needs a resolution');
+  }
+  for (const r of db.leaveRequests) {
+    ref('leaveRequest', r.id, 'studentId', 'students', r.studentId);
+    ref('leaveRequest', r.id, 'guardianId', 'guardians', r.guardianId);
+    if (!isISODate(r.fromDate) || !isISODate(r.toDate) || compareISO(r.toDate, r.fromDate) < 0) add('BAD_DATE', 'leaveRequest', r.id, 'invalid date range');
+  }
+  for (const c of db.pickupContacts) ref('pickupContact', c.id, 'studentId', 'students', c.studentId);
+  for (const p of db.pickups) {
+    ref('pickup', p.id, 'studentId', 'students', p.studentId);
+    if (!isISODate(p.date) || p.id !== `pck-${p.date}-${p.studentId}`) add('BAD_PICKUP_KEY', 'pickup', p.id, 'id must be pck-<date>-<studentId>');
+    if (!['guardian', 'contact', 'other'].includes(p.kind)) add('BAD_KIND', 'pickup', p.id, `kind ${String(p.kind).slice(0, 20)}`);
+    if (p.kind === 'guardian') ref('pickup', p.id, 'personId', 'guardians', p.personId);
+    if (p.kind === 'contact') ref('pickup', p.id, 'personId', 'pickupContacts', p.personId);
   }
   const consentKeys = new Set();
   for (const c of db.consents) {

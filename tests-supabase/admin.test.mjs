@@ -47,7 +47,7 @@ test('two-step: an enrolled principal at aal1 is refused everywhere (TWO_STEP_RE
   assert.equal((await restAs(admin.token, 'students?select=id')).data.length, 0, 'RLS: an aal1 session of an enrolled principal reads no child');
   assert.equal((await command(admin2.token, 'admin.invites')).status, 200);
   const s2 = await snapshot(admin2);
-  assert.equal(s2.status, 'active'); assert.equal(s2.schemaVersion, 3); assert.ok(s2.students.length > 0);
+  assert.equal(s2.status, 'active'); assert.equal(s2.schemaVersion, 4); assert.ok(s2.students.length > 0);
   assert.deepEqual(s2.twoStep, { enrolled: true, required: false });
 });
 

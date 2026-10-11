@@ -417,7 +417,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     getDb() { return snap.db; },
     /** Refetch the snapshot now (after a payment window closes, etc.). */
     refresh: op(() => refresh().then(() => undefined)),
-    session, people, notices, threads, calendar, transport, fees, attendance, diary, audit, admin,
+    session, people, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     auth, consent, push, import: imports, reminders, curriculum, observations, progress, reports, photos, rights, oversight,
     _supabase: sb,
   };

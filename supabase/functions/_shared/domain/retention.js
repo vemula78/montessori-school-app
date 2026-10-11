@@ -4,7 +4,7 @@
 //   observations  observations and progress events are deleted; their photos go too (live → deleting/expired,
 //                 rows already without an object are deleted)
 //   diary         diary entries and termly reports are deleted
-//   attendance    attendance rows are deleted
+//   attendance    attendance rows are deleted, with the absences reported in advance, the pick-up log and the pick-up people
 //   messages      the messages of the child's conversations are deleted (the conversation row stays)
 // Never touched: fee records (the law requires them), people, consent records, the audit log.
 // A child who left without a leaving date (import, Phase 2 data) is never due: listed as leftWithoutDate.
@@ -19,7 +19,7 @@ export const RETENTION_MAX_MONTHS = 240;
 export const CATEGORIES = { photos: 'photosMonthsAfterLeaving', observations: 'observationsMonthsAfterLeaving', diary: 'diaryMonthsAfterLeaving',
   attendance: 'attendanceMonthsAfterLeaving', messages: 'messagesMonthsAfterLeaving' };
 /** Collections whose rows a retention purge may delete (the server's persist allow-list matches). */
-export const PURGEABLE = ['observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages'];
+export const PURGEABLE = ['observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages', 'leaveRequests', 'pickups', 'pickupContacts'];
 
 /** 'YYYY-MM-DD' + n months, the day clamped to the month's end (31-Jan + 1 → 28/29-Feb). */
 export function addMonths(iso, n) {
@@ -77,7 +77,10 @@ export function retentionPlan(db, today) {
       put('photos', of('photos').filter(x => TERMINAL_STATUSES.includes(x.status)).map(x => x.id));
     }
     if (cat === 'diary') { put('diaryEntries', of('diaryEntries').map(x => x.id)); put('reports', of('reports').map(x => x.id)); }
-    if (cat === 'attendance') put('attendance', of('attendance').map(x => `${x.date}|${x.studentId}`));
+    if (cat === 'attendance') {
+      put('attendance', of('attendance').map(x => `${x.date}|${x.studentId}`));
+      for (const c of ['leaveRequests', 'pickups', 'pickupContacts']) put(c, of(c).map(x => x.id));
+    }
     if (cat === 'messages') {
       const threads = new Set((db.threads || []).filter(t => ids.has(t.studentId)).map(t => t.id));
       put('messages', (db.messages || []).filter(m => threads.has(m.threadId)).map(m => m.id));

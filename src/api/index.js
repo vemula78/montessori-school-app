@@ -426,6 +426,53 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     }),
   };
 
+  // ---- care: absences reported in advance, who may collect a child, who did. Reads follow RLS (0009): the principal
+  // all; a teacher their programmes' children; a parent their own (consent-scoped in the real app); nobody else.
+  const careScope = (roles = ['admin', 'teacher', 'parent']) => {
+    const p = allow(...roles);
+    return { p, mine: sid => p.role === 'admin' || p.studentIds.includes(sid) };
+  };
+  const inProgram = (d, programId) => (programId ? new Set(d.students.filter(s => s.programId === programId).map(s => s.id)) : null);
+  const care = {
+    /** leave({studentId?, programId?, from?}) → absences reported by parents (from = toDate on or after), soonest first. */
+    leave: op(({ studentId, programId, from } = {}) => {
+      const { p, mine } = careScope();
+      if (programId) teachesProgram(p, programId);
+      if (studentId) mustSee(p, studentId);
+      const d = db(), ids = inProgram(d, programId);
+      return (d.leaveRequests || []).filter(r => mine(r.studentId) && (!studentId || r.studentId === studentId) && (!ids || ids.has(r.studentId)) && (!from || r.toDate >= from))
+        .sort((a, b) => (a.fromDate < b.fromDate ? -1 : a.fromDate > b.fromDate ? 1 : 0));
+    }),
+    /** requestLeave({studentId, fromDate, toDate, reason?}) — a parent, for their own child, from today on. */
+    requestLeave: cmd('leave.request'),
+    withdrawLeave: cmd('leave.withdraw'),
+    markLeaveSeen: cmd('leave.markSeen'),
+    /** whoMayCollect(studentId) → {guardians (the ones this person may see), otherGuardians (count of the rest), contacts (active)}. */
+    whoMayCollect: op(studentId => {
+      const { p } = careScope();
+      mustSee(p, studentId);
+      const d = db(), s = byId(d.students, studentId);
+      const visible = new Set(visibleGuardianIds(d, p));
+      const guardians = (s.guardianIds || []).map(id => byId(d.guardians, id)).filter(g => g && visible.has(g.id))
+        .map(g => ({ id: g.id, name: fullName(g), relation: g.relation, phone: p.role === 'parent' && g.id !== p.guardianId ? null : g.phone }));
+      return { guardians, otherGuardians: (s.guardianIds || []).length - guardians.length,
+        contacts: (d.pickupContacts || []).filter(c => c.studentId === studentId && c.status === 'active') };
+    }),
+    addContact: cmd('pickup.addContact'),
+    removeContact: cmd('pickup.removeContact'),
+    /** pickups({studentId?, programId?, date?, from?}) → the pick-up log, newest first. */
+    pickups: op(({ studentId, programId, date, from } = {}) => {
+      const { p, mine } = careScope();
+      if (programId) teachesProgram(p, programId);
+      if (studentId) mustSee(p, studentId);
+      const d = db(), ids = inProgram(d, programId);
+      return (d.pickups || []).filter(x => mine(x.studentId) && (!studentId || x.studentId === studentId) && (!ids || ids.has(x.studentId))
+        && (!date || x.date === date) && (!from || x.date >= from)).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    }),
+    /** recordPickup({studentId, date, collectedBy:{kind:'guardian'|'contact'|'other', id?, name?}, note?}) — teacher or principal. */
+    recordPickup: cmd('pickup.record'),
+  };
+
   /** Children/fees CSV import helpers that need no server (parsing and the suggested column mapping). */
   const importHelpers = {
     /** parseCsv(text) → {headers, rows:[{line, values}], problems:[{line, reason}]} — pass rows to stage() unchanged. */
@@ -434,7 +481,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     suggestMapping: op((kind, headers) => { allow('admin', 'accountant'); return I.suggestMapping(kind, headers || []); }),
   };
 
-  return { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
+  return { people, notices, threads, calendar, transport, fees, attendance, diary, care, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
 }
 
 /**
@@ -919,7 +966,7 @@ export function createApi(opts = {}) {
     getDb() { return storage ? storage.db : null; },
     /** Real app: refetch the server snapshot. Demo: nothing to fetch. */
     refresh: op(() => undefined),
-    session, people, notices, threads, calendar, transport, fees, attendance, diary, audit, admin,
+    session, people, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     curriculum, observations, progress, reports, photos, rights: surface.rights, oversight: surface.oversight,
     auth, consent, push, import: imports, reminders,
     /** test hook */
