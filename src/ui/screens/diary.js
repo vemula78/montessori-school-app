@@ -1,7 +1,7 @@
 // Daily diary: teachers add meals / sleep / health / activity; parents read their own child's day.
 // Observations moved to Learning (staff-only until shared). Old diary entries of type 'observation' are still shown.
 import { todayISO, addDays, isISODate } from '../../domain/dates.js';
-import { esc, notifyQuota, empty, pageHead, fdate, ftime, fullName, options, formModal, DASH } from '../components.js';
+import { esc, notifyQuota, empty, pageHead, fdate, ftime, fullName, options, formModal, toast, DASH } from '../components.js';
 
 const AREAS = { practicalLife: 'Practical life', sensorial: 'Sensorial', language: 'Language', math: 'Mathematics', culture: 'Culture' };
 const ATE = { all: 'Ate everything', some: 'Ate some', none: 'Did not eat' };
@@ -40,6 +40,28 @@ function buildData(type, v) {
   return { text: (v.text || '').trim() };
 }
 
+// On a weekly off or holiday the diary is empty by design: say why, and offer the last school day (as attendance does).
+async function dayOffNote(ctx, date, programId) {
+  const { api, db } = ctx;
+  if (await api.calendar.isWorkingDay(date, programId).catch(() => true)) return '';
+  let reason = 'Weekly off';
+  try {
+    const evs = await api.calendar.events({ academicYearId: db.school.currentAcademicYearId, programId });
+    const h = evs.find((e) => e.type === 'holiday' && e.startDate <= date && date <= e.endDate);
+    if (h) reason = `Holiday: ${h.title}`;
+  } catch { reason = 'Weekly off or holiday'; }
+  return `<div class="banner warn"><strong>${esc(reason)}.</strong> There is no school on ${fdate(date)}.
+    <div class="row" style="margin-top:6px"><button class="btn sm" id="d-lastwork">Go to previous school day</button></div></div>`;
+}
+
+function wireLastWork(ctx, date, programId, go) {
+  ctx.el.querySelector('#d-lastwork')?.addEventListener('click', async () => {
+    let d = addDays(date, -1);
+    for (let i = 0; i < 30; i++, d = addDays(d, -1)) if (await ctx.api.calendar.isWorkingDay(d, programId)) { go({ date: d }); return; }
+    toast('No school day found in the last 30 days', 'bad');
+  });
+}
+
 async function addEntry(ctx, student, date) {
   return formModal({
     title: `Add diary entry - ${student.firstName}`, submitLabel: 'Save entry',
@@ -63,12 +85,14 @@ async function staffView(ctx) {
   const date = isISODate(query.date) ? query.date : today;
   const students = (await api.people.students({ programId })).filter((s) => s.status === 'active');
   const entries = await api.diary.forProgramDate(programId, date);
+  const dayOff = await dayOffNote(ctx, date, programId);
   ctx.el.innerHTML = `${pageHead('Daily diary', progs.find((p) => p.id === programId).name)}
     <p class="muted" style="margin:0 0 10px">Meals, naps, health and activities. Observations and photos are in <a href="#/learning">Learning</a> and stay staff-only until you share them.</p>
     <div class="row" style="margin-bottom:12px">
       ${progs.length > 1 ? `<select id="d-prog" style="width:auto" aria-label="Programme">${options(progs.map((p) => ({ value: p.id, label: p.name })), programId)}</select>` : ''}
       <button class="btn sm" id="d-prev" aria-label="Previous day">&larr;</button><input type="date" id="d-date" value="${esc(date)}" style="width:auto" aria-label="Date"><button class="btn sm" id="d-next" aria-label="Next day">&rarr;</button>
       <span class="muted">${fdate(date)}</span></div>
+    ${dayOff}
     <div class="stack">${students.length ? students.map((s) => {
       const mine = entries.filter((e) => e.studentId === s.id);
       return `<div class="card stack"><div class="row between"><div class="item-title">${esc(fullName(s))}</div><button class="btn sm primary" data-add="${esc(s.id)}">Add entry</button></div>
@@ -79,6 +103,7 @@ async function staffView(ctx) {
   ctx.el.querySelector('#d-date').addEventListener('change', (e) => e.target.value && go({ date: e.target.value }));
   ctx.el.querySelector('#d-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#d-next').addEventListener('click', () => go({ date: addDays(date, 1) }));
+  wireLastWork(ctx, date, programId, go);
   ctx.el.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-add]');
     if (!b) return;
@@ -95,18 +120,20 @@ async function parentView(ctx) {
   const today = todayISO();
   const date = isISODate(query.date) ? query.date : today;
   const entries = (await api.diary.forStudentDate(kid.id, date)).slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  const dayOff = entries.length ? '' : await dayOffNote(ctx, date, kid.programId);
   for (const e of entries) if (!e.parentReadAt) { try { await api.diary.markRead(e.id); } catch (err) { notifyQuota(err); /* read marker is not critical, but a full store must still raise the warning */ } }
   ctx.el.innerHTML = `${pageHead('Daily diary', fullName(kid))}
+    ${kids.length > 1 ? `<div class="seg" role="tablist" style="margin-bottom:10px">${kids.map((k) => `<button role="tab" aria-pressed="${k.id === kid.id}" data-kid="${esc(k.id)}">${esc(k.firstName)}</button>`).join('')}</div>` : ''}
     <div class="row" style="margin-bottom:12px">
-      ${kids.length > 1 ? `<div class="seg" role="tablist">${kids.map((k) => `<button role="tab" aria-pressed="${k.id === kid.id}" data-kid="${esc(k.id)}">${esc(k.firstName)}</button>`).join('')}</div>` : ''}
       <button class="btn sm" id="d-prev" aria-label="Previous day">&larr;</button><input type="date" id="d-date" value="${esc(date)}" style="width:auto" aria-label="Date"><button class="btn sm" id="d-next" aria-label="Next day">&rarr;</button>
       <span class="muted">${fdate(date)}</span></div>
-    <div class="stack">${entries.length ? entries.map(entryHtml).join('') : empty('No diary entries for this day', 'Entries appear here as the teacher adds them.')}</div>`;
+    ${dayOff || `<div class="stack">${entries.length ? entries.map(entryHtml).join('') : empty('No diary entries for this day', 'Entries appear here as the teacher adds them.')}</div>`}`;
   const go = (patch) => ctx.setQuery({ student: kid.id, date, ...patch });
   ctx.el.querySelectorAll('[data-kid]').forEach((b) => b.addEventListener('click', () => go({ student: b.dataset.kid })));
   ctx.el.querySelector('#d-date').addEventListener('change', (e) => e.target.value && go({ date: e.target.value }));
   ctx.el.querySelector('#d-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#d-next').addEventListener('click', () => go({ date: addDays(date, 1) }));
+  wireLastWork(ctx, date, kid.programId, go);
 }
 
 export async function render(ctx) {

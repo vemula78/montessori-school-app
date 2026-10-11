@@ -6,7 +6,7 @@ const N = {
   notices: { path: '/notices', label: 'Notices', icon: 'bell' },
   messages: { path: '/messages', label: 'Messages', icon: 'chat', short: 'Chat' },
   calendar: { path: '/calendar', label: 'Calendar', icon: 'calendar' },
-  attendance: { path: '/attendance', label: 'Attendance', icon: 'check' },
+  attendance: { path: '/attendance', label: 'Attendance', icon: 'check', short: 'Register' },
   diary: { path: '/diary', label: 'Daily diary', icon: 'book', short: 'Diary' },
   learning: { path: '/learning', label: 'Learning', icon: 'learn', short: 'Learn' },
   bus: { path: '/bus', label: 'Bus', icon: 'bus' },
@@ -37,6 +37,8 @@ const REAL_EXTRA = {
 };
 
 export const isTouchRole = (role) => role === 'parent' || role === 'driver';
+// Teachers keep the rail on a wide screen but get the bottom tab bar on a phone (their menu fits in one row).
+const PHONE_TABS = (role) => role === 'teacher';
 export function navFor(role, real = false) {
   const keys = [...(NAV[role] || ['home'])];
   if (real) {
@@ -105,9 +107,10 @@ export function renderShell(root, { school, personas, current, real = false }) {
   const role = current?.role;
   const touch = isTouchRole(role);
   const items = navFor(role, real);
-  const link = (i, cls = '') => `<a href="#${esc(i.path)}" data-path="${esc(i.path)}" data-key="${esc(i.path)}">${icon(i.icon)}<span>${esc(touch ? (i.short || i.label) : i.label)}</span><span class="nbadge badge clay hide" data-badge="${esc(i.path)}"></span></a>`;
+  const tabbed = !touch && PHONE_TABS(role);
+  const link = (i, short = touch) => `<a href="#${esc(i.path)}" data-path="${esc(i.path)}" data-key="${esc(i.path)}">${icon(i.icon)}<span>${esc(short ? (i.short || i.label) : i.label)}</span><span class="nbadge badge clay hide" data-badge="${esc(i.path)}"></span></a>`;
   root.innerHTML = `
-  <div class="shell ${touch ? 'touch' : 'staff'}">
+  <div class="shell ${touch ? 'touch' : tabbed ? 'staff tabbed' : 'staff'}">
     <header class="topbar no-print">
       <a class="brand" href="#/home"><span class="logo" aria-hidden="true"></span><span class="name">${esc(school?.name || 'School')}</span></a>
       <span class="spacer"></span>
@@ -122,6 +125,7 @@ export function renderShell(root, { school, personas, current, real = false }) {
       </main>
     </div>
     ${touch ? `<nav class="tabbar no-print" aria-label="Main">${items.map((i) => link(i)).join('')}</nav>` : ''}
+    ${tabbed ? `<nav class="tabbar no-print" aria-label="Main">${items.map((i) => link(i, true)).join('')}</nav>` : ''}
   </div>`;
   return {
     screen: root.querySelector('#screen'),

@@ -137,6 +137,14 @@ code { font-size: .88em; background: var(--clay-soft); padding: 1px 5px; border-
 .tabbar a[aria-current="page"] .ic { background: var(--clay); }
 .tabbar .badge-dot { position: absolute; }
 
+/* teachers on a phone: bottom tab bar instead of the strip; the rail from 900px as for other staff */
+@media (max-width: 899.98px) {
+  .shell.tabbed .stripnav { display: none; }
+  .shell.tabbed .main { padding-bottom: calc(var(--tab-h) + 28px); }
+  .shell.staff.tabbed .sticky-actions { bottom: var(--tab-h); }
+}
+@media (min-width: 900px) { .shell.tabbed .tabbar { display: none; } }
+
 @media (min-width: 900px) {
   .persona label { display: block; }
   .shell.staff .stripnav { display: none; }
@@ -225,6 +233,8 @@ code { font-size: .88em; background: var(--clay-soft); padding: 1px 5px; border-
 .btn:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--sky); outline-offset: 2px; }
 .btn.primary { background: var(--clay); border-color: var(--clay); color: #fff; }
 .btn.primary:hover { background: var(--clay-hover); border-color: var(--clay-hover); }
+.btn:disabled, .btn:disabled:hover { opacity: .5; cursor: not-allowed; border-color: var(--line); }
+.btn.primary:disabled { background: var(--clay); border-color: var(--clay); }
 .btn.danger { background: var(--berry); border-color: var(--berry); color: #fff; }
 .btn.ghost { background: transparent; }
 .btn.sm { min-height: 36px; padding: 0 12px; font-size: .86rem; border-radius: 10px; }
@@ -377,6 +387,8 @@ tr.row-mute td { color: var(--ink-soft); text-decoration: line-through; }
 .att-opts input:checked + span.l { background: var(--mustard); border-color: var(--mustard); color: var(--ink); }
 .att-opts input:checked + span.v { background: var(--sky); border-color: var(--sky); color: #fff; }
 .att-opts input:focus-visible + span { outline: 3px solid var(--sky); outline-offset: 2px; }
+.att-opts input:disabled + span { opacity: .45; cursor: not-allowed; }
+.att-opts label:has(input:disabled) { cursor: not-allowed; }
 .diary-entry { border-left: 5px solid var(--clay); padding: 10px 12px; background: var(--paper); border-radius: 10px; border-top: 1px solid var(--line); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .diary-entry.meal { border-left-color: var(--sun-deep); }
 .diary-entry.sleep { border-left-color: var(--sky); }

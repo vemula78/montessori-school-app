@@ -51,7 +51,7 @@ export async function render(ctx) {
     ${working ? '' : `<div class="banner warn"><strong>${esc(reason)}.</strong> This is not a working day, so attendance cannot be saved.
       <div class="row" style="margin-top:6px"><button class="btn sm" id="a-lastwork">Go to previous working day</button></div></div>`}
     ${rows.length ? `
-    <form id="a-form"><div class="card flat" style="padding:0;overflow:hidden">
+    <form id="a-form"><fieldset${working ? '' : ' disabled'} style="border:0;margin:0;padding:0;min-width:0"><div class="card flat" style="padding:0;overflow:hidden">
       ${rows.map((r) => {
         const s = stu.get(r.studentId);
         const sm = summaries.get(r.studentId);
@@ -60,7 +60,7 @@ export async function render(ctx) {
       }).join('')}
     </div>
     <div class="sticky-actions row"><button type="button" class="btn" id="a-allp">Mark all present</button><button type="submit" class="btn primary">Save attendance</button>
-      <small>P present &middot; A absent &middot; L late &middot; Lv on leave</small></div></form>` : empty('No children in this programme')}`;
+      <small>P present &middot; A absent &middot; L late &middot; Lv on leave</small></div></fieldset></form>` : empty('No children in this programme')}`;
 
   const go = (patch) => ctx.setQuery({ program: programId, date, ...patch });
   ctx.el.querySelector('#a-prog')?.addEventListener('change', (e) => go({ program: e.target.value }));

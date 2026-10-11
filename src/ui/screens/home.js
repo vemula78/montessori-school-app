@@ -61,7 +61,9 @@ async function parentHome(ctx) {
     const diaryToday = db.diaryEntries.filter((d) => d.studentId === k.id && d.date === today).length;
     let balance = null;
     try { balance = (await api.fees.invoices({ studentId: k.id })).filter((i) => i.status !== 'cancelled').reduce((s, i) => s + (i.balancePaise || 0), 0); } catch { /* unavailable: shown as a dash */ }
-    const attBadge = att ? badge(att.status, att.status === 'present' ? 'ok' : att.status === 'absent' ? 'bad' : 'warn') : badge('Not marked yet', 'mute');
+    let working = null; // null = unknown
+    try { working = await api.calendar.isWorkingDay(today, k.programId); } catch { /* unknown: fall back to "Not marked yet" */ }
+    const attBadge = att ? badge(att.status, att.status === 'present' ? 'ok' : att.status === 'absent' ? 'bad' : 'warn') : badge(working === false ? 'No school today' : 'Not marked yet', 'mute');
     cards.push(`<div class="card stack">
       <div class="row"><span class="avatar">${esc((k.firstName[0] || '') + (k.lastName[0] || ''))}</span><div class="grow"><div class="item-title">${esc(fullName(k))}</div><small>${esc(progs.get(k.programId)?.name || DASH)}</small></div>${attBadge}</div>
       <div class="grid cols-3">
@@ -113,19 +115,42 @@ async function adminHome(ctx) {
   const ayId = db.school.currentAcademicYearId;
   const students = await api.people.students();
   let present = 0, marked = 0, attFail = 0;
+  const unmarkedProgs = [];
   for (const p of db.programs) {
-    try { const l = await api.attendance.forDate(today, p.id); marked += l.filter((r) => r.status).length; present += l.filter((r) => r.status === 'present' || r.status === 'late').length; } catch { attFail += 1; }
+    try {
+      const l = await api.attendance.forDate(today, p.id);
+      marked += l.filter((r) => r.status).length; present += l.filter((r) => r.status === 'present' || r.status === 'late').length;
+      if (l.some((r) => !r.status) && await api.calendar.isWorkingDay(today, p.id)) unmarkedProgs.push(p.name);
+    } catch { attFail += 1; }
   }
-  let outstanding = null;
+  let outstanding = null, overdueKids = null;
   try {
     const r = await api.fees.outstandingReport({ academicYearId: ayId, asOfDate: today });
     outstanding = r.totals?.balancePaise ?? r.rows.reduce((s, x) => s + (x.balancePaise || 0), 0);
+    overdueKids = r.rows.filter((x) => (x.overdueDays || 0) > 0 && x.balancePaise > 0).length;
   } catch { /* unavailable: shown as a dash */ }
+  let openRequests = null;
+  try { openRequests = (await api.rights.list()).filter((r) => r.status === 'open' || r.status === 'in_progress').length; } catch { /* unavailable */ }
   let active = 0, busFail = 0;
   try {
     for (const r of await api.transport.routes()) { try { if (await api.transport.activeTrip(r.id)) active += 1; } catch { busFail += 1; } }
   } catch { busFail += 1; }
   const evs = await upcomingEvents(ctx);
+  const notices = indexBy(db.notices);
+  const awaiting = db.noticeReceipts.filter((r) => notices.get(r.noticeId)?.requiresAck && !r.ackAt);
+  const awaitingNotices = new Set(awaiting.map((r) => r.noticeId)).size;
+  const unreadMsgs = db.messages.filter((m) => m.senderRole === 'parent' && !m.readAt).length;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const todo = [
+    unmarkedProgs.length && ['#/attendance', 'check', `Attendance not complete today: ${unmarkedProgs.join(', ')}`],
+    unreadMsgs && ['#/messages', 'chat', `${plural(unreadMsgs, 'parent message', 'parent messages')} not yet read by staff`],
+    awaitingNotices && ['#/notices', 'bell', `${plural(awaitingNotices, 'notice', 'notices')} awaiting acknowledgement (${plural(awaiting.length, 'parent', 'parents')})`],
+    overdueKids && ['#/reports', 'rupee', `${plural(overdueKids, 'child', 'children')} with overdue fees`],
+    openRequests && [ctx.href('/admin', { tab: 'requests' }), 'shield', `${plural(openRequests, 'open data request', 'open data requests')} (privacy law: answer promptly)`],
+  ].filter(Boolean);
+  const attention = `<h2 style="margin-top:20px">Needs attention</h2>${todo.length
+    ? `<ul class="list card-list">${todo.map(([h, ic, t]) => `<li><a class="row" href="${esc(h)}" style="text-decoration:none;color:inherit">${icon(ic)}<span class="grow">${esc(t)}</span><span aria-hidden="true">&rarr;</span></a></li>`).join('')}</ul>`
+    : empty('All clear', 'Nothing is waiting for you right now.')}`;
   return `
     <div class="page-head"><div><h1>School overview</h1><div class="sub">${fdate(today)} &middot; ${esc(db.academicYears.find((a) => a.id === ayId)?.label || DASH)}</div></div></div>
     ${attFail || busFail ? unavailable(`${attFail ? 'Some attendance registers' : ''}${attFail && busFail ? ' and ' : ''}${busFail ? 'Some bus data' : ''}`) : ''}
@@ -135,6 +160,7 @@ async function adminHome(ctx) {
       ${kpi('fees outstanding', money(outstanding), outstanding ? 'bad' : '')}
       ${kpi('buses on the road', busFail ? DASH : esc(active))}
     </div>
+    ${attention}
     <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}
     <h2 style="margin-top:20px">Go to</h2>
     <div class="grid cols-3">${tile('#/notices', 'bell', 'Notices', 'Send and track acknowledgements')}${tile('#/calendar', 'calendar', 'Calendar', 'Holidays, events, CSV import')}${tile('#/attendance', 'check', 'Attendance')}${tile('#/learning', 'learn', 'Learning', 'Observations, progress, reports, curriculum')}${tile('#/bus', 'bus', 'Bus fleet')}${tile('#/fees', 'rupee', 'Fees')}${tile('#/reports', 'chart', 'Reports')}</div>`;

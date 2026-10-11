@@ -1,6 +1,6 @@
 // Shared UI helpers. Every user-supplied string must pass through esc() before innerHTML.
 import { formatPaise } from '../domain/money.js';
-import { formatDate, formatDateTime, formatTime } from '../domain/dates.js';
+import { formatDate, formatDateTime, formatTime, diffDays } from '../domain/dates.js';
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
@@ -187,6 +187,13 @@ export const invoiceStatusBadge = (status, overdue = false) => {
   if (status === 'partiallyPaid') return badge(overdue ? 'Part-paid - overdue' : 'Part-paid', overdue ? 'bad' : 'warn');
   return badge(overdue ? 'Overdue' : 'Issued', overdue ? 'bad' : 'info');
 };
+
+// "in 4 days" / "tomorrow" / "today" for an invoice due within two weeks; '' otherwise (an overdue one already has its badge).
+export function dueHint(dueDate, today) {
+  const d = diffDays(today, dueDate);
+  if (d < 0 || d > 14) return '';
+  return d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
+}
 
 export const PROGRAM_COLORS = ['clay', 'sky', 'ok'];
 

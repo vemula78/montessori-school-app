@@ -2,7 +2,7 @@
 // (a mock in the demo, the real payment provider in the real app).
 import { todayISO } from '../../domain/dates.js';
 import { rupeesToPaise } from '../../domain/money.js';
-import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH } from '../components.js';
+import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, dueHint, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH } from '../components.js';
 import { isRealMode } from '../mode.js';
 import { payOnline, resumePending } from './pay-online.js';
 
@@ -83,6 +83,7 @@ async function parentList(ctx) {
   const blocks = [];
   const store = new Map();
   const pending = REAL ? await resumePending(ctx) : '';
+  const today = todayISO();
   for (const k of kids) {
     if (k.status !== 'active') {
       blocks.push(`<div class="card"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3>${badge('Left', 'mute')}</div><small>This child has left the school; fee records are held by the school office.</small></div>`);
@@ -93,7 +94,7 @@ async function parentList(ctx) {
     const open = inv.filter(isOpen);
     const bal = open.reduce((s, i) => s + i.balancePaise, 0);
     blocks.push(`<div class="card stack"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3><div class="row">${bal ? badge(`Due ${money(bal)}`, 'bad') : badge('All paid', 'ok')}<a class="btn sm" href="#/fees/student/${esc(k.id)}">Payments &amp; receipts</a></div></div>
-      ${inv.length ? `<ul class="list">${inv.map((i) => `<li><div class="row between"><div><a href="#/fees/invoice/${esc(i.id)}" class="item-title">${esc(i.installmentName)}</a> <small>${esc(i.number)} &middot; due ${fdate(i.dueDate)}</small></div>
+      ${inv.length ? `<ul class="list">${inv.map((i) => `<li><div class="row between"><div><a href="#/fees/invoice/${esc(i.id)}" class="item-title">${esc(i.installmentName)}</a> <small>${esc(i.number)} &middot; due ${fdate(i.dueDate)}${isOpen(i) && dueHint(i.dueDate, today) ? ` <strong>(${esc(dueHint(i.dueDate, today))})</strong>` : ''}</small></div>
         <div class="row"><span class="num">${isOpen(i) ? money(i.balancePaise) : money(i.totalPaise)}</span>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</div></div></li>`).join('')}</ul>` : empty('No invoices yet')}
       ${open.length ? `<button class="btn primary" data-pay="${esc(k.id)}">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>` : ''}</div>`);
   }
