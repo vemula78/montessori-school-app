@@ -343,6 +343,15 @@ export const COMMANDS = {
     authorize: (p, db, [entry]) => { allow(p, 'admin', 'teacher'); mustSee(p, db, entry && entry.studentId); },
     run: (db, [entry], ctx) => D.addDiaryEntry(db, entry, ctx),
   },
+  'diary.addMany': {
+    slice: 'classroom',
+    authorize(p, db, [input]) {
+      allow(p, 'admin', 'teacher');
+      teachesProgram(p, input && input.programId);
+      for (const id of (input && input.studentIds) || []) if (byId(db.students, id) && !sees(p, id)) deny('Not your student');
+    },
+    run: (db, [input], ctx) => D.addDiaryEntries(db, input || {}, ctx),
+  },
   'diary.markRead': {
     slice: 'classroom', load: ([entryId]) => ({ diaryEntryId: entryId }),
     authorize(p, db, [entryId]) {

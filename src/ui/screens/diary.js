@@ -76,6 +76,29 @@ async function addEntry(ctx, student, date) {
   });
 }
 
+// The same entry for the whole class (lunch, nap, a circle activity); children absent or on leave start unticked.
+async function addForClass(ctx, programId, students, date) {
+  let away = new Map();
+  try { away = new Map((await ctx.api.attendance.forDate(date, programId)).filter((r) => r.status === 'absent' || r.status === 'leave').map((r) => [r.studentId, r.status])); } catch { /* register unavailable: everyone ticked */ }
+  const kids = students.map((s) => `<label class="check sm"><input type="checkbox" name="studentIds" value="${esc(s.id)}"${away.has(s.id) ? '' : ' checked'}> ${esc(fullName(s))}${away.has(s.id) ? ` <small class="muted">(${away.get(s.id) === 'leave' ? 'on leave' : 'absent'})</small>` : ''}</label>`).join('');
+  return formModal({
+    title: 'Diary entry for the whole class', submitLabel: 'Save for ticked children',
+    fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(Object.entries(ADD_TYPES).map(([value, label]) => ({ value, label })), 'meal')}</select></label><div id="d-fields">${typeFields('meal')}</div>
+      <fieldset class="field" style="border:0;padding:0;margin:0 0 12px"><legend class="lbl" style="font-size:.82rem;font-weight:800">Children</legend>
+        <small>Untick a child to leave them out; add their own entry afterwards if it was different.</small>${kids}</fieldset>`,
+    onOpen: (d) => {
+      const sel = d.querySelector('#d-type');
+      sel.addEventListener('change', () => { d.querySelector('#d-fields').innerHTML = typeFields(sel.value); });
+    },
+    onSubmit: async (v) => {
+      const studentIds = [].concat(v.studentIds || []);
+      if (!studentIds.length) throw new Error('Tick at least one child');
+      const r = await ctx.api.diary.addMany({ programId, date, studentIds, type: v.type, data: buildData(v.type, v) });
+      toast(`Saved for ${r.added} child${r.added === 1 ? '' : 'ren'}`);
+    },
+  });
+}
+
 async function staffView(ctx) {
   const { api, db, persona, query } = ctx;
   const progs = persona.role === 'teacher' ? db.programs.filter((p) => (persona.programIds || []).includes(p.id)) : db.programs;
@@ -91,7 +114,7 @@ async function staffView(ctx) {
     <div class="row" style="margin-bottom:12px">
       ${progs.length > 1 ? `<select id="d-prog" style="width:auto" aria-label="Programme">${options(progs.map((p) => ({ value: p.id, label: p.name })), programId)}</select>` : ''}
       <button class="btn sm" id="d-prev" aria-label="Previous day">&larr;</button><input type="date" id="d-date" value="${esc(date)}" style="width:auto" aria-label="Date"><button class="btn sm" id="d-next" aria-label="Next day">&rarr;</button>
-      <span class="muted">${fdate(date)}</span></div>
+      <span class="muted">${fdate(date)}</span>${students.length ? '<button class="btn sm primary" id="d-class">Whole class</button>' : ''}</div>
     ${dayOff}
     <div class="stack">${students.length ? students.map((s) => {
       const mine = entries.filter((e) => e.studentId === s.id);
@@ -104,6 +127,7 @@ async function staffView(ctx) {
   ctx.el.querySelector('#d-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#d-next').addEventListener('click', () => go({ date: addDays(date, 1) }));
   wireLastWork(ctx, date, programId, go);
+  ctx.el.querySelector('#d-class')?.addEventListener('click', async () => { if (await addForClass(ctx, programId, students, date)) ctx.rerender(); });
   ctx.el.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-add]');
     if (!b) return;

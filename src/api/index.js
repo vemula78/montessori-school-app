@@ -319,6 +319,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     forStudentDate: op((studentId, date) => { const p = allow('admin', 'teacher', 'parent'); mustSee(p, studentId); return D.diaryForStudentDate(db(), studentId, date); }),
     forProgramDate: op((programId, date) => { const p = allow('admin', 'teacher'); teachesProgram(p, programId); return D.diaryForProgramDate(db(), programId, date); }),
     add: cmd('diary.add'),
+    /** addMany({programId, date, studentIds, type, data}) — the same entry for several children, all or none. */
+    addMany: cmd('diary.addMany'),
     markRead: cmd('diary.markRead'),
   };
 

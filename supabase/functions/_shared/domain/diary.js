@@ -45,6 +45,21 @@ export function addDiaryEntry(db, { studentId, date, type, data }, ctx) {
   return entry;
 }
 
+/**
+ * One entry of the same type and content for several children of one programme (lunch, nap, a class activity), in one
+ * write: every child and the entry are checked first, so either all entries are added or none.
+ */
+export function addDiaryEntries(db, { programId, studentIds, date, type, data }, ctx) {
+  if (!Array.isArray(studentIds) || !studentIds.length) fail('VALIDATION', 'Choose at least one child');
+  if (new Set(studentIds).size !== studentIds.length) fail('VALIDATION', 'A child is listed twice');
+  const inProgram = new Set(activeStudents(db, programId).map(s => s.id));
+  for (const id of studentIds) if (!inProgram.has(id)) fail('VALIDATION', 'Every child must be an active child of this programme');
+  const draft = { diaryEntries: [], students: db.students };
+  const entries = studentIds.map(studentId => addDiaryEntry(draft, { studentId, date, type, data }, ctx));
+  db.diaryEntries.push(...entries);
+  return { added: entries.length, entries };
+}
+
 const byCreated = (a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
 
 export function diaryForStudentDate(db, studentId, date) {
