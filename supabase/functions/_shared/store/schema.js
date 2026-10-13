@@ -96,9 +96,11 @@ export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents
  *   A person the family authorises to collect the child (besides the guardians); at most 6 active per child. Removing
  *   someone blanks the phone (the name stays for older pick-up records).
  * @typedef {{id:string, studentId:string, date:string, kind:'guardian'|'contact'|'other', personId:string|null, name:string|null,
- *   note:string, time:string|null, at:string, recordedBy:string, correctedAt:string|null}} Pickup
+ *   note:string, time:string|null, at:string, recordedBy:string, correctedAt:string|null,
+ *   history:{kind:string, personId:string|null, name:string|null, note:string, time:string|null, at:string, recordedBy:string}[]}} Pickup
  *   Who collected the child that day; id = 'pck-<date>-<studentId>' (one per child and day). name only for kind 'other'.
  *   time = when collected ('HH:MM', required for an earlier day); at = when it was recorded.
+ *   history = earlier versions when the record was corrected, oldest first.
  * @typedef {{id:string, ts:string, actorRole:string, actorId:string, entity:string, entityId:string, action:string, summary:string}} AuditRow
  * @typedef {{invoice:Object<string,number>, receipt:Object<string,number>, refund:Object<string,number>}} Counters
  * @typedef {{schemaVersion:number, rev:number, school:School, academicYears:AcademicYear[], programs:Program[],

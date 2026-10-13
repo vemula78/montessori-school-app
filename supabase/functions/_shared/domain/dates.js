@@ -78,6 +78,16 @@ export function todayISO(now = new Date()) {
   return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
 }
 
+/** Time of day 'HH:MM' of `now`: in the business zone when one is set, else the device's (as todayISO). */
+export function nowHHMM(now = new Date()) {
+  if (businessOffsetMin !== null) {
+    const m = Math.floor(now.getTime() / 60000) + businessOffsetMin;
+    const day = ((m % 1440) + 1440) % 1440;
+    return `${pad2(Math.floor(day / 60))}:${pad2(day % 60)}`;
+  }
+  return `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+}
+
 /** Current instant as ISO-8601 UTC. */
 export function nowISO(now = new Date()) {
   return now.toISOString();

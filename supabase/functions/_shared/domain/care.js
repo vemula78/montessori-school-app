@@ -106,6 +106,7 @@ export const pickupId = (date, studentId) => `pck-${date}-${studentId}`;
  * collectedBy: {kind:'guardian', id} | {kind:'contact', id} | {kind:'other', name}; 'other' needs a note.
  * time: when the child was collected ('HH:MM', school time), needed for an earlier day; `at` is when it was recorded.
  * Names are stored only for 'other' (no row of its own); a guardian or contact is referred to by id.
+ * Recording again keeps the earlier version in `history` and is audited ('correct').
  */
 export function recordPickup(db, { studentId, date, collectedBy, note, time } = {}, ctx) {
   const s = activeChild(db, studentId);
@@ -134,8 +135,11 @@ export function recordPickup(db, { studentId, date, collectedBy, note, time } = 
   }
   const id = pickupId(date, studentId);
   const prev = (db.pickups || []).find(p => p.id === id);
-  const p = { id, studentId, date, ...row, note: text, time: t, at: ctx.now, recordedBy: ctx.actor.id, correctedAt: prev ? ctx.now : null };
+  // a correction keeps what was recorded before (oldest first), so a handover record is never silently rewritten
+  const history = prev ? [...(prev.history || []), { kind: prev.kind, personId: prev.personId, name: prev.name, note: prev.note, time: prev.time, at: prev.at, recordedBy: prev.recordedBy }] : [];
+  const p = { id, studentId, date, ...row, note: text, time: t, at: ctx.now, recordedBy: ctx.actor.id, correctedAt: prev ? ctx.now : null, history };
   if (prev) Object.assign(prev, p); else db.pickups.push(p);
+  if (prev) appendAudit(db, ctx, { entity: 'pickup', entityId: id, action: 'correct', summary: `pick-up record corrected for ${studentId} (was ${history.at(-1).kind}, now ${row.kind})` });
   if (row.kind === 'other') appendAudit(db, ctx, { entity: 'pickup', entityId: id, action: 'otherPerson', summary: `${studentId} collected by someone not on the list (note recorded)` });
   return prev || p;
 }

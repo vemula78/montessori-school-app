@@ -1,17 +1,16 @@
 // Going home: the teacher records who collected each child (guardians and the family's pick-up list are shown with their
 // phone numbers). Someone not on the list needs a note of how the family confirmed it; the principal sees it in the audit log.
-import { todayISO, addDays, isISODate } from '../../domain/dates.js';
+import { todayISO, addDays, isISODate, nowHHMM } from '../../domain/dates.js';
 import { esc, empty, pageHead, fdate, ftime, fullName, badge, options, formModal, toast } from '../components.js';
 
 const LATE_DAYS = 7; // as the domain allows (PICKUP_LATE_DAYS)
-const nowHHMM = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const whenOf = (p) => (p.time ? esc(p.time) : ftime(p.at));
 const ATT = { present: ['Present', 'ok'], late: ['Late', 'warn'], absent: ['Absent', 'bad'], leave: ['On leave', 'mute'] };
 
 function collectedName(p, who) {
   if (!p) return '';
   if (p.kind === 'other') return `${p.name} (not on the list)`;
-  if (p.kind === 'contact') return who.contacts.find((c) => c.id === p.personId)?.name || 'a person on the list';
+  if (p.kind === 'contact') return [...who.contacts, ...who.former].find((c) => c.id === p.personId)?.name || 'a person on the list';
   return who.guardians.find((g) => g.id === p.personId)?.name || 'a guardian';
 }
 

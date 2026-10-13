@@ -47,6 +47,7 @@ const Care = await import('../src/ui/screens/care.js');
 const Attendance = await import('../src/ui/screens/attendance.js');
 const Pickup = await import('../src/ui/screens/pickup.js');
 const Shell = await import('../src/ui/shell.js');
+const Diary = await import('../src/ui/screens/diary.js');
 
 test("parent page: own child's absences, guardians and pick-up people; what parents type is escaped; another family sees none of it", async () => {
   const api = await mkApi();
@@ -97,4 +98,43 @@ test("teacher's phone tab bar: Pick-up is in, the calendar stays in the rail (se
   assert.match(bar, /<span>Pick-up<\/span>/);
   assert.doesNotMatch(bar, /<span>Calendar<\/span>/);
   assert.equal((bar.match(/<a /g) || []).length, 7);
+});
+
+test('Going home: a pick-up by someone since removed from the list still shows their name (audit 2026-10-13 #6)', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const c = await api.care.addContact({ studentId: 'stu-01', name: 'Rani Removedsen', relation: 'Grandmother', phone: '9000000381' });
+  api.session.set(TEACHER);
+  await api.care.recordPickup({ studentId: 'stu-01', date: todayISO(), collectedBy: { kind: 'contact', id: c.id }, time: '15:30' });
+  api.session.set(PARENT);
+  await api.care.removeContact(c.id);
+  const who = await api.care.whoMayCollect('stu-01');
+  assert.ok(!who.contacts.some((x) => x.id === c.id), 'not on the current list');
+  assert.match(await draw(api, TEACHER, Pickup), /Collected by <strong>Rani Removedsen<\/strong>/);
+  assert.match(await draw(api, PARENT, Care, { student: 'stu-01' }), /Rani Removedsen/);
+});
+
+test('whole-class diary: a child whose parent reported an absence starts unticked even before the register is taken (audit 2026-10-13 #5)', async () => {
+  const api = await mkApi();
+  api.session.set(TEACHER);
+  const pid = api.session.current().programIds[0];
+  const day = await nextSchoolDay(api, pid);
+  api.session.set(PARENT);
+  for (const r of await api.care.leave({ studentId: 'stu-01' })) if (r.status === 'active') await api.care.withdrawLeave(r.id);
+  await api.care.requestLeave({ studentId: 'stu-01', fromDate: day, toDate: day, reason: 'Wedding' });
+  api.session.set(TEACHER);
+  const ctx = { api, persona: api.session.current(), query: { program: pid, date: day }, params: {}, el: fake(), get db() { return api.getDb(); },
+    go() {}, setQuery() {}, href, toast() {}, onChange() {}, cleanup() {}, rerender() {} };
+  await Diary.render(ctx);
+  const made = [];
+  const orig = document.createElement;
+  document.createElement = () => { const d = fake(); d.showModal = () => {}; d.close = () => {}; made.push(d); return d; };
+  try {
+    ctx.el.querySelector('#d-class').handlers.click[0]();
+    for (let i = 0; i < 20 && !made.length; i++) await new Promise((r) => setTimeout(r, 5));
+  } finally { document.createElement = orig; }
+  const html = made[0].innerHTML;
+  assert.match(html, /value="stu-01">/, 'stu-01 is listed unticked');
+  assert.match(html, /stu-01">[^<]*<small class="muted">\(reported absent\)/);
+  assert.match(html, /value="stu-0[^1]" checked/, 'the others start ticked');
 });

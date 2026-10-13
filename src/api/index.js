@@ -447,7 +447,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     requestLeave: cmd('leave.request'),
     withdrawLeave: cmd('leave.withdraw'),
     markLeaveSeen: cmd('leave.markSeen'),
-    /** whoMayCollect(studentId) → {guardians (the ones this person may see), otherGuardians (count of the rest), contacts (active)}. */
+    /** whoMayCollect(studentId) → {guardians (the ones this person may see), otherGuardians (count of the rest), contacts (active),
+     *  former ({id, name} of people removed from the list, so older pick-up records still read)}. */
     whoMayCollect: op(studentId => {
       const { p } = careScope();
       mustSee(p, studentId);
@@ -456,7 +457,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
       const guardians = (s.guardianIds || []).map(id => byId(d.guardians, id)).filter(g => g && visible.has(g.id))
         .map(g => ({ id: g.id, name: fullName(g), relation: g.relation, phone: p.role === 'parent' && g.id !== p.guardianId ? null : g.phone }));
       return { guardians, otherGuardians: (s.guardianIds || []).length - guardians.length,
-        contacts: (d.pickupContacts || []).filter(c => c.studentId === studentId && c.status === 'active') };
+        contacts: (d.pickupContacts || []).filter(c => c.studentId === studentId && c.status === 'active'),
+        former: (d.pickupContacts || []).filter(c => c.studentId === studentId && c.status !== 'active').map(c => ({ id: c.id, name: c.name })) };
     }),
     addContact: cmd('pickup.addContact'),
     removeContact: cmd('pickup.removeContact'),

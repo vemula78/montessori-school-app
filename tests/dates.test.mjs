@@ -7,7 +7,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseDate, formatDate, formatDateTime, formatTime, todayISO, addDays, diffDays, isWeekend,
-  secondsSince, compareISO, dayOfWeek, tsToMs,
+  secondsSince, compareISO, dayOfWeek, tsToMs, nowHHMM, setBusinessZone,
 } from '../src/domain/dates.js';
 import { nextWorkingDay, isWorkingDay } from '../src/domain/calendar.js';
 import { createEmptyDb } from '../src/store/schema.js';
@@ -91,4 +91,14 @@ test('lint: no Date.parse( or new Date(<string literal>) in src/domain', () => {
     });
   }
   assert.deepEqual(offenders, []);
+});
+
+test('nowHHMM: the time of day in the business zone when one is set (audit 2026-10-13 #2)', () => {
+  const at = new Date(Date.UTC(2026, 9, 2, 20, 45)); // 02:15 IST on 03-Oct
+  try {
+    setBusinessZone(330);
+    assert.equal(nowHHMM(at), '02:15');
+    assert.equal(nowHHMM(new Date(Date.UTC(2026, 9, 2, 18, 29))), '23:59');
+  } finally { setBusinessZone(null); }
+  assert.equal(nowHHMM(at), `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`, 'device time when no zone is set');
 });

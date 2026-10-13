@@ -132,7 +132,7 @@ test('pickup.record: guardian, listed person or someone else with a note; one ro
   const before = db.auditLog.length;
   const p3 = run(db, TEACHER_PA, 'pickup.record', [{ studentId: 'stu-01', date: TODAY, collectedBy: { kind: 'other', name: 'Family Driver' }, note: 'Mother phoned at 14:30' }]);
   assert.equal(p3.name, 'Family Driver');
-  assert.equal(db.auditLog.length, before + 1, 'someone not on the list is audited');
+  assert.deepEqual(db.auditLog.slice(before).map(a => a.action), ['correct', 'otherPerson'], 'someone not on the list is audited (and this one was a correction)');
   assert.ok(!db.auditLog.at(-1).summary.includes('Family Driver'));
   assert.throws(() => run(db, TEACHER_PA, 'pickup.record', [{ studentId: 'stu-01', date: '2026-10-03', collectedBy: { kind: 'guardian', id: 'grd-01' } }]), { code: 'VALIDATION' }, 'not ahead of time');
   assert.throws(() => run(db, TEACHER_PA, 'pickup.record', [{ studentId: 'stu-01', date: '2026-09-24', collectedBy: { kind: 'guardian', id: 'grd-01' } }]), { code: 'VALIDATION' }, 'at most a week late');
@@ -142,6 +142,24 @@ test('pickup.record: guardian, listed person or someone else with a note; one ro
   for (const who of [TEACHER_PB, ACCOUNTANT, DRIVER, PARENT_01]) assert.throws(() => run(db, who, 'pickup.record', [{ studentId: 'stu-01', date: TODAY, collectedBy: { kind: 'guardian', id: 'grd-01' } }]), { code: 'NOT_ALLOWED' });
   run(db, PARENT_01, 'pickup.removeContact', [c.id]);
   assert.throws(() => run(db, TEACHER_PA, 'pickup.record', [{ studentId: 'stu-01', date: TODAY, collectedBy: { kind: 'contact', id: c.id } }]), { code: 'VALIDATION' }, 'a removed person cannot be chosen');
+});
+
+test('pickup.record: a correction keeps what was recorded before and is audited (audit 2026-10-13 #1)', () => {
+  const db = seed();
+  const c = run(db, PARENT_01, 'pickup.addContact', [{ studentId: 'stu-01', name: 'Rani Notrealsen', relation: 'Grandmother', phone: '9000000301' }]);
+  run(db, TEACHER_PA, 'pickup.record', [{ studentId: 'stu-01', date: TODAY, collectedBy: { kind: 'other', name: 'Family Driver' }, note: 'Mother phoned at 14:30', time: '15:10' }]);
+  run(db, TEACHER_PA, 'pickup.record', [{ studentId: 'stu-01', date: TODAY, collectedBy: { kind: 'contact', id: c.id }, time: '15:20' }]);
+  const p = run(db, ADMIN, 'pickup.record', [{ studentId: 'stu-01', date: TODAY, collectedBy: { kind: 'guardian', id: 'grd-01' }, time: '15:25' }]);
+  assert.equal(db.pickups.filter(x => x.studentId === 'stu-01' && x.date === TODAY).length, 1, 'still one row per child and day');
+  assert.equal(p.kind, 'guardian');
+  assert.deepEqual(p.history.map(h => [h.kind, h.name, h.note, h.time, h.recordedBy]), [
+    ['other', 'Family Driver', 'Mother phoned at 14:30', '15:10', 'stf-teacher-pa'],
+    ['contact', null, '', '15:20', 'stf-teacher-pa'],
+  ]);
+  assert.ok(p.history.every(h => !('history' in h)), 'no nesting');
+  const corr = db.auditLog.filter(a => a.entity === 'pickup' && a.entityId === p.id && a.action === 'correct');
+  assert.equal(corr.length, 2);
+  assert.ok(corr.every(a => !a.summary.includes('Family Driver')), 'audit rows carry ids, not names');
 });
 
 // ---------------------------------------------------------------- privacy: export, erasure, retention

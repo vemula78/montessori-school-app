@@ -26,7 +26,7 @@ function whoHtml(kid, who) {
 
 function pickupsHtml(rows, who) {
   if (!rows.length) return '<p class="muted" style="margin:0">No pick-ups recorded in the last two weeks.</p>';
-  const name = (p) => (p.kind === 'other' ? `${p.name} (not on the list)` : p.kind === 'contact' ? who.contacts.find((c) => c.id === p.personId)?.name || 'a person on the list'
+  const name = (p) => (p.kind === 'other' ? `${p.name} (not on the list)` : p.kind === 'contact' ? [...who.contacts, ...who.former].find((c) => c.id === p.personId)?.name || 'a person on the list'
     : who.guardians.find((g) => g.id === p.personId)?.name || 'a guardian');
   return `<ul class="list">${rows.map((p) => `<li><div class="row between"><div><div class="item-title">${fdate(p.date)}</div><small>Collected by ${esc(name(p))}${p.note ? ` &mdash; ${esc(p.note)}` : ''}</small></div><span class="muted">${p.time ? esc(p.time) : ftime(p.at)}</span></div></li>`).join('')}</ul>`;
 }

@@ -76,11 +76,18 @@ async function addEntry(ctx, student, date) {
   });
 }
 
-// The same entry for the whole class (lunch, nap, a circle activity); children absent or on leave start unticked.
+// The same entry for the whole class (lunch, nap, a circle activity); children absent or on leave start unticked, and so
+// do children whose parent reported an absence, while the register has nothing for them.
+const AWAY = { leave: 'on leave', absent: 'absent', reported: 'reported absent' };
 async function addForClass(ctx, programId, students, date) {
-  let away = new Map();
-  try { away = new Map((await ctx.api.attendance.forDate(date, programId)).filter((r) => r.status === 'absent' || r.status === 'leave').map((r) => [r.studentId, r.status])); } catch { /* register unavailable: everyone ticked */ }
-  const kids = students.map((s) => `<label class="check sm"><input type="checkbox" name="studentIds" value="${esc(s.id)}"${away.has(s.id) ? '' : ' checked'}> ${esc(fullName(s))}${away.has(s.id) ? ` <small class="muted">(${away.get(s.id) === 'leave' ? 'on leave' : 'absent'})</small>` : ''}</label>`).join('');
+  const away = new Map();
+  let marked = new Map();
+  try { marked = new Map((await ctx.api.attendance.forDate(date, programId)).filter((r) => r.status).map((r) => [r.studentId, r.status])); } catch { /* register unavailable */ }
+  try {
+    for (const r of await ctx.api.care.leave({ programId, from: date })) if (r.status === 'active' && r.fromDate <= date && !marked.has(r.studentId)) away.set(r.studentId, 'reported');
+  } catch { /* absences unavailable */ }
+  for (const [id, st] of marked) if (st === 'absent' || st === 'leave') away.set(id, st);
+  const kids = students.map((s) => `<label class="check sm"><input type="checkbox" name="studentIds" value="${esc(s.id)}"${away.has(s.id) ? '' : ' checked'}> ${esc(fullName(s))}${away.has(s.id) ? ` <small class="muted">(${AWAY[away.get(s.id)]})</small>` : ''}</label>`).join('');
   return formModal({
     title: 'Diary entry for the whole class', submitLabel: 'Save for ticked children',
     fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(Object.entries(ADD_TYPES).map(([value, label]) => ({ value, label })), 'meal')}</select></label><div id="d-fields">${typeFields('meal')}</div>
