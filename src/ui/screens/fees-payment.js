@@ -64,7 +64,7 @@ export async function render(ctx) {
       <div class="kpi"><div class="v">${open.length}</div><div class="l">open invoices</div></div></div>
     <h2>Invoices</h2>
     ${invoices.length ? `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Instalment</th><th>Due</th><th class="r">Total</th><th class="r">Paid</th><th class="r">Balance</th><th>Status</th></tr></thead><tbody>
-      ${invoices.map((i) => `<tr class="${i.status === 'cancelled' ? 'row-mute' : ''}"><td><a href="#/fees/invoice/${esc(i.id)}">${esc(i.number)}</a></td><td>${esc(i.installmentName)}</td><td>${fdate(i.dueDate)}</td><td class="r num">${money(i.totalPaise)}</td><td class="r num">${money(i.paidPaise)}</td><td class="r num">${i.status === 'cancelled' ? DASH : money(i.balancePaise)}</td><td>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</td></tr>`).join('')}
+      ${invoices.map((i) => `<tr class="${i.status === 'cancelled' ? 'row-mute' : ''}"><td class="nowrap"><a href="#/fees/invoice/${esc(i.id)}">${esc(i.number)}</a></td><td>${esc(i.installmentName)}</td><td class="nowrap">${fdate(i.dueDate)}</td><td class="r num">${money(i.totalPaise)}</td><td class="r num">${money(i.paidPaise)}</td><td class="r num">${i.status === 'cancelled' ? DASH : money(i.balancePaise)}</td><td>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</td></tr>`).join('')}
       </tbody></table></div>` : empty('No invoices for this child')}
     ${staff ? `
     <h2 style="margin-top:20px">Record payment</h2>

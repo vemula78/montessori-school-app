@@ -411,6 +411,7 @@ tr.row-mute td { color: var(--ink-soft); text-decoration: line-through; }
 .receipt .tablewrap table { min-width: 0; table-layout: auto; }
 .receipt th, .receipt td { padding: 6px 6px; overflow-wrap: anywhere; }
 .receipt th { white-space: normal; letter-spacing: 0; }
+.receipt th, .receipt td:nth-child(-n+2) { overflow-wrap: normal; } /* headers, invoice no. and instalment break only at "-", "/" or spaces (a phone showed "INS/TA/LM/EN/T"); Towards takes the squeeze */
 @media (max-width: 480px) { .receipt { padding: 14px; } .receipt dl { grid-template-columns: 100px 1fr; } }
 .receipt td.r, .receipt th.r { white-space: nowrap; overflow-wrap: normal; }
 .receipt .cancelled-mark { position: absolute; left: 20%; top: 40%; transform: rotate(-20deg); font-size: 2.4rem; font-weight: 900; color: rgba(168, 68, 44, .35); border: 5px solid rgba(168, 68, 44, .35); padding: 0 14px; border-radius: 12px; pointer-events: none; }
