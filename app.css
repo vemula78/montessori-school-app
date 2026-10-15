@@ -219,7 +219,7 @@ code { font-size: .88em; background: var(--clay-soft); padding: 1px 5px; border-
 .kpi { container-type: inline-size; }
 /* never break mid-number: shrink the figure to the tile (cqi = tile content width) instead of wrapping */
 .kpi .v { font-size: clamp(.9rem, 12.5cqi, 1.45rem); font-weight: 900; font-variant-numeric: tabular-nums; white-space: nowrap; }
-@container (max-width: 115px) { .kpi .v { white-space: normal; overflow-wrap: anywhere; font-size: 1rem; } } /* very narrow tiles: wrapping beats overflow */
+@container (max-width: 115px) { .kpi .v { white-space: normal; overflow-wrap: anywhere; font-size: clamp(.72rem, 14.5cqi, 1rem); } } /* very narrow tiles (three across on a phone): shrink so "₹2,93,800.00" fits on one line; wrapping only beats overflow for longer figures */
 .kpi .l { font-size: .8rem; color: var(--ink-soft); font-weight: 700; }
 .kpi.bad .v { color: var(--berry); }
 .kpi.good .v { color: var(--sage-ink); }
