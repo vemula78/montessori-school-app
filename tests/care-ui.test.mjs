@@ -138,3 +138,18 @@ test('whole-class diary: a child whose parent reported an absence starts unticke
   assert.match(html, /stu-01">[^<]*<small class="muted">\(reported absent\)/);
   assert.match(html, /value="stu-0[^1]" checked/, 'the others start ticked');
 });
+
+test('teacher home: a child whose parent reported an absence today counts as absent before the register is taken', async () => {
+  const api = await mkApi();
+  const today = todayISO();
+  api.session.set(PARENT);
+  for (const r of await api.care.leave({ studentId: 'stu-01' })) if (r.status === 'active') await api.care.withdrawLeave(r.id);
+  await api.care.requestLeave({ studentId: 'stu-01', fromDate: today, toDate: today, reason: 'Fever' });
+  const Home = await import('../src/ui/screens/home.js');
+  api.session.set(TEACHER);
+  const pid = api.session.current().programIds[0];
+  const away = new Set((await api.care.leave({ programId: pid, from: today })).filter((r) => r.status === 'active' && r.fromDate <= today).map((r) => r.studentId));
+  assert.ok(away.has('stu-01') && away.size >= 1);
+  const html = await draw(api, TEACHER, Home);
+  assert.match(html, new RegExp(`<div class="v">${away.size}</div><div class="l">absent today`));
+});
