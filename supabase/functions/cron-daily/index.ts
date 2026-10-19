@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
       const tokenOf = (r: any) => tokens.get(`${r.invoiceId}|${r.kind}`);
       const toSend = due.filter((r: any) => mine.has(`${r.invoiceId}|${r.kind}`));
       const messages = toSend.map((r: any) => ({ guardianIds: byId(db.students, r.studentId)?.guardianIds || [], studentIds: [r.studentId], purposes: ['push'],
-        payload: { title: 'Fee reminder', body: r.text, url: '#/parent/fees', tag: `rem-${r.invoiceId}-${r.kind}` } }));
+        payload: { title: 'Fee reminder', body: r.text, url: `#/fees/invoice/${r.invoiceId}`, tag: `rem-${r.invoiceId}-${r.kind}` } }));
       let push: any = null, outcome: any[];
       try {
         push = await deliver(messages);

@@ -40,12 +40,12 @@ export function pushMessages(name, before, after, result) {
     const trip = byId(after.trips, result.trip.id);
     const route = trip && byId(after.routes, trip.routeId);
     for (const ev of result.newEvents) {
-      if (!STOP_TEXT[ev.type] || !route) continue;
+      if (!STOP_TEXT[ev.type] || !route || trip.simulated) continue; // a simulated trip (demo, training) never alerts real parents
       const stop = route.stops.find(s => s.id === ev.stopId);
       const kids = after.students.filter(s => s.status === 'active' && s.routeId === route.id && s.stopId === ev.stopId).map(s => s.id);
       if (!kids.length) continue;
       out.push({ guardianIds: guardiansOf(after, kids), studentIds: kids, purposes: ['push', 'bus_live'],
-        payload: { title: 'School bus', body: `${STOP_TEXT[ev.type]} ${stop ? stop.name : 'your stop'}`, url: '#/parent/bus', tag: `trip-${trip.id}-${ev.stopId}-${ev.type}` } });
+        payload: { title: 'School bus', body: `${STOP_TEXT[ev.type]} ${stop ? stop.name : 'your stop'}`, url: '#/bus', tag: `trip-${trip.id}-${ev.stopId}-${ev.type}` } });
     }
   }
   if (name === 'transport.markChild' && result && result.studentId) {
@@ -55,7 +55,7 @@ export function pushMessages(name, before, after, result) {
     const stop = route && route.stops.find(x => x.id === result.stopId);
     if (s && CHILD_TEXT[result.type]) {
       out.push({ guardianIds: guardiansOf(after, [s.id]), studentIds: [s.id], purposes: ['push', 'bus_live'],
-        payload: { title: 'School bus', body: `${s.firstName} ${CHILD_TEXT[result.type]} ${stop ? stop.name : 'the stop'}`, url: '#/parent/bus', tag: `child-${s.id}-${result.type}-${result.ts}` } });
+        payload: { title: 'School bus', body: `${s.firstName} ${CHILD_TEXT[result.type]} ${stop ? stop.name : 'the stop'}`, url: '#/bus', tag: `child-${s.id}-${result.type}-${result.ts}` } });
     }
   }
   const pay = name === 'fees.recordGatewayPayment' ? (result && result.created ? result.payment : null)
@@ -63,7 +63,7 @@ export function pushMessages(name, before, after, result) {
   if (pay && pay.receiptNumber) {
     const s = byId(after.students, pay.studentId);
     out.push({ guardianIds: guardiansOf(after, [pay.studentId]), studentIds: [pay.studentId], purposes: ['push'],
-      payload: { title: 'Payment received', body: `${formatPaise(pay.amountPaise)}${s ? ` for ${s.firstName}` : ''} — receipt ${pay.receiptNumber}`, url: '#/parent/fees', tag: `pay-${pay.id}` } });
+      payload: { title: 'Payment received', body: `${formatPaise(pay.amountPaise)}${s ? ` for ${s.firstName}` : ''} — receipt ${pay.receiptNumber}`, url: '#/fees', tag: `pay-${pay.id}` } });
   }
   // learning: a shared observation / a published termly report — the child's guardians only (push consent per child)
   if ((name === 'observations.share' && result && result.sharedAt && !byId(before.observations || [], result.id)?.sharedAt)
@@ -72,11 +72,11 @@ export function pushMessages(name, before, after, result) {
     const report = name === 'reports.publish';
     out.push({ guardianIds: guardiansOf(after, [result.studentId]), studentIds: [result.studentId], purposes: ['push'],
       payload: { title: report ? 'Termly report' : 'New from the classroom', body: report ? `${s ? `${s.firstName}'s ` : ''}${result.termName} report is ready` : `A note about ${s ? s.firstName : 'your child'}'s work was shared`,
-        url: '#/parent/learning', tag: report ? `report-${result.id}-${result.revision}` : `obs-${result.id}` } });
+        url: '#/learning', tag: report ? `report-${result.id}-${result.revision}` : `obs-${result.id}` } });
   }
   if (name === 'notices.send' && result && result.important) {
     const rs = after.noticeReceipts.filter(r => r.noticeId === result.id);
-    out.push({ guardianIds: [...new Set(rs.map(r => r.guardianId))], studentIds: [...new Set(rs.flatMap(r => r.studentIds || []))], purposes: ['push'], payload: { title: 'Important notice', body: result.title, url: '#/parent/notices', tag: `notice-${result.id}` } });
+    out.push({ guardianIds: [...new Set(rs.map(r => r.guardianId))], studentIds: [...new Set(rs.flatMap(r => r.studentIds || []))], purposes: ['push'], payload: { title: 'Important notice', body: result.title, url: `#/notices/${result.id}`, tag: `notice-${result.id}` } });
   }
   return out.filter(m => m.guardianIds.length);
 }
