@@ -228,7 +228,7 @@ test('push messages: stop events go to guardians of children at that stop; payme
   const drv = personaFor(db, { role: 'driver', staffId: 'stf-driver-1' });
   const c = (ms) => ({ actor: { role: 'driver', id: 'stf-driver-1' }, now: new Date(ms).toISOString(), today: '2026-10-02' });
   let ms = Date.UTC(2026, 9, 2, 1, 40);
-  const trip = execute('transport.startTrip', db, [{ routeId: 'route-1', direction: 'pickup', simulated: true }], c(ms), drv);
+  const trip = execute('transport.startTrip', db, [{ routeId: 'route-1', direction: 'pickup' }], c(ms), drv);
   const msgs = [];
   for (const pt of simulationPlan(db.routes[0], { speedKmph: 20, tickMs: 1000 })) {
     ms += pt.dtMs || 1000;
@@ -358,4 +358,23 @@ test('consent.give: app_account is required only until it is given; optional pur
   assert.throws(() => execute('consent.give', db, [{ purposes: ['push'], version: CONSENT_VERSION, textHash: 'not-a-hash' }], c, p), /SHA-256/);
   execute('consent.withdraw', db, ['app_account'], c, p);
   assert.throws(() => execute('consent.give', db, [{ purposes: ['push'], version: CONSENT_VERSION }], c, p), /app account purpose is required/, 'after withdrawal it is required again');
+});
+
+test('push messages: a simulated trip never alerts parents (review 2026-10-19 #63)', () => {
+  const db = seed();
+  const drv = personaFor(db, { role: 'driver', staffId: 'stf-driver-1' });
+  const c = (ms) => ({ actor: { role: 'driver', id: 'stf-driver-1' }, now: new Date(ms).toISOString(), today: '2026-10-02' });
+  let ms = Date.UTC(2026, 9, 2, 1, 40);
+  const trip = execute('transport.startTrip', db, [{ routeId: 'route-1', direction: 'pickup', simulated: true }], c(ms), drv);
+  let events = 0;
+  const msgs = [];
+  for (const pt of simulationPlan(db.routes[0], { speedKmph: 20, tickMs: 1000 })) {
+    ms += pt.dtMs || 1000;
+    const before = structuredClone(db);
+    const r = execute('transport.recordPosition', db, [trip.id, { lat: pt.lat, lng: pt.lng, accuracy: pt.accuracy, ts: new Date(ms).toISOString() }], c(ms), drv);
+    events += (r.newEvents || []).length;
+    msgs.push(...pushMessages('transport.recordPosition', before, db, r));
+  }
+  assert.ok(events >= 3, 'the simulated bus still passes its stops');
+  assert.equal(msgs.length, 0);
 });

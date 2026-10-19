@@ -91,9 +91,9 @@ export async function render(ctx) {
       el.innerHTML = `<div class="card stack" style="margin-top:12px">
         <div class="seg" role="group" aria-label="Direction"><button data-dir="pickup" aria-pressed="${direction === 'pickup'}">Morning pickup</button><button data-dir="drop" aria-pressed="${direction === 'drop'}">Afternoon drop</button></div>
         <button class="btn primary block" id="d-start-gps"${geo.ok ? '' : ' disabled'}>Start trip (real GPS)</button>
-        <div class="row"><button class="btn block grow" id="d-start-sim">Start simulated trip</button>
+        ${real ? `<small>${geo.ok ? 'Keep this screen open during the trip.' : 'Allow location for this site in the phone settings, then reload.'}</small>` : `<div class="row"><button class="btn block grow" id="d-start-sim">Start simulated trip</button>
           <label class="row" style="gap:6px"><span class="lbl" style="font-size:.8rem;font-weight:800">Speed</span><select id="d-speed" style="width:auto">${options([{ value: 1, label: '1x (real time)' }, { value: 5, label: '5x' }, { value: 20, label: '20x' }], 5)}</select></label></div>
-        <small>A simulated trip is clearly marked to parents. Use it to demo, or when GPS is blocked. Faster speeds also shorten the ETA parents see.</small></div>`;
+        <small>A simulated trip is clearly marked to parents. Faster speeds also shorten the ETA parents see.</small>`}</div>`;
       return;
     }
     const s = runner.snapshot();
