@@ -93,8 +93,10 @@ export async function render(ctx) {
       ${studentRefunds.map((r) => `<tr><td>${esc(r.voucherNumber)}</td><td>${fdate(r.date)}</td><td>${esc(payById.get(r.paymentId)?.receiptNumber || DASH)}</td><td>${esc(invNum.get(r.invoiceId) || DASH)}</td><td class="r num">${money(r.amountPaise)}</td><td>${esc(r.reason)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
 
   // ---- actions
+  let busy = false; // a second tap while the first is still recording would issue a second receipt
   ctx.el.querySelector('#fp-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (busy) return;
     const f = e.target;
     const amount = rupeesToPaise(f.amount.value);
     if (amount === null || amount <= 0) { toast('Enter a valid amount greater than zero', 'bad'); return; }
@@ -105,10 +107,13 @@ export async function render(ctx) {
       if (a === null || a <= 0) { toast('An "Apply to" amount is not valid', 'bad'); return; }
       allocations.push({ invoiceId: inp.dataset.alloc, amountPaise: a });
     }
+    busy = true;
+    const btn = f.querySelector('button[type=submit]');
+    if (btn) btn.disabled = true;
     const res = await attempt(() => api.fees.recordPayment({
       studentId: student.id, amountPaise: amount, mode: f.mode.value, reference: f.reference.value.trim() || null, paidOn: f.paidOn.value,
       allocations: allocations.length ? allocations : undefined, allowCredit: f.allowCredit.checked, guardianId: f.guardianId.value || null,
-    }));
+    })).finally(() => { busy = false; if (btn) btn.disabled = false; });
     if (res.ok) {
       const pay = res.value;
       await ctx.rerender();

@@ -153,3 +153,19 @@ test('teacher home: a child whose parent reported an absence today counts as abs
   const html = await draw(api, TEACHER, Home);
   assert.match(html, new RegExp(`<div class="v">${away.size}</div><div class="l">absent today`));
 });
+
+test('payment form: a double tap on Record payment records one payment, not two (review 2026-10-19 #39)', async () => {
+  const api = await mkApi();
+  api.session.set('persona-stf-accountant');
+  const Pay = await import('../src/ui/screens/fees-payment.js');
+  const ctx = { api, persona: api.session.current(), query: {}, params: { studentId: 'stu-01' }, el: fake(), get db() { return api.getDb(); },
+    go() {}, setQuery() {}, href, toast() {}, onChange() {}, cleanup() {}, rerender: async () => {} };
+  await Pay.render(ctx);
+  const before = (await api.fees.payments({ studentId: 'stu-01' })).length;
+  const btn = fake();
+  const form = { amount: { value: '100' }, mode: { value: 'cash' }, reference: { value: '' }, paidOn: { value: todayISO() }, allowCredit: { checked: true }, guardianId: { value: '' },
+    querySelectorAll: () => [], querySelector: () => btn };
+  const submit = ctx.el.querySelector('#fp-form').handlers.submit[0];
+  await Promise.all([submit({ preventDefault() {}, target: form }), submit({ preventDefault() {}, target: form })]);
+  assert.equal((await api.fees.payments({ studentId: 'stu-01' })).length, before + 1);
+});
