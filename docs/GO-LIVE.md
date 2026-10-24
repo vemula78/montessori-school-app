@@ -5,6 +5,10 @@ developer, but you will paste a few commands into the Terminal on a Mac. Allow a
 Do the steps **in order**. Work on **test settings first** (no real money, no real parents) and only do step 12
 when the school is ready.
 
+Companion documents: [OWNERSHIP.md](OWNERSHIP.md) (who owns which account, and the school's own web address),
+[COST-CASE.md](COST-CASE.md) (what the Pro plan costs against the current vendor) and
+[RUNBOOK-BREACH.md](RUNBOOK-BREACH.md) (what to do if data may have leaked or a key was exposed).
+
 The public demo at the site root keeps working the whole time. The real app lives in the `app/` folder and
 opens at the same address with `/app/` added.
 
@@ -22,6 +26,9 @@ opens at the same address with `/app/` added.
 | Razorpay **webhook secret** | **secret** | step 6 and step 8, password manager |
 | VAPID **private** key | **secret** | step 8 secrets, password manager |
 | `CRON_SECRET` | **secret** | steps 5 and 8, password manager |
+| Gmail **app password** (sign-in emails) | **secret** | step 3 (Supabase SMTP form), password manager |
+| `HEALTHCHECK_URL` (optional nightly-job check) | secret (anyone with it can ping) | step 5, password manager |
+| Backup disk-image password | **secret** | step 15, password manager |
 
 Rules that keep children's data safe:
 
@@ -39,8 +46,8 @@ You need:
 - A Mac with this project folder, and **Node 22 or newer** (`node -v` shows the version).
 - The **Supabase command-line tool**: in Terminal run `brew install supabase/tap/supabase`.
 - A **password manager** (open it now; you will save about eight values).
-- An email address and sender that the school controls, for the sign-in codes (step 3): a Google Workspace
-  or Brevo/Resend account.
+- The **school's Gmail account** (it sends the sign-in codes, step 3) with **2-Step Verification on** and a recovery
+  phone number that the school holds (see [OWNERSHIP.md](OWNERSHIP.md)).
 - A GitHub account that can push to this repository.
 
 ## Step 1. Create the database project
@@ -76,12 +83,34 @@ Parents and staff sign in with a 6-digit code sent by email. A password is optio
    <p>It works once and expires in 10 minutes. If you did not ask for it, ignore this email.</p>
    ```
    The text `{{ .Token }}` must be there exactly, in both. A new parent's first sign-in uses "Confirm signup"; later sign-ins use "Magic Link". Save each.
-3. **Project Settings > Authentication > SMTP Settings** (or **Authentication > Emails > SMTP**): switch on **Custom SMTP**
-   and enter the host, port, user and password from the school's email provider (Resend, Brevo or Google Workspace),
-   with a sender such as `no-reply@<the school's domain>`. Without this, Supabase's shared sender allows only
-   a handful of emails per hour. Send yourself a test.
-4. **Authentication > URL Configuration**: set **Site URL** to `https://vemula78.github.io/montessori-school-app/app/`
-   and click **Add URL** under **Redirect URLs** with the same address. Save.
+3. **Send the codes through the school's Gmail account.** Without your own sender, Supabase's shared sender allows
+   only a handful of emails per hour.
+   1. Sign in to the school's Gmail account on a computer. Open **myaccount.google.com > Security**. Check
+      **2-Step Verification** is **On** (app passwords do not exist without it).
+   2. On the same page search for **App passwords** (or open `myaccount.google.com/apppasswords`). App name:
+      `School app sign-in`. Click **Create**. Google shows a 16-letter password **once**: copy it into the password
+      manager now.
+   3. Supabase: **Project Settings > Authentication > SMTP Settings** (or **Authentication > Emails > SMTP**): switch on
+      **Custom SMTP** and enter: **Sender email** = the school's Gmail address; **Sender name** = the school's name;
+      **Host** `smtp.gmail.com`; **Port** `465`; **Username** = the school's Gmail address; **Password** = the
+      16-letter app password (no spaces). Save.
+   4. **Deliverability test:** sign in to the app once each with a Gmail, a Yahoo and an Indian-provider mailbox
+      (for example a Rediffmail, Jio or Airtel address a staff member uses). Each code must arrive within a minute and
+      not in Spam. Gmail signs its own mail, so no SPF/DKIM setup is needed for this sender.
+   5. **Never change the Google password of this account, or turn off its 2-Step Verification, without doing steps
+      3.3.2 and 3.3.3 again at once.** Google cancels every app password when either happens, and from that moment
+      nobody can receive a sign-in code (staff who set a password in **Account** can still sign in; step 13).
+   6. Gmail's own sending limit applies (Google's help page "Gmail sending limits" gives about 500 emails a day for an
+      ordinary account; check the current figure there). Past it, Gmail stops sending for about a day.
+   7. Later, if the school has its own domain (step 9a), a transactional email service on that domain is the next
+      step up from Gmail (for example Brevo's free plan; check its current daily limit).
+4. **Authentication > URL Configuration**: set **Site URL** to the app's address with `/app/` at the end: the school's
+   own address from step 9a (for example `https://app.<the school's domain>/app/`), or, until that exists, the
+   GitHub Pages address from step 9. Click **Add URL** under **Redirect URLs** with the same address. Save.
+5. **Authentication > Rate Limits**: Supabase limits how many emails it sends per hour (30 an hour by default once your
+   own sender is on; check the number shown on that page). For the enrolment fortnight raise **Rate limit for sending
+   emails** to about **150 an hour**, then set it back. This stays inside Gmail's daily limit only if the slips are
+   handed out a class at a time (step 10).
 
 ## Step 4. Create the tables (one-time, from Terminal)
 
@@ -113,6 +142,21 @@ After the push, open **Storage** in the dashboard and check there is a bucket ca
    select vault.create_secret('<same value as CRON_SECRET>','cron_secret');
    ```
    Run each line once only. Later, **Database > Cron Jobs** should list `cron-daily` (08:00 India time every day) and `cron-trips` (every 15 minutes). `supabase db push` (step 4) creates both; they use the same two Vault values. From Phase 3 the daily run also does three photo and retention steps (`photosConsentSweep`, `retention`, `photosCleanup`); each shows its counts in the run's report, and nothing extra needs scheduling.
+4. **How you learn that the nightly job failed.** Every daily run leaves one line in the **Audit log** ("Nightly job
+   ran" or "Nightly job failed: ..."). The principal's home page lists it under **Needs attention** when the last run
+   failed, when no run has reported for 26 hours (a wrong secret, a missing Vault value or a paused project all look
+   like that), or when no run has ever reported. The morning after step 8, the item "No nightly job result recorded
+   yet" must be gone.
+5. **Optional, recommended: an email when the job does not run at all.** The home page only helps when someone opens
+   it. A free "dead-man" check emails you when the job stays silent:
+   1. Create an account at **healthchecks.io** with the school's Gmail address (free plan; check its current terms).
+   2. **Add Check**: name `school nightly job`; **Schedule**: Cron `0 8 * * *`, time zone `Asia/Kolkata`;
+      **Grace time** 2 hours. Save. Copy its **ping URL** (it starts `https://hc-ping.com/`) into the password manager.
+   3. Under **Integrations**, keep email to the school's Gmail address (add the developer too, if they agree).
+   4. Add `HEALTHCHECK_URL=<the ping URL>` to the `supabase secrets set` command in step 8 (or, later, run
+      `supabase secrets set HEALTHCHECK_URL=<the ping URL>` and `supabase functions deploy cron-daily`).
+   The job pings it after every daily run (to `<ping URL>/fail` when a step failed). Only the names of failed steps
+   are sent, never anyone's data.
 
 ## Step 6. Razorpay (online fee payments) in TEST mode
 
@@ -126,6 +170,10 @@ After the push, open **Storage** in the dashboard and check there is a bucket ca
    - Click **Create Webhook**.
 
 ## Step 7. Notification keys (push alerts)
+
+Do this **before the first family signs up**. Without the keys, the nightly job keeps each fee reminder as "not pushed"
+and pushes it on a later run once the keys exist (up to six days late; after that the reminder only shows inside the
+app). With the keys in place from the start, every reminder goes out on its day.
 
 In Terminal: `node scripts/vapid-keys.mjs`. It prints a **public** and a **private** key.
 
@@ -152,8 +200,33 @@ Then check **Edge Functions** in the dashboard: you should see `command`, `pay-c
 
 1. Run `npm test` and `npm run scan` - both must be green / PASS.
 2. Commit `app/config.js` (it holds only public values) and push the main branch to GitHub. GitHub Pages publishes it within a minute.
-3. Open `https://vemula78.github.io/montessori-school-app/app/`. You should see the sign-in page (not a "not connected" page).
+3. Open the app's address (for now the GitHub Pages address: repository **Settings > Pages** shows it; add `app/`).
+   You should see the sign-in page (not a "not connected" page).
    The public demo at the site root must still show its yellow "demo data only" ribbon.
+
+## Step 9a. Put the app on the school's own address (before any parent installs it)
+
+Installed home-screen apps, notification sign-ups and saved sign-ins all belong to the exact web address. If the
+address changes after families have installed the app, every family must reinstall, sign in again and turn
+notifications on again. So fix the address **before the first invite slip is printed**. A short address
+(for example `app.<the school's domain>`) is also much easier to type from a slip.
+
+First move the repository into the school's own GitHub organisation ([OWNERSHIP.md](OWNERSHIP.md), part 3): that also
+changes the address, so do both before families arrive.
+
+1. **Buy a domain** in the school's name, with the school's Gmail account as the registrar login (any Indian or
+   international registrar; price: check current price). If the school already owns a domain, use a sub-address of it.
+2. **DNS:** in the registrar's DNS settings add a record: **Type** `CNAME`, **Name** `app`, **Value**
+   `<the GitHub organisation's name>.github.io` (without the repository name). Wait up to an hour.
+3. **GitHub:** repository **Settings > Pages > Custom domain**: type `app.<the school's domain>`, click **Save**
+   (GitHub adds a file called `CNAME` to the repository itself). When the DNS check shows a green tick, tick
+   **Enforce HTTPS**.
+4. Open `https://app.<the school's domain>/app/`: the sign-in page must appear, with a padlock in the address bar.
+5. **Supabase: Authentication > URL Configuration**: set **Site URL** to `https://app.<the school's domain>/app/`;
+   under **Redirect URLs** add the same address and remove the old GitHub Pages one. Save.
+6. **Razorpay** (step 6 and the live-mode item in step 12): put the new address as the school's website.
+7. Tell the developer the new address. The server functions accept requests from any address, so nothing changes
+   there.
 
 ## Step 10. Set up the school and the first staff login (the principal)
 
@@ -176,11 +249,15 @@ node scripts/first-run-sql.mjs first-run.json > first-run.sql
 3. Supabase dashboard > **SQL Editor > New query**: paste the whole of `first-run.sql` and click **Run**. **Run it once only:** a second run fails with `CONFLICT` and changes nothing.
 4. Open the app address from step 9 on a computer, enter the principal's email, type the code from the email. You land on the principal's home page. (The sign-in is linked to the staff record automatically.)
 5. In the app: **Import data** to load the children list (CSV saved from the old system's Excel export), then **Import data > Outstanding fees**. Set up **Fee structures**, then **Invite codes** to issue one single-use code per family and **Print slips**. Hand each slip to the right parent.
-6. Parents: open the app address, enter their email, enter the emailed code, then the invite code and one child's date of birth, then read and accept the privacy notice.
+   **Hand out the slips one class a day, not all at once.** Every first sign-in sends an email code, and both Supabase
+   (step 3.5) and Gmail (step 3.3) limit how many go out per hour and per day. If families enrol together at school,
+   ask them to use their mobile data rather than the school Wi-Fi: Supabase also limits sign-ins from one internet
+   connection (about 30 every 5 minutes).
+6. Parents: open the app address, enter their email, enter the emailed code, then the invite code and one child's date of birth, then read and accept the privacy notice. The slip's fourth step asks them to install the app (step 11).
 
 When you are done, delete `first-run.json` and `first-run.sql` from the project folder (they hold real names and emails; both are ignored by git, but there is no reason to keep them).
 
-## Step 11. Install on an iPhone (needed for notifications)
+## Step 11. Install the app on phones (needed for notifications on iPhone)
 
 On iPhone and iPad, notifications work only when the app is on the Home Screen (iOS 16.4 or newer).
 
@@ -188,7 +265,10 @@ On iPhone and iPad, notifications work only when the app is on the Home Screen (
 2. Tap **Share** (square with an arrow), scroll, tap **Add to Home Screen**, tap **Add**.
 3. Open the app **from the new Home Screen icon**, sign in, go to **Settings > Notifications on this device**, tap **Turn on notifications**, and tap **Allow**.
 
-Android phones: open in Chrome and use **Install app** (or just allow notifications when asked).
+**Android phones:** open the app address in **Chrome** (not inside WhatsApp). The app shows a card **Install the
+school app** on the parent's home page and in **Settings**: tap **Install the app**, then **Install**. If the card
+shows steps instead of a button, use Chrome's **⋮** menu > **Install app** (or **Add to Home screen**). Then open the
+app from its new icon, go to **Settings > Notifications on this device** and tap **Turn on notifications**.
 
 ## Step 12. Before real families use it
 
@@ -197,11 +277,13 @@ Do these only when the school has decided to go ahead. Do not skip any.
 - [ ] **Have the school's legal adviser read the privacy notice** (`src/ui/privacy.js`, version v2: it now has a **photos** section and the retention wording) and the retention periods in it (fees 8 years, messages/diary/attendance/observations 1 year after leaving, bus positions 30 days; the photo period is the school's to set). The notice currently labels them a **draft schedule**; remove that label only once the school has decided the periods and set them in Settings (next item). A new notice version needs **three changes made together**: (1) `PRIVACY_VERSION` in `src/ui/privacy.js`; (2) `CONSENT_VERSION` in `src/domain/commands.js`, followed by `npm run sync-domain` (it refreshes the copy the server functions use); (3) a **new migration file** in `supabase/migrations/` containing `create or replace function app.consent_version() returns text language sql immutable set search_path = pg_catalog as $$ select 'v2'::text $$;` (with the new version in place of `v2`; migration `0005_phase3_learning.sql` already does this for `v2`). If any of the three is missed, consents are refused or the database treats new consents as not current. Then run `npm test` (a test fails if the first two differ), `supabase db push` and `supabase functions deploy`. Every parent then sees the new version.
 - [ ] **Retention periods must be decided and set (enforcement is built in).** After a child leaves, the daily job deletes each kind of record once its period has passed: photos (always enforced once a period is set), observations and progress records, diary notes and termly reports, attendance, messages. Fee records are never deleted by it. Get the school's decision on each period (and the legal adviser's view), then set them as the principal in **Settings > How long records are kept**. A period left empty means "not decided": nothing is deleted for it. Check the card's **due** counts before and after, and set a leaving date for any child who left without one (Phase 2 imports have none, so nothing about them can be due). Then update the notice and remove its DRAFT label.
 - [ ] **Photos: decide before switching them on.** Photos are optional and need each family's photo consent (the sign-up step asks, per child; when two guardians use the app both must agree). Check with the school: who may take photos, on whose devices, and that only one child is in each photo. Confirm the **storage limit** (Free plan 1 GB; about 0.7 GB a year for 70 children at 40 photos each) and move to the Pro plan before real families (next item). A parent who turns photos off, or withdraws, has their child's photos deleted by the next job run.
-- [ ] **Upgrade Supabase to the Pro plan** (Project Settings > Billing; about 25 US dollars a month). The Free plan **pauses after 7 days of inactivity (school holidays!) and keeps no backups**.
-- [ ] **Backups:** after upgrading, check **Database > Backups** shows daily backups; keep a monthly `supabase db dump` copy on the school's computer.
+- [ ] **Upgrade Supabase to the Pro plan** (Organisation settings > Billing; from 25 US dollars a month, see [COST-CASE.md](COST-CASE.md)). The Free plan **pauses after a week of inactivity (school holidays!) and keeps no backups**; do not count on the scheduled jobs to keep it awake. Leave the **spend cap** on. Upgrade **before the first family signs up**, and put a monthly reminder in the school calendar to check the invoice.
+- [ ] **Backups:** after upgrading, check **Database > Backups** shows daily backups (Pro keeps 7 days), and do the first own backup and the restore check from step 15.
+- [ ] **Second owners** for every account (Supabase, the Gmail account, GitHub, Razorpay, the domain): [OWNERSHIP.md](OWNERSHIP.md).
+- [ ] **Read [RUNBOOK-BREACH.md](RUNBOOK-BREACH.md)** with the principal, and fill in its contact list (kept in the password manager, not in this repository).
 - [ ] **Razorpay KYC:** complete the account activation (the trust/society registration, PAN, bank proof). Then in Terminal repeat `supabase secrets set` with the **live** key id and secret, a **live-mode webhook** (the same URL and events, created while Test Mode is off), and `APP_GATEWAY_MODE=live`; run `supabase functions deploy`; change `gatewayMode` in `app/config.js` to `'live'` and push.
 - [ ] **Map tiles:** the bus map uses the free OpenStreetMap tile server, which is allowed only for light demo use. For real use, create a free MapTiler account (or host tiles yourself) and ask the developer to switch the tile address.
-- [ ] **Email sender:** make sure the school's domain has SPF/DKIM set up for the sign-in emails so they do not land in spam.
+- [ ] **Email sender:** do the deliverability test in step 3.3.4 once more with the final settings. Ask every staff member to set a **password** in **Account** (step 13), so they can still sign in on a day when emailed codes do not arrive.
 - [ ] **Test with two phones:** one parent, one driver; run a simulated trip, make a Rs 100 test payment in test mode, check the receipt says TEST MODE, then repeat with a live Rs 1 payment after step above and refund it from the Razorpay dashboard.
 - [ ] **SMS / WhatsApp alerts** are not included (they need regulator-approved sender registration and cost money per message). Say so to parents: notifications work through the app only.
 
@@ -228,12 +310,54 @@ Migration `0009_care.sql` adds three tables: absences parents report in advance,
 - [ ] Tell parents: an absence reported in the app is a message to the teacher, not an approval; the teacher still marks the register. Add a person to the pick-up list only with their agreement.
 - [ ] Tell teachers: **Going home** (bottom bar: **Pick-up**) records who collected each child. Someone not on the list needs a note of how the family confirmed it, and the principal sees it in the audit log.
 
+## Step 15. Monthly backup and the termly restore check
+
+The Pro plan keeps 7 daily copies inside Supabase. The school's own monthly copy protects against losing the
+Supabase account itself. **Photos are not in any of these backups** (neither Supabase's daily copies nor this one):
+if photos must survive the loss of the account, the developer has to copy the `child-photos` storage separately.
+
+A real backup holds every child's record. Keep it encrypted, and **never** in iCloud Drive, Google Drive, Dropbox or
+OneDrive (iCloud also copies the Desktop and Documents folders when "Desktop & Documents Folders" is on).
+
+**Every month** (about 10 minutes, on the Mac where step 4 was done, with Docker running):
+
+1. Plug in the school's backup disk (an external disk kept locked in the office).
+2. In Terminal, in the project folder: `sh scripts/backup.sh /Volumes/<the disk's name>`
+3. When the Supabase tool asks, type the **database password**. When macOS asks for a **new password for the disk
+   image**, make one up and save it in the password manager (one entry per backup, named with the date).
+4. The script lists the number of rows in every table and stops with **STOP** if the sign-in accounts or the children
+   are missing (nothing is saved then: send the message, not the files, to the developer). Otherwise it saves
+   `school-backup-YYYY-MM-DD.dmg` on the disk.
+5. Keep the last 12 monthly files; delete older ones from the disk.
+
+**Once a term: the restore check** (the developer, about 30 minutes). A backup that has never been restored is a hope,
+not a backup.
+
+1. Open the latest `.dmg` (double-click, type its password). It holds `schema.sql`, `data.sql`, `roles.sql` and
+   `row-counts.txt`.
+2. Compare `row-counts.txt` with the live database: Supabase **SQL Editor** >
+   `select (select count(*) from public.students) students, (select count(*) from public.invoices) invoices, (select count(*) from public.payments) payments, (select count(*) from public.audit_log) audit, (select count(*) from auth.users) sign_ins;`
+   The backup's numbers must be equal to, or a little below, today's (rows added since the backup).
+3. Load it into a throw-away local database that is **not** this project's test database: a second Supabase project
+   folder (`supabase init` in an empty folder, then `supabase start`; stop this project's stack first, they use the
+   same ports), and then
+   `psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" --single-transaction -v ON_ERROR_STOP=1 -f roles.sql -f schema.sql -c 'SET session_replication_role = replica' -f data.sql`
+   (this is the order Supabase's own backup and restore guide uses; check it against the current guide).
+   It must finish without an error. Count the same tables again and compare with `row-counts.txt`.
+4. Then `supabase stop --no-backup` in that folder (deletes the local copy), and eject the disk image.
+5. Write the date and the result in the school's IT log.
+
 ## If something goes wrong
 
 | What you see | Likely cause | What to do |
 |---|---|---|
 | "This app is not connected yet" | `app/config.js` still empty or not pushed | step 2, then step 9 |
 | Sign-in email never arrives | SMTP not set, or template lacks `{{ .Token }}` | step 3 |
+| Codes stopped arriving **for everyone** | the Gmail app password was cancelled (the Google password was changed, or 2-Step Verification turned off), or Gmail's daily limit was reached | make a new app password and paste it into Supabase SMTP (step 3.3); if it is the daily limit, wait a day. Staff with a password can still sign in |
+| "Too many sign-in codes have been sent" | the hourly email limit (step 3.5) or the per-connection limit | wait an hour; hand out slips a class at a time; families on mobile data, not the school Wi-Fi |
+| Principal's home: "Nightly job failed: ..." | one step of the daily run reported an error | send the developer the date and the step names (also in the Audit log); the job retries the next morning |
+| Principal's home: "has not reported since" or "No nightly job result recorded yet", or an email from healthchecks.io | the job did not run: wrong `CRON_SECRET`, a missing Vault value (step 5), a paused project, or the function not deployed | developer: compare the two `CRON_SECRET` copies, check Vault and `select status_code, created from net._http_response order by created desc` (kept only a few hours) |
+| An Android parent sees no Install button | the page is open inside WhatsApp or another app, or the app is already installed | open the address in Chrome; use the ⋮ menu > Install app (step 11) |
 | "Code expired" | more than 10 minutes passed | ask for a new code |
 | Parent says "invite code not recognised" | typo, code used, or expired (14 days) | issue a new code (the old one stops working) |
 | Payment taken but no receipt | browser closed before confirming | wait a minute: the app and the webhook record it; check Online settlements |

@@ -311,8 +311,10 @@ payload encryption; hand-rolling RFC 8291 is ~200 lines of crypto). The browser 
 ### Costs and limits (verify current pricing before go-live)
 
 Supabase Free: 500 MB database, 5 GB egress, 500k function calls, Realtime 200 concurrent; **it pauses after 7 days
-without activity and has no backups** — move to Pro (about $25/month) **before real families are onboarded**; during
-a pilot take a weekly `supabase db dump`. Expected use for ~70 children: ~60k function calls and ~10 MB of positions
+without activity and has no backups** — move to Pro (from $25/month; `docs/COST-CASE.md`) **before real families are
+onboarded**. A plain `supabase db dump` writes table definitions only, no rows: back up with `scripts/backup.sh`
+(schema + all rows including `auth.users` + roles, in an encrypted disk image; `docs/GO-LIVE.md` step 15), weekly
+during a pilot. Photos (Storage) are in no dump and in none of Supabase's daily backups. Expected use for ~70 children: ~60k function calls and ~10 MB of positions
 per month after pruning. Razorpay: no setup fee, about 2% + GST on cards/netbanking (UPI often 0% — check the
 pricing page); settlement T+2; live mode needs the school's registration documents (KYC). SMS/WhatsApp alerts are
 not built (DLT registration and per-message cost); phone OTP likewise — the school's call. Project region: Mumbai
