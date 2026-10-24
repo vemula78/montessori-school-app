@@ -46,7 +46,8 @@ export function guardianExport(db, guardianId, { full = false, photoOk = () => f
     photosNote: 'Photo files are not inside this export; the school can show or hand over the photos that are still kept.',
     progressEvents: full ? (db.progressEvents || []).filter(mine) : [],
     reports: (db.reports || []).filter(r => mine(r) && (full || r.status === 'published')),
-    ...(full ? {} : { learningNote: 'Notes the teacher has not shared, progress records and draft reports are given by the principal on a written request.' }),
+    progressReports: (db.evaluations || []).filter(e => mine(e) && (full || e.status === 'published')),
+    ...(full ? {} : { learningNote: 'Notes the teacher has not shared, progress records and draft reports (termly and annual) are given by the principal on a written request.' }),
     consents: (db.consents || []).filter(c => c.guardianId === guardianId),
     messagesCounted: db.messages.filter(m => threadIds.has(m.threadId)).length,
     transportEvents: (db.trips || []).flatMap(t => (t.childEvents || []).filter(e => ids.has(e.studentId))

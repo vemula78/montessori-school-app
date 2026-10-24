@@ -1,0 +1,325 @@
+// The annual Progress Report rubrics, one per LEVEL (not per classroom: rooms are mixed-age), copied word for word from
+// the school's 2025-26 templates (Toddlers: Maple; Mont 1 and Mont 2: Oak; Mont 3: Balsa). Data only: wording, order and
+// section names must stay exactly as the school wrote them. Item keys are unique within a level and are what an
+// evaluation's ratings are keyed by, so a key is never renamed once evaluations exist (add a new item instead).
+// Each section is rated on one scale: 'Progressing/Mastered' or 'Developing/Developed'.
+
+export const EVALUATION_LEVELS = ['toddlers', 'mont1', 'mont2', 'mont3'];
+export const LEVEL_LABEL = { toddlers: 'Toddlers', mont1: 'Mont 1', mont2: 'Mont 2', mont3: 'Mont 3' };
+/** The rating values of each scale, in the order the form shows them. */
+export const SCALES = { 'Progressing/Mastered': ['progressing', 'mastered'], 'Developing/Developed': ['developing', 'developed'] };
+export const RATING_LABEL = { progressing: 'Progressing', mastered: 'Mastered', developing: 'Developing', developed: 'Developed' };
+export const CULTURAL_STUDIES_FOOTNOTE = '*Cultural Studies: This area of the curriculum includes subjects like science and geography.';
+
+export const RUBRICS = {
+  toddlers: {
+    title: "TODDLERS",
+    sections: [
+      { title: "Physical Development and Muscular Coordination", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Eye_Hand", label: "Eye-hand coordination" },
+        { key: "Gross_Motor", label: "Gross motor skills" },
+        { key: "Fine_Motor", label: "Fine motor skills" },
+        { key: "Lift_Objects", label: "Ability to lift small objects" },
+      ] },
+      { title: "Independence", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Choose_Activities", label: "Ability to choose activities" },
+        { key: "Order", label: "Sense of order" },
+      ] },
+      { title: "Logical Thinking", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Sort_Classify", label: "Ability to sort and classify pictures" },
+        { key: "Patterns", label: "Ability to make patterns" },
+      ] },
+      { title: "Sensorial", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Shapes", label: "Consciousness with regard to concept of shapes" },
+        { key: "Colours", label: "Recognition of colours" },
+        { key: "Sensorial_Knowledge", label: "Ability to apply acquired sensorial knowledge" },
+      ] },
+      { title: "Scholastic", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Rec_Sounds", label: "Ability to recognize sounds" },
+        { key: "Rec_Objects", label: "Ability to recognize objects" },
+        { key: "Pair_Pictures", label: "Ability to pair pictures" },
+        { key: "Pair_Obj_Pic", label: "Ability to pair pictures to objects" },
+        { key: "Rec_Numbers", label: "Ability to recognize numbers" },
+        { key: "Count", label: "Ability to Count" },
+      ] },
+      { title: "Cultural Studies", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Body_Parts", label: "Ability to recognize the parts of human body" },
+        { key: "Flowers", label: "Ability to recognize the names of flowers" },
+        { key: "Fruits", label: "Ability to recognize the names of fruits" },
+        { key: "Vegetables", label: "Ability to recognize the names of vegetables" },
+        { key: "Animals", label: "Ability to recognize the names of animals" },
+        { key: "Birds", label: "Ability to recognize the names of birds" },
+        { key: "Gardening", label: "Interest in gardening" },
+      ] },
+      { title: "Work Habits", group: null, scale: "Developing/Developed", items: [
+        { key: "Stay_Task", label: "Ability to stay on task" },
+        { key: "Grasping", label: "Grasping concepts easily" },
+        { key: "Independent_Work", label: "Ability to work independently" },
+        { key: "Environment", label: "Taking care of the environment" },
+        { key: "Choices", label: "Making independent choices" },
+      ] },
+      { title: "Social and Emotional Development", group: null, scale: "Developing/Developed", items: [
+        { key: "Social_Play", label: "Plays willingly with other children" },
+        { key: "Verbal", label: "Expresses self verbally" },
+        { key: "Empathy", label: "Empathy towards others" },
+        { key: "Rules", label: "Ability to follow rules" },
+        { key: "Initiative", label: "Takes initiative" },
+      ] },
+      { title: "Non-Scholastic Areas", group: null, scale: "Developing/Developed", items: [
+        { key: "Art_Craft", label: "Interest in art and craft" },
+        { key: "Paints", label: "Expresses with colours and paints" },
+        { key: "Rhymes", label: "Interest in rhymes" },
+        { key: "Singing", label: "Ability to sing in a group" },
+        { key: "Dance", label: "Interest in dance" },
+        { key: "Stories", label: "Interest in listening to stories" },
+      ] },
+    ],
+  },
+  mont1: {
+    title: "MONT. - 1",
+    sections: [
+      { title: "Physical Development", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Eye_Hand", label: "Eye-hand coordination" },
+        { key: "Gross_Motor", label: "Gross motor skills" },
+        { key: "Fine_Motor", label: "Fine motor skills" },
+        { key: "Pincer_Grip", label: "Pincer grip" },
+      ] },
+      { title: "Muscular Coordination", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Whole_Hand", label: "Whole hand grasp" },
+        { key: "Three_Finger", label: "Three finger grasp" },
+        { key: "Wrist", label: "Wrist movements" },
+        { key: "Whole_Arm", label: "Whole arm movements" },
+      ] },
+      { title: "Independence", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Choose_Activities", label: "Ability to choose activities" },
+        { key: "Order", label: "Sense of order" },
+        { key: "Social", label: "Spontaneous social interaction" },
+        { key: "Rectify", label: "Ability to observe and rectify" },
+      ] },
+      { title: "Logical Thinking", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Sort_Classify", label: "Ability to sort and classify pictures" },
+        { key: "Sequence", label: "Ability to put pictures in a sequence" },
+        { key: "Patterns", label: "Ability to make patterns" },
+      ] },
+      { title: "Sensorial", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Shapes", label: "Consciousness with regard to concept of shapes" },
+        { key: "Colours", label: "Recognition of colours" },
+        { key: "Textures", label: "Ability to differentiate surface textures" },
+        { key: "Sensorial_Knowledge", label: "Ability to apply acquired sensorial knowledge" },
+      ] },
+      { title: "Arithmetic Activities", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Num_Rods", label: "Ability to work with number rods" },
+        { key: "Quantities", label: "Ability to associate quantities with names" },
+        { key: "Rods_Cards", label: "Ability to work with number rods and cards" },
+        { key: "Trace_Numbers", label: "Ability to trace the numbers" },
+        { key: "Symbols", label: "Ability to associate symbols with names" },
+      ] },
+      { title: "Language Development", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Phonetic", label: "Participation in oral phonetic analysis" },
+        { key: "First_Sound", label: "Ability to recognize the first sound in a word" },
+        { key: "Last_Sound", label: "Ability to recognize the last sound in a word" },
+        { key: "Symbol_Sound", label: "Ability to associate the symbols to their corresponding sounds" },
+        { key: "Trace_Letters", label: "Ability to trace the formation of letters" },
+        { key: "Hold_Pencil", label: "Ability to hold pencil correctly" },
+        { key: "Trace_Patterns", label: "Ability to trace the patterns" },
+      ] },
+      { title: "Cultural Studies", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Globes", label: "Knowledge of the globes (land and water, continent)" },
+        { key: "Nature", label: "Appreciation of nature" },
+        { key: "Plant_Animal", label: "Awareness of plant and animal life" },
+        { key: "Solar_System", label: "Knowledge of the solar system" },
+      ] },
+      { title: "Work Habits", group: null, scale: "Developing/Developed", items: [
+        { key: "Stay_Task", label: "Ability to stay on task" },
+        { key: "Grasping", label: "Grasping concepts easily" },
+        { key: "Work_Independent", label: "Ability to work independently" },
+        { key: "Environment_Care", label: "Taking care of the environment" },
+        { key: "Independent_Choices", label: "Making independent choices" },
+      ] },
+      { title: "Social and Emotional Development", group: null, scale: "Developing/Developed", items: [
+        { key: "Peer_Engagement", label: "Engages with other children" },
+        { key: "Verbal_Expression", label: "Expresses self verbally" },
+        { key: "Empathy", label: "Empathy towards others" },
+        { key: "Rules", label: "Ability to follow rules" },
+        { key: "Initiative", label: "Takes initiative" },
+      ] },
+      { title: "Non-Scholastic Areas", group: null, scale: "Developing/Developed", items: [
+        { key: "Art_Craft", label: "Interest in art and craft" },
+        { key: "Paints", label: "Expresses with colours and paints" },
+        { key: "Cut_Paste", label: "Ability to cut and paste" },
+        { key: "Rhymes", label: "Interest in rhymes" },
+        { key: "Singing", label: "Ability to sing in a group" },
+        { key: "Dance", label: "Interest in dance" },
+        { key: "Stories", label: "Interest in listening to stories" },
+      ] },
+    ],
+  },
+  mont2: {
+    title: "MONT. - 2",
+    sections: [
+      { title: "Physical Development", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "EyeHand", label: "Eye-hand coordination" },
+        { key: "GrossMotor", label: "Gross motor skills" },
+        { key: "FineMotor", label: "Fine motor skills" },
+        { key: "Pincer", label: "Pincer grip" },
+      ] },
+      { title: "Muscular Coordination", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "LiftLarge", label: "Ability to lift large objects" },
+        { key: "LiftSmall", label: "Ability to lift small objects" },
+      ] },
+      { title: "Independence", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Choice", label: "Ability to choose activities from different areas of learning" },
+        { key: "Order", label: "Sense of order" },
+        { key: "Social", label: "Spontaneous social interaction" },
+        { key: "Rectify", label: "Ability to observe and rectify" },
+      ] },
+      { title: "Logical Thinking", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Sort", label: "Ability to sort and classify pictures" },
+        { key: "Sequence", label: "Ability to put pictures in a sequence" },
+        { key: "Patterns", label: "Ability to make patterns" },
+      ] },
+      { title: "Sensorial", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Shapes", label: "Consciousness with regard to concept of shapes" },
+        { key: "Sounds", label: "Ability to identify different sounds" },
+        { key: "Colours", label: "Ability to grade colours" },
+        { key: "Textures", label: "Differentiation of surface textures" },
+        { key: "Discovery", label: "Ability to make variations and discoveries" },
+        { key: "SensoryApply", label: "Ability to apply acquired sensorial knowledge" },
+      ] },
+      { title: "Arithmetic Activities", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Spindle", label: "Ability to associate numbers with quantities using spindle box and cards & counters" },
+        { key: "Zero", label: "Understanding the concept of zero using spindle box" },
+        { key: "Succession", label: "Ability to place the cards in succession" },
+        { key: "Beads", label: "Ability to work with beads and cards" },
+        { key: "Quantities", label: "Understanding the names of quantities" },
+        { key: "Hierarchies", label: "Understanding the mechanism of hierarchies (Arrangement)" },
+        { key: "Forming", label: "Ability to form quantities from different hierarchies" },
+      ] },
+      { title: "Language Development", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Pronounce", label: "Clarity in pronunciation" },
+        { key: "Discussion", label: "Contributes in group discussion" },
+        { key: "Narrate", label: "Interest in narrating stories" },
+        { key: "Phonetics", label: "Participation in oral phonetic analysis in group activities" },
+        { key: "Alphabet", label: "Interest in making words using moveable alphabet box" },
+        { key: "SoundsWord", label: "Ability to follow the sounds in a word" },
+        { key: "Write", label: "Ability to write letters and words" },
+        { key: "Print", label: "Ability to recognize print letters" },
+        { key: "Read", label: "Ability to read phonics books" },
+      ] },
+      { title: "Cultural Studies", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Botany", label: "Knowledge of botany cards and insets" },
+        { key: "WorldMap", label: "Ability to work with the world map" },
+        { key: "Nature", label: "Appreciation of nature" },
+        { key: "Plants", label: "Awareness of plant and animal life" },
+        { key: "Germination", label: "Concept of germination and life cycle" },
+        { key: "SolarSystem", label: "Knowledge of the solar system" },
+      ] },
+      { title: "Work Habits", group: null, scale: "Developing/Developed", items: [
+        { key: "Task", label: "Ability to stay on task" },
+        { key: "Grasp", label: "Grasping concepts easily" },
+        { key: "Independent", label: "Ability to work independently" },
+        { key: "Environment", label: "Taking care of the environment" },
+        { key: "Choices", label: "Making independent choices" },
+      ] },
+      { title: "Social and Emotional Development", group: null, scale: "Developing/Developed", items: [
+        { key: "Group", label: "Shows interest in being part of a group" },
+        { key: "Verbal", label: "Expresses self verbally" },
+        { key: "Empathy", label: "Empathy towards others" },
+        { key: "Rules", label: "Ability to follow rules" },
+        { key: "Initiative", label: "Takes initiative" },
+      ] },
+      { title: "Non-Scholastic Areas", group: null, scale: "Developing/Developed", items: [
+        { key: "Art", label: "Interest in art and craft" },
+        { key: "Paints", label: "Expresses with colors and paints" },
+        { key: "CutPaste", label: "Ability to cut and paste" },
+        { key: "Rhymes", label: "Interest in rhymes" },
+        { key: "Singing", label: "Ability to sing in a group" },
+        { key: "Dance", label: "Interest in dance" },
+        { key: "Stories", label: "Interest in listening to stories" },
+      ] },
+    ],
+  },
+  mont3: {
+    title: "MONT. - 3",
+    sections: [
+      { title: "Physical Development and Muscular Coordination", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Eye_Hand", label: "Eye-hand coordination" },
+        { key: "Gross_Motor", label: "Gross motor skills" },
+        { key: "Fine_Motor", label: "Fine motor skills" },
+        { key: "Dressing_Frames", label: "Ability to work with dressing frames" },
+      ] },
+      { title: "Independence", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Choose_Activities", label: "Ability to choose activities" },
+        { key: "Order", label: "Sense of order" },
+        { key: "Social", label: "Spontaneous social interaction" },
+        { key: "Rectify", label: "Ability to observe and rectify" },
+      ] },
+      { title: "Logical Thinking", group: "Exercises of Practical Life", scale: "Progressing/Mastered", items: [
+        { key: "Sort_Classify", label: "Ability to sort and classify pictures" },
+        { key: "Sequence", label: "Ability to put pictures in a sequence" },
+        { key: "Patterns", label: "Ability to make patterns" },
+      ] },
+      { title: "Sensorial", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Exploratory", label: "Ability to work with exploratory activities" },
+        { key: "Subtle_Diff", label: "Ability to recognize subtle differences in sensorial impressions" },
+        { key: "Blindfold_Shapes", label: "Ability to differentiate shapes using a blindfold" },
+        { key: "Sensorial_Knowledge", label: "Ability to apply acquired sensorial knowledge" },
+      ] },
+      { title: "Arithmetic Activities", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Odd_Even", label: "Ability to understand the concept of odd and even" },
+        { key: "Change_Game", label: "Understanding the concept of change game" },
+        { key: "Before_After", label: "Understanding the concept of after, before and in-between numbers" },
+        { key: "Lesser_Greater", label: "Understanding the concept of lesser and greater numbers" },
+        { key: "Skip_Count", label: "Ability to skip count in 2's, 5's and 10's" },
+        { key: "Ascending_Descending", label: "Understanding the concept of ascending and descending" },
+        { key: "Addition", label: "Understanding the concept of addition" },
+        { key: "Subtraction", label: "Understanding the concept of subtraction" },
+        { key: "Fraction", label: "Understanding the concept of fraction" },
+      ] },
+      { title: "Language Development", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Pronunciation", label: "Clarity in pronunciation" },
+        { key: "Discussion", label: "Contributes in group discussion" },
+        { key: "Narrating", label: "Interest in narrating stories" },
+        { key: "Moveable_Alphabet", label: "Interest in making words using moveable alphabet box" },
+        { key: "Write_Sentences", label: "Ability to write sentences" },
+        { key: "Answer_Questions", label: "Ability to answer questions" },
+        { key: "Comprehending", label: "Comprehending passages" },
+        { key: "Creative_Writing", label: "Ability to write a short passage on a given topic (creative writing)" },
+        { key: "Read_Books", label: "Ability to read books" },
+      ] },
+      { title: "Cultural Studies", group: null, scale: "Progressing/Mastered", items: [
+        { key: "Land_Water", label: "Knowledge of land and water forms" },
+        { key: "India_Map", label: "Ability to work with India map" },
+        { key: "Time_Reading", label: "Concept of time/Reading time" },
+        { key: "Nature", label: "Appreciation of nature" },
+        { key: "Plant_Animal", label: "Awareness of plant and animal life" },
+        { key: "Germination", label: "Concept of germination and life cycle" },
+        { key: "Solar_System", label: "Knowledge of the solar system" },
+        { key: "Directions", label: "Familiarity with direction (NSEW)" },
+      ] },
+      { title: "Work Habits", group: null, scale: "Developing/Developed", items: [
+        { key: "Stay_Task", label: "Ability to stay on task" },
+        { key: "Grasping", label: "Grasping concepts easily" },
+        { key: "Work_Independent", label: "Ability to work independently" },
+        { key: "Environment_Care", label: "Taking care of the environment" },
+        { key: "Independent_Choices", label: "Making independent choices" },
+      ] },
+      { title: "Social and Emotional Development", group: null, scale: "Developing/Developed", items: [
+        { key: "Group_Interest", label: "Shows interest in being part of a group" },
+        { key: "Verbal_Expression", label: "Expresses self verbally" },
+        { key: "Empathy", label: "Empathy towards others" },
+        { key: "Rules", label: "Ability to follow rules" },
+        { key: "Initiative", label: "Takes initiative" },
+      ] },
+      { title: "Non-Scholastic Areas", group: null, scale: "Developing/Developed", items: [
+        { key: "Art_Craft", label: "Interest in art and craft" },
+        { key: "Paints", label: "Expresses with colours and paints" },
+        { key: "Cut_Paste", label: "Ability to cut and paste" },
+        { key: "Rhymes", label: "Interest in rhymes" },
+        { key: "Singing", label: "Ability to sing in a group" },
+        { key: "Dance", label: "Interest in dance" },
+        { key: "Stories", label: "Interest in listening to stories" },
+      ] },
+    ],
+  },
+};

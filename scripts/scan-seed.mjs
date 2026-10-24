@@ -54,6 +54,17 @@ for (const c of db.pickupContacts) {
 }
 phones++;
 if (!PHONE_RE.test(db.school.phone)) hit('phone not fake pattern', 'school', mask(String(db.school.phone)));
+// schema v5 school settings: the report footer's phones and emails, the director, the privacy contact
+for (const ph of db.school.reportFooter?.phones || []) { phones++; if (!PHONE_RE.test(ph)) hit('phone not fake pattern', 'school.reportFooter', mask(String(ph))); }
+for (const [where, em] of [['school.reportFooter', db.school.reportFooter?.email], ['school.privacyContact', db.school.privacyContact?.email]]) {
+  if (!em) continue;
+  emails++; if (!String(em).endsWith('@example.com')) hit('email not @example.com', where, String(em).replace(/^[^@]*/, '…'));
+}
+for (const [where, name] of [['school.directorName', db.school.directorName], ['school.privacyContact', db.school.privacyContact?.name]]) {
+  if (!name) continue;
+  const last = String(name).trim().split(/\s+/).at(-1);
+  if (!FAKE_SURNAMES.includes(last)) hit('surname not in FAKE_SURNAMES', where, last);
+}
 
 const ay = db.academicYears.find(a => a.id === db.school.currentAcademicYearId);
 if (!ay) hit('no current academic year', 'school', String(db.school.currentAcademicYearId));

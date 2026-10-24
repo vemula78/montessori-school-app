@@ -38,6 +38,10 @@ import { retentionPlan } from '../domain/retention.js';
 import { createDemoPhotos } from './demo-photos.js';
 import { twoStepRequired, listDataRequests, whoCanSee, PRIVILEGED_ROLES, nightlyJobStatus } from '../domain/admin.js';
 import { PERMISSIONS } from '../domain/permissions.js';
+import * as EV from '../domain/evaluations.js';
+import { signatureList, currentSignature, SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, SIGNATURE_MAX_EDGE } from '../domain/signatures.js';
+import { schoolDetails, officeHoursStatus } from '../domain/school.js';
+import { sniffMime, pngSize, fileProblem } from '../domain/files.js';
 import { totp, verifyTotp, randomSecret, otpauthUri, secondsLeft } from './totp.js';
 
 export { buildPersonas };
@@ -67,6 +71,17 @@ const out = x => (x === undefined ? undefined : structuredClone(x));
 export const op = fn => async (...args) => {
   try { return out(await fn(...args)); } catch (e) { throw toApiError(e); }
 };
+const toApiErrorSync = fn => { try { return fn(); } catch (e) { throw toApiError(e); } };
+/**
+ * What a file the user chose is, read from its bytes (never from its name or the browser's type): {mime, bytes, width?,
+ * height?, data:Uint8Array}. Both modes check it before anything is sent; the real app's server checks it again.
+ */
+export async function inspectUpload(blob) {
+  if (typeof Blob === 'undefined' || !(blob instanceof Blob)) throw new ApiError('VALIDATION', 'Choose a file first');
+  const data = new Uint8Array(await blob.arrayBuffer());
+  const mime = sniffMime(data);
+  return { mime, bytes: data.length, ...(mime === 'image/png' ? pngSize(data) || {} : {}), data };
+}
 export const realAppOnly = what => new ApiError('NOT_ALLOWED', `${what} is available in the real app (app/), not in the demo`);
 
 /**
@@ -129,8 +144,42 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     updateStudent: cmd('people.updateStudent'),
     /** updateGuardian({guardianId, firstName?, lastName?, phone?, relation?}) — principal only; the way a correction request is carried out. */
     updateGuardian: cmd('people.updateGuardian'),
-    /** addStudent({admissionNo, firstName, lastName, dob, program, route?, stop?, guardian1Name, guardian1Phone, …}) — principal; one new admission. */
+    /** addStudent({admissionNo, firstName, lastName, dob, program, route?, stop?, level?, guardian1Name, guardian1Phone, …}) — principal; one new admission. */
     addStudent: cmd('people.addStudent'),
+    /** promotionPreview(toAcademicYearId) → {children, promote, final, noLevel, already, rows:[{studentId, name, programId, from, to, outcome}]} — principal. */
+    promotionPreview: op(toAcademicYearId => { allow('admin'); return EV.promotionPlan(db(), toAcademicYearId); }),
+    /** promoteLevels({toAcademicYearId, skip:[studentId]}) → {children, promoted, skipped, final, noLevel, already} — principal; safe to repeat. */
+    promoteLevels: cmd('people.promoteLevels'),
+  };
+  /** School settings (schema v5): footer of the Progress Report, director's name, privacy contact, office hours, UPI. */
+  const school = {
+    /** details() → {reportFooter, directorName, privacyContact, officeHours, upi} (null where unset); every signed-in user. */
+    details: op(() => { me(); return schoolDetails(db()); }),
+    /** setDetails({reportFooter?:{address, phones[], email, website}, directorName?, privacyContact?:{name, role, email}, officeHours?:{start, end, days}, upi?:{vpa, payeeName}}) — principal; null clears. */
+    setDetails: cmd('admin.setSchoolDetails'),
+    /** officeHours() → {set, open, hours, nextOpen:{day, time, inDays}|null} at this moment (school time). */
+    officeHours: op(() => { me(); return officeHoursStatus(db().school, nowISO(clock())); }),
+  };
+  /** The annual Progress Report (reads follow RLS: staff of the child; parents published reports of their own children). */
+  const evaluations = {
+    /** list({programId?, studentId?, academicYearId?}) → evaluation views (sections with ratings, total, rated, missing). */
+    list: op((q = {}) => EV.listEvaluations(db(), me(), q)),
+    get: op(id => EV.getEvaluation(db(), me(), id)),
+    /** classStatus({programId, academicYearId}) → [{studentId, name, level, levelLabel, evaluationId, status:'not_started'|'draft'|'submitted'|'published', missing, revision}]. */
+    classStatus: op((q = {}) => EV.classStatus(db(), me(), q)),
+    /** rubric(level) → {title, sections:[{title, group, scale, values, items:[{key, label}]}]} (the school's wording). */
+    rubric: op(level => { me(); return EV.rubric(level); }),
+    start: cmd('evaluations.start'),
+    startClass: cmd('evaluations.startClass'),
+    save: cmd('evaluations.save'),
+    submit: cmd('evaluations.submit'),
+    publish: cmd('evaluations.publish'),
+    unpublish: cmd('evaluations.unpublish'),
+  };
+  const signatures = {
+    /** list() → [{owner, name, role, signs:'Teacher'|'Center Head'|'Director', signature:{id, uploadedAt, …}|null}]: the principal everyone, a teacher themself. */
+    list: op(() => signatureList(db(), me())),
+    remove: cmd('signatures.remove'),
   };
   /** School set-up (principal; setStopPosition also the route's driver): classes, staff, bus routes and stops. */
   const setup = {
@@ -528,7 +577,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     suggestMapping: op((kind, headers) => { allow('admin', 'accountant'); return I.suggestMapping(kind, headers || []); }),
   };
 
-  return { people, setup, notices, threads, calendar, transport, fees, attendance, diary, care, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
+  return { people, setup, notices, threads, calendar, transport, fees, attendance, diary, care, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight,
+    school, evaluations, signatures, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
 }
 
 /**
@@ -855,6 +905,66 @@ export function createApi(opts = {}) {
     storageInfo: raw(() => demoPhotos.info()),
   };
 
+  // ---------------- signatures (demo): bytes in IndexedDB beside the demo photos, or a drawn SVG (seed rows) ----------------
+  const demoSignatureBlob = async x => {
+    if (x.demo && x.demo.svg) {
+      const svg = (await import('../seed/signatures.js')).signatureSvg(x.demo.svg);
+      if (svg) return new Blob([svg], { type: 'image/svg+xml' });
+    }
+    const rec = await demoPhotos.get(x.id);
+    return rec ? (rec.blob || rec) : null;
+  };
+  const sysCommit = (name, args) => { const sys = systemPersona('demo'); return storage.commit(d => execute(name, d, args, systemCtx(), sys)); };
+  const signatures = {
+    ...surface.signatures,
+    /** upload(owner, blob) → {signature, replaced}: a PNG or JPEG (no camera/location data), at most 200 KB and 2000 px. owner {kind:'staff', staffId} | {kind:'director'}. */
+    upload: raw(async (owner, blob) => {
+      const p = me(); db();
+      const info = await inspectUpload(blob);
+      const problem = fileProblem(info, { mimes: SIGNATURE_MIMES, maxBytes: SIGNATURE_MAX_BYTES, maxEdge: SIGNATURE_MAX_EDGE });
+      if (problem) throw new ApiError('VALIDATION', `This signature cannot be used: ${problem}`);
+      const fileInfo = { path: `demo/${Date.now().toString(36)}`, mime: info.mime, bytes: info.bytes, sha256: null, width: info.width ?? null, height: info.height ?? null };
+      const r = out(storage.commit(d => execute('signatures.upload', d, [{ owner }], { ...ctxNow(p), fileInfo }, p)));
+      await demoPhotos.put(r.signature.id, { blob, width: null, height: null });
+      if (r.replaced) { await demoPhotos.remove(r.replaced); sysCommit('signatures.finishDelete', [{ signatureIds: [r.replaced] }]); }
+      return r;
+    }),
+    /** blob(signatureId) → Blob of a current signature, for the principal or its owner. Show it with URL.createObjectURL only. */
+    blob: raw(async signatureId => {
+      const p = me(); const d = db();
+      const x = (d.signatures || []).find(y => y.id === signatureId && y.status === 'ready');
+      if (!x) throw new ApiError('NOT_FOUND', 'Signature not found');
+      if (!(p.role === 'admin' || (p.role === 'teacher' && x.ownerKind === 'staff' && x.staffId === p.staffId))) throw new ApiError('NOT_ALLOWED', 'Not your signature');
+      const b = await demoSignatureBlob(x);
+      if (!b) throw new ApiError('NOT_FOUND', 'This signature is not stored in this browser (demo images live in the browser that added them)');
+      return b;
+    }),
+    /** remove(owner) → {removed}: the image is deleted at once. */
+    remove: raw(async owner => {
+      const r = await surface.signatures.remove({ owner });
+      await demoPhotos.remove(r.removed);
+      sysCommit('signatures.finishDelete', [{ signatureIds: [r.removed] }]);
+      return r;
+    }),
+  };
+  const evaluations = {
+    ...surface.evaluations,
+    /**
+     * printData(id) → everything the print page lays out: {evaluation, school:{name, directorName, footer}, header, sections,
+     * footnote, attendance, remarks, draft, signers:[{role, staffId, name, blob:Blob|null}]}. Parents: published reports only.
+     */
+    printData: raw(async id => {
+      const p = me(); const d = db();
+      const view = toApiErrorSync(() => EV.evaluationPrintView(d, p, id));
+      const signers = [];
+      for (const x of view.signers) {
+        const sig = currentSignature(d, x.role === 'director' ? { kind: 'director' } : { kind: 'staff', staffId: x.staffId });
+        signers.push({ ...x, blob: sig ? await demoSignatureBlob(sig) : null });
+      }
+      return { ...structuredClone(view), signers };
+    }),
+  };
+
   // ---------------- admin ----------------
   const broken = () => !storage || storage.status !== 'ok';
   const systemCtx = () => { const now = clock(); return { actor: { role: 'system', id: 'system' }, now: nowISO(now), today: todayISO(now) }; };
@@ -1015,7 +1125,7 @@ export function createApi(opts = {}) {
     refresh: op(() => undefined),
     session, people, setup: surface.setup, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     curriculum, observations, progress, reports, photos, rights: surface.rights, oversight: surface.oversight,
-    auth, consent, push, import: imports, reminders,
+    auth, consent, push, import: imports, reminders, school: surface.school, evaluations, signatures,
     /** test hook */
     _storage: () => storage,
   };
@@ -1055,5 +1165,5 @@ function createDemoApi() {
 // The demo never loads remote.js or supabase-js; the real app never loads the seed.
 const APP_CONFIG = globalThis.__APP_CONFIG__;
 export const api = APP_CONFIG
-  ? await (await import('./remote.js')).createRemoteApi(APP_CONFIG, { createSurface, ApiError, toApiError, op })
+  ? await (await import('./remote.js')).createRemoteApi(APP_CONFIG, { createSurface, ApiError, toApiError, op, inspectUpload })
   : createDemoApi();

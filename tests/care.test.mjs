@@ -215,19 +215,21 @@ test('retention: once the attendance period after leaving is over, absences, pic
 
 // ---------------------------------------------------------------- schema v4
 import { migrate } from '../src/store/storage.js';
-import { SCHEMA_VERSION, COLLECTIONS } from '../src/store/schema.js';
+import { SCHEMA_VERSION, COLLECTIONS, V5_COLLECTIONS, V5_SCHOOL_KEYS } from '../src/store/schema.js';
 import { validateDb } from '../src/domain/validate.js';
 
 test('schema v4: migrate v3 → v4 adds the three care collections empty and changes nothing else; validate checks the new rows', () => {
-  assert.equal(SCHEMA_VERSION, 4);
+  assert.equal(SCHEMA_VERSION, 5, 'v5 (wave 2) followed; v4 → v5 is tested in tests/w2-data.test.mjs');
   for (const c of ['leaveRequests', 'pickupContacts', 'pickups']) assert.ok(COLLECTIONS.includes(c));
   const v3 = seed();
-  for (const c of ['leaveRequests', 'pickupContacts', 'pickups']) delete v3[c];
+  for (const c of ['leaveRequests', 'pickupContacts', 'pickups', ...V5_COLLECTIONS]) delete v3[c];
+  for (const k of V5_SCHOOL_KEYS) delete v3.school[k];
   v3.schemaVersion = 3;
-  const before = JSON.stringify({ ...v3, schemaVersion: 4 });
+  const before = JSON.stringify({ ...v3, schemaVersion: 5 });
   const m = migrate(structuredClone(v3));
-  const { leaveRequests, pickupContacts, pickups, ...rest } = m;
-  assert.deepEqual([leaveRequests, pickupContacts, pickups], [[], [], []]);
+  const { leaveRequests, pickupContacts, pickups, evaluations, signatures, ...rest } = m;
+  assert.deepEqual([leaveRequests, pickupContacts, pickups, evaluations, signatures], [[], [], [], [], []]);
+  for (const k of V5_SCHOOL_KEYS) { assert.equal(rest.school[k], null); delete rest.school[k]; }
   assert.equal(JSON.stringify(rest), before);
   const db = seed();
   run(db, PARENT_01, 'leave.request', [{ studentId: 'stu-01', fromDate: '2026-10-05', toDate: '2026-10-05' }]);

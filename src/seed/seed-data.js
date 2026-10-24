@@ -18,6 +18,7 @@ import { requestLeave, markLeaveSeen, addPickupContact, recordPickup } from '../
 import { addObservation, shareObservation } from '../domain/observations.js';
 import { recordProgress } from '../domain/progress.js';
 import { generateReport, saveNarratives, submitReport, publishReport } from '../domain/reports.js';
+import { startEvaluation, saveEvaluation, submitEvaluation, publishEvaluation, rubricItems } from '../domain/evaluations.js';
 import { starterPresentations } from '../domain/curriculum-starter.js';
 import { CONSENT_VERSION } from '../domain/commands.js';
 import { startTrip, recordPosition, markChild, endTrip } from '../domain/transport.js';
@@ -138,6 +139,10 @@ export function buildSeed(now = new Date()) {
     ...db.school, ...SCHOOL, weeklyOffs: [0, 6], currentAcademicYearId: AY,
     invoicePrefix: 'INV', receiptPrefix: 'RCP', refundPrefix: 'RFD',
     lateFeeRule: { graceDays: 7, mode: 'perDay', amountPaise: 1000, capPaise: 50000, shiftDueToWorkingDay: true },
+    // school settings the principal enters (schema v5): fake values only; the privacy contact is left unset on purpose
+    reportFooter: { address: SCHOOL.address, phones: [fakePhone(1), fakePhone(2)], email: 'office@example.com', website: 'www.example.com' },
+    directorName: 'Asha Exampleton',
+    privacyContact: null,
   };
   db.academicYears = [
     { id: AY_PREV, label: 'AY 2025-26', startDate: '2025-06-01', endDate: '2026-05-31' },
@@ -178,6 +183,13 @@ export function buildSeed(now = new Date()) {
       grd[first] = gids[0];
       for (const gid of gids) db.guardians.find((g) => g.id === gid).studentIds.push(s.id);
     }
+  }
+  // Progress Report levels (rooms are mixed-age): Toddlers in the Toddler Community; Mont 1-3 by age in Primary A/B.
+  // Zoya has no level yet, so "set the level first" can be seen.
+  for (const s of db.students) {
+    if (s.id === stu.Zoya) continue;
+    s.level = s.programId === P.td ? 'toddlers' : s.dob >= '2022-12-01' ? 'mont1' : s.dob >= '2021-01-01' ? 'mont2' : 'mont3';
+    s.levelAy = AY;
   }
   db.students.find((s) => s.id === stu.Kabir).healthNotes = 'Mild dust allergy (demo data)';
   db.students.find((s) => s.id === stu.Anika).healthNotes = 'Uses a spectacle prescription (demo data)';
@@ -469,6 +481,39 @@ export function buildSeed(now = new Date()) {
   reportFor('Neel', 'published');
   reportFor('Ira', 'submitted');
   reportFor('Vivaan', 'draft');
+
+  // ---------------------------------------------------------------- signatures (drawn scribbles, src/seed/signatures.js) and Progress Reports
+  // Signatures on file for the Primary A teachers, the principal and the director; the Toddler and Primary B teachers
+  // have none yet. Demo rows have no stored object: the app draws the SVG.
+  const sig = (ownerKind, staffId, svg) => db.signatures.push({ id: `sig-demo-${staffId || 'director'}`, ownerKind, staffId, path: `demo/${staffId || 'director'}.svg`, mime: 'image/svg+xml',
+    bytes: null, sha256: null, width: 300, height: 90, status: 'ready', uploadedBy: ID.principal, uploadedAt: isoAt('2026-06-01', 9, 30), removedBy: null, removedAt: null,
+    objectDeletedAt: null, demo: { svg } });
+  sig('staff', ID.tPA, 'sig1');
+  sig('staff', ID.tFloat, 'sig2');
+  sig('staff', ID.principal, 'sig3');
+  sig('director', null, 'sig4');
+  {
+    // Neel's 2025-26 report (he was in the Toddlers' form then) is published; Navya's 2026-27 one waits for the principal;
+    // Ira's is a draft half rated. Ratings are spread deterministically over each scale.
+    const rate = (level, k) => Object.fromEntries(rubricItems(level).map((it, i) => [it.key, it.values[(i * 7 + k) % 3 === 0 ? 0 : 1]]));
+    const tc = ctxAt('2026-05-20', tea(ID.tPA), 11, 0);
+    const neel = db.students.find((s) => s.id === stu.Neel);
+    neel.level = 'toddlers';
+    let e = startEvaluation(db, { studentId: neel.id, academicYearId: AY_PREV }, tc);
+    e = saveEvaluation(db, e.id, { ratings: rate('toddlers', 1), remarks: 'A cheerful, curious child who settled well and enjoys practical life work. Sample text for the demo.',
+      attendance: { workingDays: 196, present: 181, reason: 'Register kept on paper in 2025-26 (demo)' }, revision: e.revision }, tc);
+    submitEvaluation(db, e.id, {}, tc);
+    publishEvaluation(db, e.id, {}, ctxAt('2026-05-25', ADMIN, 10, 0));
+    neel.level = 'mont1';
+    const navya = db.students.find((s) => s.id === stu.Navya);
+    let n = startEvaluation(db, { studentId: navya.id, academicYearId: AY }, { actor: tea(ID.tPA), now: isoAt(today, 8, 0), today });
+    n = saveEvaluation(db, n.id, { ratings: rate(navya.level, 2), remarks: 'Works with concentration and helps younger children. Sample text for the demo.', revision: n.revision }, { actor: tea(ID.tPA), now: isoAt(today, 8, 10), today });
+    submitEvaluation(db, n.id, {}, { actor: tea(ID.tPA), now: isoAt(today, 8, 20), today });
+    const ira = db.students.find((s) => s.id === stu.Ira);
+    const i0 = startEvaluation(db, { studentId: ira.id, academicYearId: AY }, { actor: tea(ID.tPA), now: isoAt(today, 8, 30), today });
+    const half = Object.fromEntries(Object.entries(rate(ira.level, 0)).slice(0, 20));
+    saveEvaluation(db, i0.id, { ratings: half, revision: i0.revision }, { actor: tea(ID.tPA), now: isoAt(today, 8, 40), today });
+  }
 
   // ---------------------------------------------------------------- one ended simulated trip (previous school day)
   const prevDay = (() => { let d = addDays(today, -1); for (let i = 0; i < 10 && !isWorkingDay(db, d, P.td); i++) d = addDays(d, -1); return d; })();

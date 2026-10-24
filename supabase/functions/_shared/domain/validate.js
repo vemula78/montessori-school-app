@@ -69,7 +69,10 @@ const ENUMS = {
   dataRequests: ['open', 'in_progress', 'done', 'declined'],
   leaveRequests: ['active', 'withdrawn'],
   pickupContacts: ['active', 'removed'],
+  evaluations: ['draft', 'submitted', 'published'],
+  signatures: ['ready', 'removed'],
 };
+const LEVELS = ['toddlers', 'mont1', 'mont2', 'mont3'];
 const AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
 const TERMS = ['Term 1', 'Term 2', 'Term 3'];
 const CONSENT_PURPOSE_NAMES = ['app_account', 'push', 'bus_live', 'photos'];
@@ -407,6 +410,24 @@ function checks(db, add, v) {
     if (!['guardian', 'contact', 'other'].includes(p.kind)) add('BAD_KIND', 'pickup', p.id, `kind ${String(p.kind).slice(0, 20)}`);
     if (p.kind === 'guardian') ref('pickup', p.id, 'personId', 'guardians', p.personId);
     if (p.kind === 'contact') ref('pickup', p.id, 'personId', 'pickupContacts', p.personId);
+  }
+  // schema v5: progress reports and signatures
+  for (const s of db.students) if (s.level !== undefined && s.level !== null && !LEVELS.includes(s.level)) add('BAD_LEVEL', 'student', s.id, `level ${String(s.level).slice(0, 20)}`);
+  for (const e of db.evaluations) {
+    ref('evaluation', e.id, 'studentId', 'students', e.studentId);
+    ref('evaluation', e.id, 'academicYearId', 'academicYears', e.academicYearId);
+    if (e.id !== `evl-${e.academicYearId}-${e.studentId}`) add('BAD_EVALUATION_KEY', 'evaluation', e.id, 'id must be evl-<academicYearId>-<studentId>');
+    if (!LEVELS.includes(e.level)) add('BAD_LEVEL', 'evaluation', e.id, `level ${String(e.level).slice(0, 20)}`);
+    if (!isObj(e.ratings)) add('MALFORMED', 'evaluation', e.id, 'ratings must be an object');
+    if (!isObj(e.attendance) || !nonNeg(e.attendance.workingDays) || !nonNeg(e.attendance.present) || e.attendance.present > e.attendance.workingDays) add('BAD_ATTENDANCE', 'evaluation', e.id, 'attendance must be whole days, present ≤ working days');
+    if (!isInt(e.revision) || e.revision < 1) add('MALFORMED', 'evaluation', e.id, 'revision must be a whole number from 1');
+  }
+  const liveSig = new Set();
+  for (const x of db.signatures) {
+    if (!['staff', 'director'].includes(x.ownerKind)) add('BAD_KIND', 'signature', x.id, `ownerKind ${String(x.ownerKind).slice(0, 20)}`);
+    if (x.ownerKind === 'staff') ref('signature', x.id, 'staffId', 'staff', x.staffId);
+    const k = `${x.ownerKind}|${x.staffId ?? ''}`;
+    if (x.status === 'ready') { if (liveSig.has(k)) add('DUPLICATE_SIGNATURE', 'signature', x.id, 'more than one current signature for one person'); liveSig.add(k); }
   }
   const consentKeys = new Set();
   for (const c of db.consents) {

@@ -1,6 +1,6 @@
 // Pure rules of the cron-daily function (node-testable; the function itself is Deno TypeScript).
 
-export const PRIVACY_STEPS = ['photosConsentSweep', 'retention', 'photosCleanup', 'erasureCleanup'];
+export const PRIVACY_STEPS = ['photosConsentSweep', 'retention', 'photosCleanup', 'erasureCleanup', 'filesCleanup'];
 
 /**
  * The steps of this run that failed: a step that threw; a privacy step that reports errors[] or failed > 0 (audit R3);

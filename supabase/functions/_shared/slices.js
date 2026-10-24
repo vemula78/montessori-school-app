@@ -9,9 +9,10 @@ const KEY = {
 };
 const keyOf = (c, r) => (KEY[c] ? KEY[c](r) : r.id);
 // Phase 3: retention.purge (slice 'retention', system only) deletes learning, diary, attendance and message rows;
-// schema v4 adds the care rows of a child who left (absences, pick-up people, pick-ups), under the attendance period
+// schema v4 adds the care rows of a child who left (absences, pick-up people, pick-ups), under the attendance period;
+// schema v5 the annual Progress Reports (evaluations), under the diary period
 const DELETABLE = new Set(['calendarEvents', 'importRows', 'observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages',
-  'leaveRequests', 'pickupContacts', 'pickups']);
+  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations']);
 const stable = x => JSON.stringify(x);
 
 /**

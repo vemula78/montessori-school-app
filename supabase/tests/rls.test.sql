@@ -12,10 +12,13 @@
 -- The definer list is exactly the auth trigger and public.end_sessions. The permission matrix is permissions.test.sql.
 -- Migration 0009 (care) from "care" below: absences, pick-up people and pick-ups read like the diary; persist upserts and
 -- retention deletes them; the pick-up id names the child and the day.
+-- Migration 0010 (annual Progress Report) from "v5 evaluations" below: evaluations read like termly reports, signatures the
+-- principal and their owner only, the private signatures bucket, persist (one current signature per person, never deleted;
+-- retention deletes evaluations), the evalAttendance hint of load_slice, the v5 snapshot.
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(214);
+select plan(240);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -287,7 +290,7 @@ select is((select count(*)::int from public.presentations), 0, 'p3_parent_sees_n
 select is((select jsonb_array_length(public.my_snapshot()->'progressEvents')), 0, 'p3_snapshot_parent_has_no_progress_events');
 select ok((select bool_and(e->>'sharedAt' is not null) from jsonb_array_elements(public.my_snapshot()->'observations') e)
   and jsonb_array_length(public.my_snapshot()->'observations') > 0, 'p3_snapshot_parent_observations_all_shared');
-select is((public.my_snapshot()->>'schemaVersion')::int, 4, 'p3_snapshot_schema_version (4 since migration 0009)');
+select is((public.my_snapshot()->>'schemaVersion')::int, 5, 'p3_snapshot_schema_version (5 since migration 0010)');
 select ok((select bool_and(guardian_id = 'grd-02') from public.consents), 'p3_parent_reads_own_consents_only');
 select is((select count(*)::int from storage.objects), 0, 'p3_parent_reads_no_storage_objects');
 reset role;
@@ -405,7 +408,7 @@ reset role;
 select tests.as_user_aal('00000000-0000-4000-8000-000000000001', 'aal2');
 select is((select count(*) from public.students), (select stu from totals), 'adm_enrolled_principal_aal2_sees_all');
 select is(public.my_snapshot()->>'status', 'active', 'adm_aal2_snapshot_active');
-select is((public.my_snapshot()->>'schemaVersion')::int, 4, 'adm_snapshot_schema_version_4 (4 since migration 0009)');
+select is((public.my_snapshot()->>'schemaVersion')::int, 5, 'adm_snapshot_schema_version (5 since migration 0010)');
 reset role;
 insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret)
 values ('00000000-0000-4000-8000-0000000000f2', '00000000-0000-4000-8000-000000000002', 'pgtap', 'totp', 'verified', now(), now(), 'JBSWY3DPEHPK3PXP');
@@ -524,7 +527,7 @@ reset role;
 select is((public.load_slice('{dataRequests}'::text[], '{"exportGuardianId":"grd-01"}'::jsonb))->'db'->'dataRequests' @> '[{"id":"drq-t-2"}]'::jsonb
   and jsonb_array_length((public.load_slice('{dataRequests}'::text[], '{"exportGuardianId":"grd-01"}'::jsonb))->'db'->'dataRequests') = 1, true, 'adm_load_slice_data_requests_of_the_export_guardian');
 select is((public.load_slice('{}'::text[], '{"callerUserId":"00000000-0000-4000-8000-000000000003"}'::jsonb))->'db'->'callerTwoStep', '{"enrolled": false, "required": false}'::jsonb, 'adm_load_slice_returns_caller_two_step');
-select is((public.load_slice('{}'::text[], '{}'::jsonb))->'db'->>'schemaVersion', '4', 'adm_load_slice_schema_version_4');
+select is((public.load_slice('{}'::text[], '{}'::jsonb))->'db'->>'schemaVersion', '5', 'adm_load_slice_schema_version (5 since migration 0010)');
 
 -- ---------------------------------------------------------------- care (0009): absences, pick-up people, pick-ups
 -- read like the diary: principal all, teacher own programmes, parent own consented children; accountant and driver nothing
@@ -543,7 +546,7 @@ reset role;
 select tests.as_user_iat('00000000-0000-4000-8000-000000000005', 'aal1', extract(epoch from now())::bigint + 5);
 select is((select array_agg(id order by id) from public.leave_requests where id like 'lv-t-%'), array['lv-t-1'], 'care_parent_reads_own_child_absences_only');
 select ok(exists (select 1 from public.pickup_contacts where id = 'pkc-t-1') and exists (select 1 from public.pickups where student_id = 'stu-02'), 'care_parent_reads_own_pickup_people_and_log');
-select is(public.my_snapshot()->>'schemaVersion', '4', 'care_snapshot_schema_version_4');
+select is(public.my_snapshot()->>'schemaVersion', '5', 'care_snapshot_schema_version (5 since migration 0010)');
 select ok(public.my_snapshot()->'leaveRequests' @> '[{"id":"lv-t-1"}]'::jsonb and not (public.my_snapshot()->'leaveRequests' @> '[{"id":"lv-t-2"}]'::jsonb), 'care_snapshot_absences_own_only');
 reset role;
 select tests.as_user('00000000-0000-4000-8000-000000000003'); -- accountant
@@ -556,6 +559,57 @@ reset role;
 select is(jsonb_array_length((public.load_slice('{leaveRequests,pickupContacts,pickups}'::text[], '{}'::jsonb))->'db'->'pickupContacts') >= 1, true, 'care_load_slice_returns_the_collections');
 select lives_ok($$select public.persist('pgtap-care', 1, '{"deletes":{"pickups":["pck-2026-10-02-stu-02"],"leaveRequests":["lv-t-1"],"pickupContacts":["pkc-t-1"]}}'::jsonb)$$, 'care_retention_may_delete_the_three');
 select is((select count(*)::int from public.pickups where id = 'pck-2026-10-02-stu-02') + (select count(*)::int from public.leave_requests where id = 'lv-t-1'), 0, 'care_rows_deleted');
+
+-- ---------------------------------------------------------------- v5 evaluations and signatures (0010)
+select lives_ok($$select public.persist('pgtap-v5', 0, '{"upserts":{
+  "evaluations":[{"id":"evl-AY2026-27-stu-02","studentId":"stu-02","academicYearId":"AY2026-27","level":"mont2","ratings":{},"status":"draft","revision":1},
+                 {"id":"evl-AY2025-26-stu-02","studentId":"stu-02","academicYearId":"AY2025-26","level":"mont1","ratings":{},"status":"published","revision":5}],
+  "signatures":[{"id":"sig-t-1","ownerKind":"staff","staffId":"stf-teacher-pa","path":"sig/t-1.png","status":"ready"},
+                {"id":"sig-t-2","ownerKind":"director","staffId":null,"path":"sig/t-2.png","status":"ready"}]}}'::jsonb)$$, 'v5_persist_writes_evaluations_and_signatures');
+select throws_ok($$insert into public.evaluations (id, doc) values ('evl-x', '{"id":"evl-x","studentId":"stu-02","academicYearId":"AY2026-27","status":"draft"}')$$, '23514', null, 'v5_evaluation_id_names_child_and_year');
+select throws_ok($$insert into public.signatures (id, doc) values ('sig-t-3', '{"id":"sig-t-3","ownerKind":"staff","staffId":"stf-teacher-pa","status":"ready"}')$$, '23505', null, 'v5_one_current_signature_per_person');
+select lives_ok($$select public.persist('pgtap-v5', 1, '{"upserts":{"signatures":[{"id":"sig-t-3","ownerKind":"staff","staffId":"stf-teacher-pa","path":"sig/t-3.png","status":"ready"},
+  {"id":"sig-t-1","ownerKind":"staff","staffId":"stf-teacher-pa","path":"sig/t-1.png","status":"removed"}]}}'::jsonb)$$, 'v5_replacement_in_one_write');
+select throws_ok($$select public.persist('pgtap-v5', 2, '{"deletes":{"signatures":["sig-t-1"]}}'::jsonb)$$, '42501', null, 'v5_signatures_never_deleted');
+select tests.as_user('00000000-0000-4000-8000-000000000002'); -- teacher, Primary A
+select ok(exists (select 1 from public.evaluations where id = 'evl-AY2026-27-stu-04'), 'v5_teacher_reads_own_programme_drafts');
+select is((select count(*)::int from public.evaluations where student_id = 'stu-02'), 0, 'v5_teacher_reads_nothing_of_another_programme');
+select is((select array_agg(id order by id) from public.signatures), array['sig-t-1', 'sig-t-3'], 'v5_teacher_reads_own_signature_rows_only');
+select throws_ok($$insert into public.evaluations (id, doc) values ('evl-AY2026-27-stu-06', '{"id":"evl-AY2026-27-stu-06","studentId":"stu-06","academicYearId":"AY2026-27","status":"draft"}')$$, '42501', null, 'v5_no_client_writes');
+reset role;
+select tests.as_user_iat('00000000-0000-4000-8000-000000000005', 'aal1', extract(epoch from now())::bigint + 5); -- grd-01 (stu-01, stu-02)
+select is((select array_agg(id order by id) from public.evaluations), array['evl-AY2025-26-stu-01', 'evl-AY2025-26-stu-02'], 'v5_parent_reads_published_reports_of_own_children_only');
+select ok(public.my_snapshot()->'evaluations' @> '[{"id":"evl-AY2025-26-stu-02"}]'::jsonb and not (public.my_snapshot()->'evaluations' @> '[{"id":"evl-AY2026-27-stu-02"}]'::jsonb), 'v5_snapshot_published_only_for_parents');
+select is((select count(*)::int from public.signatures), 0, 'v5_parent_reads_no_signature_rows');
+select is(public.my_snapshot()->>'schemaVersion', '5', 'v5_snapshot_schema_version_5');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000006'); -- grd-02: another family
+select is((select count(*)::int from public.evaluations where student_id in ('stu-01', 'stu-02')), 0, 'v5_another_family_reads_none');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000003'); -- accountant
+select is((select count(*)::int from public.evaluations) + (select count(*)::int from public.signatures), 0, 'v5_accountant_reads_none');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000004'); -- driver
+select is((select count(*)::int from public.evaluations) + (select count(*)::int from public.signatures), 0, 'v5_driver_reads_none');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000001'); -- principal
+select is((select count(*)::int from public.signatures where id like 'sig-t-%'), 3, 'v5_principal_reads_every_signature');
+reset role;
+select is((select bool_and(x->>'studentId' = 'stu-04') and count(*) > 0 from jsonb_array_elements(public.load_slice('{attendance}'::text[],
+  '{"evalAttendance":{"studentId":"stu-04","academicYearId":"AY2026-27"}}'::jsonb)->'db'->'attendance') x), true, 'v5_load_slice_attendance_of_one_child_and_year');
+select is((select bool_and(x->>'studentId' in (select id from public.students where program_id = 'prog-primary-a')) and count(*) > 0 from jsonb_array_elements(public.load_slice('{attendance}'::text[],
+  '{"evalAttendance":{"programId":"prog-primary-a","academicYearId":"AY2026-27"}}'::jsonb)->'db'->'attendance') x), true, 'v5_load_slice_attendance_of_a_programme');
+select is(jsonb_array_length(public.load_slice('{attendance,evaluations}'::text[], '{"evalAttendance":{"none":true}}'::jsonb)->'db'->'attendance'), 0, 'v5_load_slice_no_attendance_for_readers');
+select is((select public from storage.buckets where id = 'signatures'), false, 'v5_signatures_bucket_private');
+select is((select count(*)::int from pg_policies where schemaname = 'storage' and (qual ilike '%signatures%' or with_check ilike '%signatures%')), 0, 'v5_no_storage_policy_for_signatures');
+select is((select array_agg(n.nspname || '.' || p.proname order by 1) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where p.prosecdef and n.nspname in ('public', 'app')), array['app.link_new_auth_user', 'public.end_sessions'], 'v5_definer_list_unchanged');
+select lives_ok($$select public.persist('pgtap-v5', 2, '{"deletes":{"evaluations":["evl-AY2025-26-stu-02"]}}'::jsonb)$$, 'v5_retention_may_delete_evaluations');
+select is((select count(*)::int from public.evaluations where id = 'evl-AY2025-26-stu-02'), 0, 'v5_evaluation_deleted');
+-- every policy evaluates its helpers once per statement (0010): no bare app./auth. call in any USING or WITH CHECK
+select is((select count(*)::int from pg_policy pol join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and (coalesce(pg_get_expr(pol.polqual, pol.polrelid), '') || ' ' || coalesce(pg_get_expr(pol.polwithcheck, pol.polrelid), ''))
+    ~ '(?<!SELECT )\m(app|auth)\.[a-z_]+\('), 0, 'v5_rls_helpers_once_per_statement');
 
 select * from finish();
 rollback;

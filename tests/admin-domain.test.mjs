@@ -8,7 +8,7 @@ import { COMMANDS, SLICES, execute, personaFor, buildPersonas, consentScopedPers
 import { twoStepRequired, whoCanSee, listDataRequests, activeAnnouncement, ANNOUNCEMENT_MAX } from '../src/domain/admin.js';
 import { PERMISSIONS, MATRIX_ACTORS, evaluateJs, withFixture, FIXTURE } from '../src/domain/permissions.js';
 import { migrate } from '../src/store/storage.js';
-import { SCHEMA_VERSION, COLLECTIONS } from '../src/store/schema.js';
+import { SCHEMA_VERSION, COLLECTIONS, V5_COLLECTIONS, V5_SCHOOL_KEYS } from '../src/store/schema.js';
 import { validateDb } from '../src/domain/validate.js';
 import { linkChanges } from '../scripts/seed-sql.mjs';
 
@@ -265,18 +265,19 @@ test('permission matrix: a policy requiring two-step closes the unenrolled accou
 
 // ---------------------------------------------------------------- schema v3
 test('schema v3: dataRequests collection and school.announcement; migrate v2 → v3 adds them empty and keeps everything else', () => {
-  assert.equal(SCHEMA_VERSION, 4, 'v4 (care) followed; v3 → v4 is tested in tests/care.test.mjs');
+  assert.equal(SCHEMA_VERSION, 5, 'v4 (care) and v5 (wave 2) followed; v3 → v4 is tested in tests/care.test.mjs, v4 → v5 in tests/w2-data.test.mjs');
   assert.ok(COLLECTIONS.includes('dataRequests'));
   const v2 = seed();
   delete v2.dataRequests; delete v2.school.announcement; v2.schemaVersion = 2;
-  for (const c of ['leaveRequests', 'pickupContacts', 'pickups']) delete v2[c];
-  const before = JSON.stringify({ ...v2, schemaVersion: 4 });
+  for (const c of ['leaveRequests', 'pickupContacts', 'pickups', ...V5_COLLECTIONS]) delete v2[c];
+  for (const k of V5_SCHOOL_KEYS) delete v2.school[k];
+  const before = JSON.stringify({ ...v2, schemaVersion: 5 });
   const m = migrate(structuredClone(v2));
-  assert.equal(m.schemaVersion, 4);
+  assert.equal(m.schemaVersion, 5);
   assert.deepEqual(m.dataRequests, []);
   assert.equal(m.school.announcement, null);
-  const { dataRequests, leaveRequests, pickupContacts, pickups, ...rest } = m; void dataRequests; void leaveRequests; void pickupContacts; void pickups;
-  const { announcement, ...school } = rest.school; void announcement;
+  const { dataRequests, leaveRequests, pickupContacts, pickups, evaluations, signatures, ...rest } = m; void dataRequests; void leaveRequests; void pickupContacts; void pickups; void evaluations; void signatures;
+  const { announcement, reportFooter, directorName, privacyContact, officeHours, upi, ...school } = rest.school; void announcement; void reportFooter; void directorName; void privacyContact; void officeHours; void upi;
   assert.equal(JSON.stringify({ ...rest, school }), before, 'nothing else changed');
   assert.deepEqual(validateDb(m).filter(v => v.severity !== 'warning'), []);
   const kept = structuredClone(m); kept.school.announcement = { text: 'x', tone: 'info', until: null, setBy: 's', setAt: 't' };

@@ -3,12 +3,12 @@
 //   trip feed  channel `trip-<routeId>`: INSERT trip_positions (trip_id=eq.<tripId>) → {type:'position', fix}
 //                                       INSERT trip_child_events (trip_id=eq.<tripId>) → {type:'trip', trip}
 //                                       trips changes (route_id=eq.<routeId>)       → {type:'trip', trip}
-//   nudges     channel `app-changes`: messages, notices, invoices, payments, observations, reports → snapshot refetch
+//   nudges     channel `app-changes`: messages, notices, invoices, payments, observations, reports, evaluations → snapshot refetch
 // Children's boarding/drop-off events live in trip_child_events (RLS: a parent receives only their own children's).
 // Trips and child events are not nudges: each stop event would make every signed-in user re-download the snapshot.
 // The bus screens follow the trip feed, and transport.activeTrip / parentView read the route's trips fresh.
 
-const NUDGE_TABLES = ['messages', 'notices', 'invoices', 'payments', 'observations', 'reports'];
+const NUDGE_TABLES = ['messages', 'notices', 'invoices', 'payments', 'observations', 'reports', 'evaluations'];
 const toFix = r => ({ lat: r.lat, lng: r.lng, accuracy: r.accuracy, ts: new Date(r.ts).toISOString() });
 
 export function subscribeNudges(sb, onNudge, debounceMs = 500) {

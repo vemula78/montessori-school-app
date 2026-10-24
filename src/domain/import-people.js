@@ -14,7 +14,7 @@ import { normHeader } from './csv.js';
 
 export const IMPORT_KINDS = ['children', 'fees'];
 export const TARGET_FIELDS = {
-  children: ['admissionNo', 'firstName', 'lastName', 'dob', 'program', 'status', 'leftOn', 'route', 'stop',
+  children: ['admissionNo', 'firstName', 'lastName', 'dob', 'program', 'status', 'leftOn', 'route', 'stop', 'level',
     'guardian1Name', 'guardian1Relation', 'guardian1Phone', 'guardian1Email',
     'guardian2Name', 'guardian2Relation', 'guardian2Phone', 'guardian2Email'],
   fees: ['admissionNo', 'installment', 'dueDate', 'outstandingPaise'],
@@ -22,6 +22,8 @@ export const TARGET_FIELDS = {
 export const REQUIRED_FIELDS = { children: ['admissionNo', 'firstName', 'dob', 'program', 'guardian1Name'], fees: ['admissionNo', 'installment', 'dueDate', 'outstandingPaise'] };
 export const OPENING_HEAD = { id: 'fh-opening-balance', name: 'Opening balance (carried from previous system)', kind: 'openingBalance' };
 const MAX_CHILD_AGE_DAYS = 12 * 366;
+const LEVEL_ALIASES = { toddlers: 'toddlers', toddler: 'toddlers', mont1: 'mont1', montessori1: 'mont1', m1: 'mont1', mont2: 'mont2', montessori2: 'mont2', m2: 'mont2',
+  mont3: 'mont3', montessori3: 'mont3', m3: 'mont3' };
 
 /** Header aliases for a suggested mapping (generic names only; never a vendor's name). */
 const ALIASES = {
@@ -33,6 +35,7 @@ const ALIASES = {
   status: ['status', 'studentstatus'],
   leftOn: ['leftOn', 'leavingdate', 'dateofleaving', 'leftdate', 'dateleft', 'withdrawaldate'],
   route: ['route', 'busroute', 'routename'],
+  level: ['level', 'montlevel', 'evaluationlevel', 'reportlevel'],
   stop: ['stop', 'busstop', 'pickuppoint', 'stopname'],
   guardian1Name: ['guardian1name', 'parent1name', 'mothername', 'parentname', 'guardianname'],
   guardian1Relation: ['guardian1relation', 'parent1relation', 'relation'],
@@ -127,6 +130,10 @@ function childTarget(db, get, today) {
   if (leftRaw && !t.leftOn) return { reason: `invalid leaving date "${leftRaw}" (use DD/MM/YYYY or YYYY-MM-DD)` };
   if (t.leftOn && t.status !== 'left') return { reason: 'a leaving date is given but the status is not left' };
   if (t.leftOn && compareISO(t.leftOn, today) > 0) return { reason: 'the leaving date is in the future' };
+  // optional Progress Report level (schema v5): Toddlers / Mont 1 / Mont 2 / Mont 3, in any spacing or case
+  const lvRaw = get('level');
+  t.level = lvRaw ? LEVEL_ALIASES[normHeader(lvRaw)] || null : null;
+  if (lvRaw && !t.level) return { reason: `unknown level "${lvRaw}" (use Toddlers, Mont 1, Mont 2 or Mont 3)` };
   t.routeId = null; t.stopId = null;
   if (get('stop') || get('route')) {
     if (!get('stop')) return { reason: 'route given without a stop' };
@@ -321,7 +328,8 @@ export function applyRows(db, { kind, mapping, rows }, batchId, ctx) {
         if (!gids.includes(gid)) gids.push(gid);
       }
       db.students.push({ id: sid, firstName: t.firstName, lastName: t.lastName, dob: t.dob, programId: t.programId, admissionNo: t.admissionNo, status: t.status,
-        guardianIds: gids, routeId: t.routeId, stopId: t.stopId, feeCategory: 'regular', healthNotes: null, leftOn: t.leftOn ?? null, source: 'import', importBatchId: batchId }); // leftOn null: unknown (the principal sets it)
+        guardianIds: gids, routeId: t.routeId, stopId: t.stopId, feeCategory: 'regular', healthNotes: null, leftOn: t.leftOn ?? null, source: 'import', importBatchId: batchId, // leftOn null: unknown (the principal sets it)
+        ...(t.level ? { level: t.level, levelAy: db.school.currentAcademicYearId || null } : {}) });
       for (const gid of gids) { const g = byId(db.guardians, gid); if (!g.studentIds.includes(sid)) g.studentIds.push(sid); }
       created.students++;
     }

@@ -126,6 +126,12 @@ public = false
 file_size_limit = "400KiB"
 allowed_mime_types = ["image/jpeg"]
 
+# Mirrors migration 0010: staff and director signatures for the Progress Report (private, no storage policies).
+[storage.buckets.signatures]
+public = false
+file_size_limit = "200KiB"
+allowed_mime_types = ["image/png", "image/jpeg"]
+
 # Allow connections via S3 compatible clients
 [storage.s3_protocol]
 enabled = true

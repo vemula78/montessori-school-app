@@ -6,6 +6,8 @@
 // complete → the object is read and checked here first (a refused file, or any file once photo consent no longer
 // holds, is deleted), the verdict goes in as ctx.objectInfo; remove → the object is deleted at once (cron retries a failure); viewUrl → a 120-second download
 // path, readOnly so it is never stored.
+// Schema v5: a signature image travels with signatures.upload (FILE_COMMANDS); evaluations.signatures and
+// signatures.viewUrl answer 60-second signed paths, never stored.
 
 import { body, coded, serve } from '../_shared/http.ts';
 import { caller } from '../_shared/authz.ts';
@@ -14,6 +16,16 @@ import { fanOut } from '../_shared/push.ts';
 import { finishErasure } from '../_shared/erasure.ts';
 import { signUpload, signView, verifyUpload, cleanupDeleting, deleteObjects, deleteIfRejected } from '../_shared/photos.ts';
 import { COMMANDS } from '../_shared/domain/commands.js';
+import { decodeUpload, checkUpload, newPath, putObject, removeObjects, signDownload } from '../_shared/files.ts';
+import { cleanupSignatures } from '../_shared/signatures.ts';
+import { SIGNATURE_BUCKET, SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, SIGNATURE_MAX_EDGE, SIGNATURE_VIEW_TTL_S } from '../_shared/domain/signatures.js';
+
+// Commands whose file travels in the request (body.file = {base64}): authorized by their check twin first, then the bytes
+// are checked and stored under a server-chosen path, and the command runs with ctx.fileInfo. A refused command or a
+// replayed request id deletes the stored object again.
+const FILE_COMMANDS: Record<string, { check: string; bucket: string; prefix: string; rules: { mimes: string[]; maxBytes: number; maxEdge?: number } }> = {
+  'signatures.upload': { check: 'signatures.uploadCheck', bucket: SIGNATURE_BUCKET, prefix: 'sig', rules: { mimes: SIGNATURE_MIMES, maxBytes: SIGNATURE_MAX_BYTES, maxEdge: SIGNATURE_MAX_EDGE } },
+};
 
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L
 const normaliseCode = (c: unknown) => String(c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -29,7 +41,7 @@ function newInviteCode() {
 
 serve(async (req) => {
   const who = await caller(req);
-  const { name, args = [], requestId } = await body(req);
+  const { name, args = [], requestId, file } = await body(req);
   if (typeof name !== 'string' || !(COMMANDS as any)[name]) throw coded('NOT_FOUND', `Unknown command: ${name}`);
   // every call names its request (one id per user action; the browser retries with the same id), so a repeated
   // request can never write twice
@@ -57,15 +69,41 @@ serve(async (req) => {
     else if (!t.consentOk) { await deleteObjects([t.path]); extra.ctx = { objectInfo: { objectDeleted: true } }; } // complete rejects the row
     else extra.ctx = { objectInfo: await verifyUpload(t.path) };
   }
+  let stored: { bucket: string; path: string } | null = null;
+  const fc = FILE_COMMANDS[name];
+  if (fc) {
+    await runCommand(fc.check, args, who); // authorize before anything reaches Storage
+    const bytes = decodeUpload(file, fc.rules.maxBytes);
+    const info = await checkUpload(bytes, fc.rules);
+    const path = newPath(fc.prefix, info.mime);
+    await putObject(fc.bucket, path, bytes, info.mime);
+    stored = { bucket: fc.bucket, path };
+    extra.ctx = { ...(extra.ctx || {}), fileInfo: { path, ...info } };
+  }
+  const dropStored = async () => { if (stored) { try { await removeObjects(stored.bucket, [stored.path]); } catch (e: any) { console.error(`${name}: removing the unused object failed:`, e?.message); } } };
   let run;
   try {
     run = await runCommand(name, args, who, extra);
+  } catch (e) {
+    await dropStored();
+    throw e;
   } finally {
     // whatever made complete reject the row (the file check, or consent withdrawn after that check: audit R2), its
     // object is deleted before the caller gets the answer; the 15-minute photosCleanup retries a failure
     if (completing) await deleteIfRejected(completing.photoId, completing.path);
   }
+  if (run.replayed) await dropStored(); // the first request's object is the one kept
   if (!run.replayed) await fanOut(name, run);
+  if ((name === 'signatures.upload' && run.result?.replaced) || (name === 'signatures.remove' && run.result?.removed)) {
+    const id = run.result.replaced || run.result.removed;
+    try { const c = await cleanupSignatures([id]); if (c.errors.length) console.error(`${name}: object deletion failed; cron retries`); } catch (e: any) { console.error(`${name}: object deletion failed; cron retries:`, e?.message); }
+  }
+  if (name === 'evaluations.signatures') {
+    const out = [];
+    for (const x of run.result || []) { const { path, ...rest } = x; out.push({ ...rest, ...(await signDownload(SIGNATURE_BUCKET, path, SIGNATURE_VIEW_TTL_S)) }); }
+    return { result: out };
+  }
+  if (name === 'signatures.viewUrl') return { result: { signatureId: run.result.signatureId, ...(await signDownload(SIGNATURE_BUCKET, run.result.path, SIGNATURE_VIEW_TTL_S)) } };
   if (name === 'photos.register' && !run.replayed && run.result && run.result.path) {
     try { return { result: { ...run.result, upload: await signUpload(run.result.path) } }; } catch (e: any) {
       console.error('photos.register: upload grant failed:', e?.message);

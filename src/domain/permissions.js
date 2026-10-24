@@ -42,9 +42,22 @@ export const FIXTURE = {
     pickups: [{ id: 'pck-2026-10-01-stu-04', studentId: 'stu-04', date: '2026-10-01', kind: 'guardian', personId: 'grd-02', name: null, note: '', time: '15:30',
       at: '2026-10-01T10:00:00.000Z', recordedBy: 'stf-teacher-pa', correctedAt: null }],
   },
+  // schema v5: a published progress report of stu-04 (grd-02's child, Primary A) and a signature of the Primary B teacher
+  // (the local database holds no demo signature rows: they have no stored image)
+  v5: {
+    evaluations: [{ id: 'evl-AY2025-26-stu-04', studentId: 'stu-04', academicYearId: 'AY2025-26', level: 'mont1', programId: 'prog-primary-a', ratings: {},
+      attendance: { workingDays: 10, present: 9, unmarked: 0, source: 'register', from: '2025-06-01', to: '2025-06-14', reason: null }, remarks: '', status: 'published', revision: 4,
+      createdBy: 'stf-teacher-pa', createdAt: '2026-05-01T05:00:00.000Z', updatedBy: 'stf-principal', updatedAt: '2026-05-20T05:00:00.000Z', submittedBy: 'stf-teacher-pa',
+      submittedAt: '2026-05-10T05:00:00.000Z', publishedBy: 'stf-principal', publishedAt: '2026-05-20T05:00:00.000Z', lastPublishedAt: null, unpublishedReason: null,
+      signers: { teacherIds: ['stf-teacher-pa'], centerHeadId: 'stf-principal' } }],
+    signatures: [{ id: 'sig-matrix-1', ownerKind: 'staff', staffId: 'stf-teacher-pb', path: 'sig/matrix-1.png', mime: 'image/png', bytes: 100, sha256: null, width: 30, height: 10,
+      status: 'ready', uploadedBy: 'stf-principal', uploadedAt: '2026-06-01T05:00:00.000Z', removedBy: null, removedAt: null, objectDeletedAt: null }],
+  },
 };
 /** Table of each care collection (scripts/permissions-sql.mjs inserts FIXTURE.care there). */
 export const CARE_TABLES = { leaveRequests: 'leave_requests', pickupContacts: 'pickup_contacts', pickups: 'pickups' };
+/** Table of each v5 fixture collection. */
+export const V5_TABLES = { evaluations: 'evaluations', signatures: 'signatures' };
 
 const Y = true, N = false;
 const row = (p2, p1, t, a, d, pc, pn) => ({ principal_aal2: p2, principal_aal1_enrolled: p1, teacher: t, accountant: a, driver: d, parent_consented: pc, parent_no_consent: pn });
@@ -96,6 +109,12 @@ export const PERMISSIONS = {
       js: { kind: 'read', name: 'pickupContacts' }, sql: 'select count(*) from public.pickup_contacts' },
     { key: 'pickup_log', label: 'Who collected each child', allow: row(Y, N, Y, N, N, Y, N),
       js: { kind: 'read', name: 'pickups' }, sql: 'select count(*) from public.pickups' },
+    { key: 'progress_reports_unpublished', label: 'Annual progress reports not yet published', allow: row(Y, N, Y, N, N, N, N),
+      js: { kind: 'read', name: 'unpublishedEvaluations' }, sql: "select count(*) from public.evaluations where status <> 'published'" },
+    { key: 'progress_reports_published', label: 'Published annual progress reports', allow: row(Y, N, Y, N, N, Y, N),
+      js: { kind: 'read', name: 'publishedEvaluations' }, sql: "select count(*) from public.evaluations where status = 'published'" },
+    { key: 'signatures_others', label: "Other staff members' signature records", allow: row(Y, N, N, N, N, N, N),
+      js: { kind: 'read', name: 'otherSignatures' }, sql: "select count(*) from public.signatures where coalesce(staff_id, '') <> coalesce(app.my_staff_id(), '')" },
     { key: 'curriculum', label: 'Curriculum', allow: row(Y, N, Y, N, N, N, N),
       js: { kind: 'read', name: 'curriculum' }, sql: 'select count(*) from public.presentations' },
     { key: 'bus_positions', label: 'Bus trips and positions', allow: row(Y, N, N, Y, Y, Y, N),
@@ -121,6 +140,14 @@ export const PERMISSIONS = {
       js: { kind: 'command', name: 'leave.request', args: [{ studentId: 'stu-04', fromDate: TODAY, toDate: TODAY }] }, sql: null },
     { key: 'record_pickup', label: 'Record who collected a child', allow: row(Y, N, Y, N, N, N, N),
       js: { kind: 'command', name: 'pickup.record', args: [{ studentId: 'stu-04', date: TODAY, collectedBy: { kind: 'guardian', id: 'grd-02' } }] }, sql: null },
+    { key: 'start_progress_report', label: 'Start an annual progress report', allow: row(Y, N, Y, N, N, N, N),
+      js: { kind: 'command', name: 'evaluations.start', args: [{ studentId: 'stu-04', academicYearId: 'AY2026-27' }] }, sql: null },
+    { key: 'publish_progress_report', label: 'Publish or unpublish an annual progress report', allow: row(Y, N, N, N, N, N, N),
+      js: { kind: 'command', name: 'evaluations.unpublish', args: ['evl-AY2025-26-stu-04', 'matrix probe'] }, sql: null },
+    { key: 'own_signature', label: 'Upload own signature (teacher-pa)', allow: row(Y, N, Y, N, N, N, N),
+      js: { kind: 'command', name: 'signatures.uploadCheck', args: [{ owner: { kind: 'staff', staffId: 'stf-teacher-pa' } }] }, sql: null },
+    { key: 'school_settings', label: 'Set the school details (report footer, privacy contact, office hours, UPI)', allow: row(Y, N, N, N, N, N, N),
+      js: { kind: 'command', name: 'admin.setSchoolDetails', args: [{ directorName: 'Matrix Exampleton' }] }, sql: null },
     { key: 'export_family', label: "Download a family's data (grd-02)", allow: row(Y, N, N, N, N, Y, N),
       js: { kind: 'command', name: 'admin.dataExport', args: ['grd-02'] }, sql: null },
   ],
@@ -130,7 +157,7 @@ export const PERMISSIONS = {
 
 const anyOf = (list, pred) => (list || []).some(pred);
 const learner = (p, sid) => p.role === 'admin' || ((p.role === 'teacher' || p.role === 'parent') && p.studentIds.includes(sid));
-/** Read rules as RLS states them (migrations 0001–0009), over the persona's scope. */
+/** Read rules as RLS states them (migrations 0001–0010), over the persona's scope. */
 const READS = {
   children: (db, p) => STAFF_SEES_ALL.includes(p.role) || p.studentIds.length > 0,
   healthNotes: (db, p) => ['admin', 'teacher', 'parent'].includes(p.role) && anyOf(db.students, s => s.healthNotes && (p.role === 'admin' || p.studentIds.includes(s.id))),
@@ -152,6 +179,10 @@ const READS = {
   leaveRequests: (db, p) => anyOf(db.leaveRequests, r => learner(p, r.studentId)),
   pickupContacts: (db, p) => anyOf(db.pickupContacts, r => learner(p, r.studentId)),
   pickups: (db, p) => anyOf(db.pickups, r => learner(p, r.studentId)),
+  // schema v5 (0010): evaluations read like termly reports; signature rows the principal, and a staff member their own
+  unpublishedEvaluations: (db, p) => p.role !== 'parent' && anyOf(db.evaluations, e => e.status !== 'published' && learner(p, e.studentId)),
+  publishedEvaluations: (db, p) => anyOf(db.evaluations, e => e.status === 'published' && learner(p, e.studentId)),
+  otherSignatures: (db, p) => p.role === 'admin' && anyOf(db.signatures, x => (x.staffId || '') !== (p.staffId || '')),
   curriculum: (db, p) => ['admin', 'teacher'].includes(p.role) && db.presentations.length > 0,
   busPositions: (db, p) => anyOf(db.trips, t => (t.positions || []).length > 0 && (STAFF_SEES_ALL.includes(p.role)
     || (p.role === 'driver' && anyOf(db.routes, r => r.id === t.routeId && (r.driverId === p.staffId || r.attendantId === p.staffId)))
@@ -194,5 +225,6 @@ export function withFixture(db) {
   for (const [sid, notes] of Object.entries(FIXTURE.healthNotes)) { const s = byId(db.students, sid); if (s) s.healthNotes = notes; }
   for (const r of FIXTURE.dataRequests) db.dataRequests.push({ ...r, filedAt: '2026-10-01T05:00:00.000Z', filedBy: r.guardianId, updatedAt: '2026-10-01T05:00:00.000Z', resolution: null, decidedBy: null, decidedAt: null });
   for (const [c, rows] of Object.entries(FIXTURE.care)) for (const r of rows) if (!db[c].some(x => x.id === r.id)) db[c].push({ ...r });
+  for (const [c, rows] of Object.entries(FIXTURE.v5)) for (const r of rows) if (!db[c].some(x => x.id === r.id)) db[c].push(structuredClone(r));
   return db;
 }

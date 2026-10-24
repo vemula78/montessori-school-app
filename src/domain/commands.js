@@ -5,7 +5,8 @@
 //
 // Entry shape:
 //   slice      which revision-guarded slice the command writes ('ledger'|'messaging'|'calendar'|'transport'|
-//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'|'care'|'setup'); the server
+//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'|'care'|'setup'|
+//              'evaluations'|'signatures'); the server
 //              loads that slice's collections.
 //   authorize(p, db, args)   throws DomainError NOT_ALLOWED / NOT_FOUND; p = persona (see personaFor)
 //   run(db, args, ctx, p)    mutates db and returns the api result (same shape in both modes)
@@ -46,6 +47,9 @@ import { isISODate, compareISO } from './dates.js';
 import * as AD from './admin.js';
 import * as CA from './care.js';
 import * as SU from './setup.js';
+import * as EV from './evaluations.js';
+import * as SG from './signatures.js';
+import * as SC from './school.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
@@ -755,16 +759,16 @@ export const COMMANDS = {
 
   // ---- enrolment and retention
   /**
-   * updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?, feeCategory?}) — the only way a child changes class
+   * updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?, feeCategory?, level?}) — the only way a child changes class
    * or leaves. status 'left' sets leftOn (given, else today); back to 'active' clears it; leftOn alone corrects the
-   * date of a child who has left.
+   * date of a child who has left. level: 'toddlers'|'mont1'|'mont2'|'mont3'|null (the Progress Report form), for the current year.
    */
   'people.updateStudent': {
     slice: 'ledger', authorize: p => allow(p, 'admin'),
     run(db, [{ studentId, ...patch } = {}], ctx) {
       const s = byId(db.students, studentId);
       if (!s) fail('NOT_FOUND', 'Student not found');
-      for (const k of Object.keys(patch)) if (!['programId', 'status', 'leftOn', 'routeId', 'stopId', 'feeCategory'].includes(k)) fail('VALIDATION', `Unknown field: ${k}`);
+      for (const k of Object.keys(patch)) if (!['programId', 'status', 'leftOn', 'routeId', 'stopId', 'feeCategory', 'level'].includes(k)) fail('VALIDATION', `Unknown field: ${k}`);
       const changes = [];
       const leftDate = d => {
         if (!isISODate(d)) fail('VALIDATION', `Invalid leaving date: ${d}`);
@@ -803,6 +807,13 @@ export const COMMANDS = {
         if (!['regular', 'staffWard'].includes(patch.feeCategory)) fail('VALIDATION', `Unknown fee category: ${patch.feeCategory}`);
         if (patch.feeCategory !== (s.feeCategory || 'regular')) changes.push(`fee category ${s.feeCategory || 'regular'} → ${patch.feeCategory}`);
         s.feeCategory = patch.feeCategory;
+      }
+      if ('level' in patch) { // the Progress Report form the child is on, for the current academic year
+        const lv = patch.level === '' ? null : patch.level;
+        if (lv !== null && !EV.isLevel(lv)) fail('VALIDATION', `Unknown level: ${lv}`);
+        if (lv !== (s.level ?? null)) changes.push(`level ${s.level || '-'} → ${lv || '-'}`);
+        s.level = lv;
+        s.levelAy = lv ? db.school.currentAcademicYearId || null : null;
       }
       appendAudit(db, ctx, { entity: 'student', entityId: s.id, action: 'update', summary: changes.join('; ') || 'no change' });
       return { ...s, name: fullName(s) };
@@ -857,6 +868,108 @@ export const COMMANDS = {
     authorize: (p, db, [a]) => { allow(p, 'admin', 'driver'); mustRoute(p, db, a?.routeId); },
     run: (db, [a], ctx) => SU.setStopPosition(db, a || {}, ctx),
   },
+
+  // ---- annual Progress Report (slice 'evaluations'; src/domain/evaluations.js). Hint evalAttendance: the register rows
+  // the attendance figures need (one child's, or one programme's, for the academic year; none for the readers).
+  /** start({studentId, academicYearId}) — a teacher of the child or the principal; the child needs a level. */
+  'evaluations.start': {
+    slice: 'evaluations', load: ([a = {}]) => ({ evalAttendance: { studentId: String(a?.studentId ?? ''), academicYearId: String(a?.academicYearId ?? '') } }),
+    authorize: (p, db, [a = {}]) => { staffLearning(p); O.mustSeeLearner(p, db, a?.studentId); },
+    run: (db, [a], ctx) => EV.evaluationView(db, EV.startEvaluation(db, a || {}, ctx)),
+  },
+  /** startClass({programId, academicYearId}) → {children, started, skippedExisting, skippedNoLevel, …}: counts add up. */
+  'evaluations.startClass': {
+    slice: 'evaluations', load: ([a = {}]) => ({ evalAttendance: { programId: String(a?.programId ?? ''), academicYearId: String(a?.academicYearId ?? '') } }),
+    authorize: (p, db, [a = {}]) => { staffLearning(p); if (!byId(db.programs, a?.programId)) fail('NOT_FOUND', 'Program not found'); teachesProgram(p, a.programId); },
+    run: (db, [a], ctx) => EV.startClassEvaluations(db, a || {}, ctx),
+  },
+  /** save(id, {ratings?, remarks?, attendance?, revision}) — CONFLICT if the report moved since revision. */
+  'evaluations.save': {
+    slice: 'evaluations', load: ([id]) => ({ evalAttendance: { evaluationId: String(id ?? '') } }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, evaluationOf(db, id).studentId); },
+    run: (db, [id, a], ctx) => EV.evaluationView(db, EV.saveEvaluation(db, id, a || {}, ctx)),
+  },
+  /** submit(id, {revision?}) — every item rated, else VALIDATION with details.missing [{key, label, section}]. */
+  'evaluations.submit': {
+    slice: 'evaluations', load: ([id]) => ({ evalAttendance: { evaluationId: String(id ?? '') } }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, evaluationOf(db, id).studentId); },
+    run: (db, [id, a], ctx) => EV.evaluationView(db, EV.submitEvaluation(db, id, a || {}, ctx)),
+  },
+  'evaluations.publish': {
+    slice: 'evaluations', load: () => ({ evalAttendance: { none: true } }),
+    authorize: (p, db, [id]) => { allow(p, 'admin'); evaluationOf(db, id); },
+    run: (db, [id, a], ctx) => EV.evaluationView(db, EV.publishEvaluation(db, id, a || {}, ctx)),
+  },
+  'evaluations.unpublish': {
+    slice: 'evaluations', load: () => ({ evalAttendance: { none: true } }),
+    authorize: (p, db, [id]) => { allow(p, 'admin'); evaluationOf(db, id); },
+    run: (db, [id, reason], ctx) => EV.evaluationView(db, EV.unpublishEvaluation(db, id, reason, ctx)),
+  },
+  /**
+   * The signature images a print of this report needs: [{role, staffId, name, signatureId, path}] for signers with a
+   * signature on file. Staff of the child; a parent only for a PUBLISHED report of their own child. The command function
+   * turns each path into a 60-second signed path that remote.js fetches at once (Blobs only reach the page).
+   */
+  'evaluations.signatures': {
+    slice: 'evaluations', serverOnly: true, readOnly: true, load: () => ({ evalAttendance: { none: true } }),
+    authorize(p, db, [id]) {
+      allow(p, 'admin', 'teacher', 'parent');
+      const e = evaluationOf(db, id);
+      O.mustSeeLearner(p, db, e.studentId);
+      if (p.role === 'parent' && e.status !== 'published') fail('NOT_FOUND', 'Progress report not found');
+    },
+    run(db, [id]) {
+      const e = byId(db.evaluations, id);
+      return EV.evaluationSigners(db, e).map(x => {
+        const sig = SG.currentSignature(db, x.role === 'director' ? { kind: 'director' } : { kind: 'staff', staffId: x.staffId });
+        return sig ? { role: x.role, staffId: x.staffId, name: x.name, signatureId: sig.id, path: sig.path } : null;
+      }).filter(Boolean);
+    },
+  },
+
+  // ---- signatures (slice 'signatures'; src/domain/signatures.js): the principal for anyone and the director, a teacher their own
+  /**
+   * upload({owner:{kind:'staff', staffId}|{kind:'director'}}) — the image travels beside the command (the command function
+   * checks the bytes, stores them in the private bucket and passes ctx.fileInfo; the demo passes its own).
+   */
+  'signatures.upload': {
+    slice: 'signatures',
+    authorize: (p, db, [a = {}]) => { allow(p, 'admin', 'teacher'); const o = SG.cleanOwner(db, a?.owner); if (!SG.mayManageSignature(p, o)) deny('You can upload only your own signature'); },
+    run: (db, [a], ctx) => SG.saveSignature(db, a || {}, ctx.fileInfo, ctx),
+  },
+  /** The same check as upload, run before the server touches Storage. */
+  'signatures.uploadCheck': {
+    slice: 'signatures', serverOnly: true, readOnly: true,
+    authorize: (p, db, [a = {}]) => { allow(p, 'admin', 'teacher'); const o = SG.cleanOwner(db, a?.owner); if (!SG.mayManageSignature(p, o)) deny('You can upload only your own signature'); },
+    run: () => ({ ok: true }),
+  },
+  'signatures.remove': {
+    slice: 'signatures',
+    authorize: (p, db, [a = {}]) => { allow(p, 'admin', 'teacher'); const o = SG.cleanOwner(db, a?.owner); if (!SG.mayManageSignature(p, o)) deny('You can remove only your own signature'); },
+    run: (db, [a], ctx) => SG.removeSignature(db, a || {}, ctx),
+  },
+  /** A preview of one signature for whoever manages it (the principal; the teacher it belongs to). */
+  'signatures.viewUrl': {
+    slice: 'signatures', serverOnly: true, readOnly: true,
+    authorize(p, db, [id]) {
+      allow(p, 'admin', 'teacher');
+      const x = byId(db.signatures || [], id);
+      if (!x || x.status !== 'ready') fail('NOT_FOUND', 'Signature not found');
+      if (!SG.mayManageSignature(p, { kind: x.ownerKind, staffId: x.staffId })) deny('Not your signature');
+    },
+    run: (db, [id]) => { const x = byId(db.signatures, id); return { signatureId: x.id, path: x.path }; },
+  },
+  /** System (command function, cron): the objects of these removed signatures are deleted. */
+  'signatures.finishDelete': {
+    slice: 'signatures', authorize: p => allow(p, 'system'),
+    run: (db, [a = {}], ctx) => SG.finishSignatureDelete(db, Array.isArray(a?.signatureIds) ? a.signatureIds : [], ctx),
+  },
+
+  // ---- school settings (v5) and level promotion
+  /** setSchoolDetails({reportFooter?, directorName?, privacyContact?, officeHours?, upi?}) — the principal; null clears one. */
+  'admin.setSchoolDetails': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SC.setSchoolDetails(db, a, ctx) },
+  /** promoteLevels({toAcademicYearId, skip:[studentId]}) — once per year (preview: api.people.promotionPreview). */
+  'people.promoteLevels': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => EV.promoteLevels(db, a || {}, ctx) },
 
   // ---- administration: sign-in accounts (server only; the admin-accounts function pairs each with the auth server)
   /** blockUser(userId) → {userId, status:'blocked'} — never yourself, never the last active principal. */
@@ -1087,6 +1200,7 @@ const staffLearning = p => allow(p, 'admin', 'teacher');
 function observationOf(db, id) { const o = byId(db.observations, id); if (!o) fail('NOT_FOUND', 'Observation not found'); return o; }
 function photoOf(db, id) { const x = byId(db.photos, id); if (!x) fail('NOT_FOUND', 'Photo not found'); return x; }
 function reportOf(db, id) { const r = byId(db.reports, id); if (!r) fail('NOT_FOUND', 'Report not found'); return r; }
+function evaluationOf(db, id) { const r = byId(db.evaluations || [], id); if (!r) fail('NOT_FOUND', 'Progress report not found'); return r; }
 /** The principal, or the staff member who took the photo (and still sees the child). */
 function takerOf(p, db, id) {
   staffLearning(p);
@@ -1120,7 +1234,7 @@ export const SLICES = {
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
   export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
     'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents',
-    'dataRequests', ...LEARNING, ...CARE], writes: [] },
+    'dataRequests', ...LEARNING, ...CARE, 'evaluations'], writes: [] },
   // erasure scrubs the absence reasons the guardian wrote (leaveRequests)
   erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'dataRequests', 'leaveRequests'],
     writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows', 'dataRequests', 'leaveRequests'] },
@@ -1129,11 +1243,14 @@ export const SLICES = {
   // learning records are loaded per child (hints) except for system sweeps; consents are read for the photo rule
   learning: { reads: [...BASE, 'consents', ...LEARNING], writes: LEARNING },
   // the only slice whose command removes rows (retention.purge, system only); persist's allow-list matches PURGEABLE
-  retention: { reads: [...BASE, ...LEARNING, 'diaryEntries', 'attendance', 'threads', 'messages', ...CARE], writes: RT.PURGEABLE },
+  retention: { reads: [...BASE, ...LEARNING, 'diaryEntries', 'attendance', 'threads', 'messages', ...CARE, 'evaluations'], writes: RT.PURGEABLE },
   // schema v4: absences reported in advance, pick-up people and the pick-up log (small tables: loaded whole)
   care: { reads: [...BASE, ...CARE], writes: CARE },
   // school set-up (classes, staff, routes and stops); trips are read only to refuse changes under a running bus
   setup: { reads: [...BASE, 'trips'], writes: ['programs', 'staff', 'routes'] },
+  // schema v5: the annual Progress Report (evaluations are small: loaded whole; attendance by the evalAttendance hint)
+  evaluations: { reads: [...BASE, 'calendarEvents', 'attendance', 'evaluations', 'signatures'], writes: ['evaluations'] },
+  signatures: { reads: [...BASE, 'signatures'], writes: ['signatures'] },
 };
 /** Server-only collections (not part of the Db document; consents joined it in schema v2). */
 export const SERVER_COLLECTIONS = ['invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'];

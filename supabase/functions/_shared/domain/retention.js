@@ -3,10 +3,11 @@
 //   photos        live photos of the child → deleting (reason 'retention'); the server deletes the objects → expired
 //   observations  observations and progress events are deleted; their photos go too (live → deleting/expired,
 //                 rows already without an object are deleted)
-//   diary         diary entries and termly reports are deleted
+//   diary         diary entries, termly reports and annual Progress Reports (evaluations) are deleted
 //   attendance    attendance rows are deleted, with the absences reported in advance, the pick-up log and the pick-up people
 //   messages      the messages of the child's conversations are deleted (the conversation row stays)
-// Never touched: fee records (the law requires them), people, consent records, the audit log.
+// Never touched: fee records (the law requires them), people, consent records, the audit log, staff signatures (staff
+// data, not a child's: kept until replaced or removed; RETENTION_COVERAGE says where every collection stands).
 // A child who left without a leaving date (import, Phase 2 data) is never due: listed as leftWithoutDate.
 
 import { fail } from './ids.js';
@@ -19,7 +20,13 @@ export const RETENTION_MAX_MONTHS = 240;
 export const CATEGORIES = { photos: 'photosMonthsAfterLeaving', observations: 'observationsMonthsAfterLeaving', diary: 'diaryMonthsAfterLeaving',
   attendance: 'attendanceMonthsAfterLeaving', messages: 'messagesMonthsAfterLeaving' };
 /** Collections whose rows a retention purge may delete (the server's persist allow-list matches). */
-export const PURGEABLE = ['observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages', 'leaveRequests', 'pickups', 'pickupContacts'];
+export const PURGEABLE = ['observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'evaluations', 'attendance', 'messages', 'leaveRequests', 'pickups', 'pickupContacts'];
+/** Where each collection added after Phase 3 stands under retention: a category (deleted after a child leaves) or why it is kept. */
+export const RETENTION_COVERAGE = {
+  leaveRequests: 'attendance', pickupContacts: 'attendance', pickups: 'attendance',
+  evaluations: 'diary',
+  signatures: 'kept: staff data, not a child\'s; removed when replaced or deleted by the principal',
+};
 
 /** 'YYYY-MM-DD' + n months, the day clamped to the month's end (31-Jan + 1 → 28/29-Feb). */
 export function addMonths(iso, n) {
@@ -76,7 +83,7 @@ export function retentionPlan(db, today) {
       expire.push(...of('photos').filter(x => LIVE_STATUSES.includes(x.status)).map(x => x.id));
       put('photos', of('photos').filter(x => TERMINAL_STATUSES.includes(x.status)).map(x => x.id));
     }
-    if (cat === 'diary') { put('diaryEntries', of('diaryEntries').map(x => x.id)); put('reports', of('reports').map(x => x.id)); }
+    if (cat === 'diary') { put('diaryEntries', of('diaryEntries').map(x => x.id)); put('reports', of('reports').map(x => x.id)); put('evaluations', of('evaluations').map(x => x.id)); }
     if (cat === 'attendance') {
       put('attendance', of('attendance').map(x => `${x.date}|${x.studentId}`));
       for (const c of ['leaveRequests', 'pickups', 'pickupContacts']) put(c, of(c).map(x => x.id));

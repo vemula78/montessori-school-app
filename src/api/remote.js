@@ -20,9 +20,19 @@ import { fetchSnapshot } from './supabase/snapshot.js';
 import { subscribeNudges, subscribeTripFeed } from './supabase/realtime.js';
 import { createRemoteAdmin } from './remote-admin.js';
 import { PRIVILEGED_ROLES } from '../domain/admin.js';
+import { evaluationPrintView } from '../domain/evaluations.js';
+import { fileProblem } from '../domain/files.js';
+import { SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, SIGNATURE_MAX_EDGE } from '../domain/signatures.js';
+
+/** base64 of bytes (browser: btoa over binary chunks). */
+function toBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
 
 /** deps.sb / deps.call: test doubles for the supabase client and the function caller (tests only). */
-export async function createRemoteApi(config, { createSurface, ApiError, toApiError, op, sb: sbTest = null, call: callTest = null }) {
+export async function createRemoteApi(config, { createSurface, ApiError, toApiError, op, inspectUpload, sb: sbTest = null, call: callTest = null }) {
   setBusinessZone(IST_OFFSET_MIN);
   const sb = sbTest || await makeClient(config);
   const call = callTest || functionCaller(sb, config, ApiError);
@@ -108,6 +118,17 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     return r.result;
   };
   const cmd = name => op((...args) => command(name, args));
+  /** A command whose file (base64 of the checked bytes) travels beside it; the server checks the bytes again and stores them. */
+  const commandWithFile = async (name, args, data) => {
+    const body = { name, args, requestId: newRequestId(), file: { base64: toBase64(data) } };
+    let r;
+    try { r = await call('command', body); } catch (e) {
+      if (!e || e.code !== 'OFFLINE') throw e;
+      r = await call('command', body); // the same request id: the server stores the file once
+    }
+    try { await refresh(); } catch (e) { console.error('saved, but the refetch failed:', toApiError(e)); }
+    return r.result;
+  };
   const read = name => op((...args) => command(name, args, { reload: false }));
 
   // the administration module (remote-admin.js): appUsers for who-can-see come from the account desk; parents see a child
@@ -277,6 +298,49 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
       }
       if (!res.ok) throw new ApiError(res.status === 400 || res.status === 404 ? 'NOT_FOUND' : 'OFFLINE', 'The photo could not be loaded');
       return res.blob();
+    }),
+  };
+
+  // ---------------- signatures and the Progress Report print (signed paths fetched here at once; only Blobs leave) ----------------
+  const fetchSigned = async (signedPath, what) => {
+    let res;
+    try { res = await fetch(`${storageBase}${signedPath}`, { cache: 'no-store', referrerPolicy: 'no-referrer' }); } catch {
+      throw new ApiError('OFFLINE', `Cannot reach the school server to load the ${what}`);
+    }
+    if (!res.ok) throw new ApiError(res.status === 400 || res.status === 404 ? 'NOT_FOUND' : 'OFFLINE', `The ${what} could not be loaded`);
+    return res.blob();
+  };
+  const signatures = {
+    ...surface.signatures,
+    /** upload(owner, blob) → {signature, replaced}: PNG or JPEG (no camera/location data), at most 200 KB and 2000 px. */
+    upload: raw(async (owner, blob) => {
+      me();
+      const info = await inspectUpload(blob);
+      const problem = fileProblem(info, { mimes: SIGNATURE_MIMES, maxBytes: SIGNATURE_MAX_BYTES, maxEdge: SIGNATURE_MAX_EDGE });
+      if (problem) throw new ApiError('VALIDATION', `This signature cannot be used: ${problem}`);
+      return structuredClone(await commandWithFile('signatures.upload', [{ owner }], info.data));
+    }),
+    /** blob(signatureId) → Blob (the principal, or the signature's owner). */
+    blob: raw(async signatureId => {
+      const r = await command('signatures.viewUrl', [signatureId], { reload: false });
+      return fetchSigned(r.signedPath, 'signature');
+    }),
+    remove: op(owner => command('signatures.remove', [{ owner }])),
+  };
+  const evaluations = {
+    ...surface.evaluations,
+    /** printData(id) → the print page's data with signers[].blob (Blob|null). Parents: published reports of their own children. */
+    printData: raw(async id => {
+      const view = (() => { try { return evaluationPrintView(db(), me(), id); } catch (e) { throw toApiError(e); } })();
+      const signed = await command('evaluations.signatures', [id], { reload: false });
+      const signers = [];
+      for (const x of view.signers) {
+        const hit = (signed || []).find(y => y.role === x.role && (y.staffId ?? null) === (x.staffId ?? null));
+        let blob = null;
+        if (hit) { try { blob = await fetchSigned(hit.signedPath, 'signature'); } catch (e) { console.error(toApiError(e)); } }
+        signers.push({ ...x, blob });
+      }
+      return { ...structuredClone(view), signers };
     }),
   };
 
@@ -466,6 +530,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     refresh: op(() => refresh().then(() => undefined)),
     session, people, setup: surface.setup, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     auth, consent, push, import: imports, reminders, curriculum, observations, progress, reports, photos, rights, oversight,
+    school: surface.school, evaluations, signatures,
     _supabase: sb,
   };
   return api;

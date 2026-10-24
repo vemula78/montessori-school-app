@@ -10,16 +10,17 @@
 // the backend replaces this with a database transaction and sequence.
 // The backend is injected ({getItem, setItem}) so tests use a Map; the browser passes localStorage.
 
-import { SCHEMA_VERSION, RETENTION_KEYS } from './schema.js';
+import { SCHEMA_VERSION, RETENTION_KEYS, V5_COLLECTIONS, V5_SCHOOL_KEYS } from './schema.js';
 import { DomainError } from '../domain/ids.js';
 import { appendAudit } from '../domain/audit.js';
 import { validateDb, checkStructure } from '../domain/validate.js';
 
 // v2: the school was renamed (03-Oct-2026). v3: Phase 3 added Learning (04-Oct-2026); migrate() would give a returning
 // visitor empty Learning lists, so a fresh key gives every demo visitor the full sample data instead.
-// v4: absences and pick-up (11-Oct-2026), for the same reason.
-export const DB_KEY = 'montessori.db.v4';
-export const OLD_DB_KEYS = ['montessori.db.v1', 'montessori.db.v2', 'montessori.db.v3'];
+// v4: absences and pick-up (11-Oct-2026), for the same reason. v5: wave 2 (progress reports, signatures, school settings;
+// 24-Oct-2026).
+export const DB_KEY = 'montessori.db.v5';
+export const OLD_DB_KEYS = ['montessori.db.v1', 'montessori.db.v2', 'montessori.db.v3', 'montessori.db.v4'];
 export const CORRUPT_PREFIX = 'montessori.db.corrupt.';
 export const APPROX_QUOTA_BYTES = 5 * 1024 * 1024;
 
@@ -38,7 +39,8 @@ export function memoryBackend(map = new Map()) {
  * Versioned migration hook (runs on load, commit and import of an older document).
  * v1 -> v2 (Phase 3): the six new collections as empty arrays, students.leftOn = null (unknown), school.retention all
  * null (not decided). v2 -> v3 (administration): dataRequests = [], school.announcement = null.
- * v3 -> v4 (care): leaveRequests, pickupContacts, pickups = []. Nothing is dropped or rewritten. Never throws on a malformed document: checkStructure reports it.
+ * v3 -> v4 (care): leaveRequests, pickupContacts, pickups = []. v4 -> v5 (wave 2): the v5 collections = [], the v5 school
+ * settings null (students keep no level until the principal sets one). Nothing is dropped or rewritten. Never throws on a malformed document: checkStructure reports it.
  * Newer versions are refused by parse().
  */
 export function migrate(db) {
@@ -56,6 +58,11 @@ export function migrate(db) {
   if (db.schemaVersion === 3) {
     for (const c of ['leaveRequests', 'pickupContacts', 'pickups']) if (!Array.isArray(db[c])) db[c] = [];
     db.schemaVersion = 4;
+  }
+  if (db.schemaVersion === 4) {
+    for (const c of V5_COLLECTIONS) if (!Array.isArray(db[c])) db[c] = [];
+    if (db.school && typeof db.school === 'object') for (const k of V5_SCHOOL_KEYS) if (db.school[k] === undefined) db.school[k] = null;
+    db.schemaVersion = 5;
   }
   if (db.schemaVersion === SCHEMA_VERSION) return db;
   throw new DomainError('STORAGE_CORRUPT', `No migration from schemaVersion ${db.schemaVersion}`);

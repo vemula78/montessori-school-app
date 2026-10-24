@@ -86,6 +86,24 @@ scripts/      dev server, scan, domain sync, seed/first-run SQL generators, mock
   job deletes what is due and reports counts. Photos also go when photo consent is withdrawn.
 - Schema v2: `migrate()` upgrades a stored v1 document in the browser (new collections empty, `leftOn` null).
 
+### Annual Progress Report (schema v5, migration 0010)
+
+- **One report per child and academic year** on the form of the child's **level** (Toddlers / Mont 1 / Mont 2 / Mont 3; rooms are
+  mixed-age, so the form follows the child). The four forms are the school's templates word for word (`src/domain/evaluation-rubrics.js`:
+  40 / 52 / 58 / 58 items); each section is rated Progressing/Mastered or Developing/Developed. The principal sets a child's level
+  (`api.people.updateStudent({studentId, level})`, or a `level` column in the children import) and promotes everyone once a year
+  (`api.people.promotionPreview(ay)` then `api.people.promoteLevels({toAcademicYearId, skip})`, safe to repeat).
+- **Workflow** as termly reports: the teacher starts one child or the whole class (`api.evaluations.start` / `startClass`, counts add
+  up), saves drafts (`save(id, {ratings, remarks, attendance, revision})`, a stale revision is refused), submits when every item is
+  rated (the missing ones are listed); the principal publishes or unpublishes with a reason. Attendance (working days, days present)
+  comes from the register for the year and is refreshed on every save until a teacher overrides it with a reason.
+- **Who sees it**: the principal, the teachers of the child's programme, and either guardian once it is published (RLS like reports).
+- **Print**: `api.evaluations.printData(id)` gives the header, rated sections, attendance, remarks, the footer from school settings
+  (`api.school.setDetails({reportFooter, directorName, …})`, nothing hard-coded) and the signers (class teachers, the principal as
+  "Center Head", the director) with their signature images as Blobs. **Signatures** are kept in a private bucket and reach the page
+  only as Blobs (`api.signatures.upload(owner, blob)`: PNG/JPEG ≤ 200 KB, checked from the bytes on the server; the principal for
+  anyone and the director, a teacher their own). The demo draws fake signatures.
+
 ## Phase 2 / real app
 
 The go-live handoff for the school — click-by-click, from creating the Supabase project to installing the app on

@@ -145,15 +145,16 @@ test('api: corrupt storage rejects ready() with STORAGE_CORRUPT; reset works wit
 // ---------------------------------------------------------------- schema v1 -> v2 (Phase 3)
 const v1Blob = () => {
   const d = buildSeed(new Date(2026, 9, 2, 10, 0, 0));
-  for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'dataRequests', 'leaveRequests', 'pickupContacts', 'pickups']) delete d[c];
-  for (const st of d.students) delete st.leftOn;
+  for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'dataRequests', 'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'signatures']) delete d[c];
+  for (const st of d.students) { delete st.leftOn; delete st.level; delete st.levelAy; }
   delete d.school.retention;
+  for (const k of ['reportFooter', 'directorName', 'privacyContact', 'officeHours', 'upi']) delete d.school[k];
   d.diaryEntries.push({ id: 'dia-old', studentId: d.students[0].id, date: '2026-10-01', type: 'observation', data: { area: 'sensorial', text: 'Old' }, createdBy: 'x', createdAt: '2026-10-01T04:00:00.000Z', parentReadAt: null });
   d.schemaVersion = 1;
   return d;
 };
 
-test('DB_KEY v4: returning demo visitors get the full sample data (absences and pick-up), not empty lists', () => assert.equal(DB_KEY, 'montessori.db.v4'));
+test('DB_KEY v5: returning demo visitors get the full sample data (progress reports, signatures, school settings), not empty lists', () => assert.equal(DB_KEY, 'montessori.db.v5'));
 
 test('a stored v1 document is migrated on load: new collections empty, leftOn null, retention not decided, nothing else changed', () => {
   const be = memoryBackend();
@@ -162,8 +163,8 @@ test('a stored v1 document is migrated on load: new collections empty, leftOn nu
   const s = new Storage({ backend: be, seedFn: seed, clock });
   assert.equal(s.load().status, 'ok');
   assert.equal(s.db.schemaVersion, SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 4);
-  for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'leaveRequests', 'pickupContacts', 'pickups']) assert.deepEqual(s.db[c], [], c);
+  assert.equal(SCHEMA_VERSION, 5);
+  for (const c of ['presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'signatures']) assert.deepEqual(s.db[c], [], c);
   assert.ok(s.db.students.every(x => x.leftOn === null));
   assert.deepEqual(Object.values(s.db.school.retention), [null, null, null, null, null]);
   assert.equal(s.db.diaryEntries.find(e => e.id === 'dia-old').data.text, 'Old', 'old diary observations are kept as they were');

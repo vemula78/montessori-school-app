@@ -154,7 +154,7 @@ async function drawAdmin(ctx, host) {
 const RETENTION_FIELDS = [
   ['photosMonthsAfterLeaving', 'photos', 'Photos', 'Deleted this many months after the child leaves. Always deleted at once if a parent turns photos off.'],
   ['observationsMonthsAfterLeaving', 'observations', 'Observations and progress records', 'Also deletes their photos.'],
-  ['diaryMonthsAfterLeaving', 'diary', 'Daily diary and termly reports', ''],
+  ['diaryMonthsAfterLeaving', 'diary', 'Daily diary, termly reports and annual progress reports', ''],
   ['attendanceMonthsAfterLeaving', 'attendance', 'Attendance', ''],
   ['messagesMonthsAfterLeaving', 'messages', 'Messages', 'The conversation stays; its messages are deleted.'],
 ];

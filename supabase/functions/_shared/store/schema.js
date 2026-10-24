@@ -2,9 +2,11 @@
 // Conventions: ids are prefixed strings; money is integer paise; dates are 'YYYY-MM-DD';
 // timestamps are ISO-8601 UTC strings ('2026-10-02T07:42:00.000Z').
 
-export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
+export const SCHEMA_VERSION = 5; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
 // v3 (administration): dataRequests (the data-rights desk), school.announcement
 // v4 (care): leaveRequests, pickupContacts, pickups
+// v5 (wave 2): evaluations (annual Progress Report), signatures; students.level/levelAy; school settings (reportFooter,
+//     directorName, privacyContact, officeHours, upi)
 
 /**
  * @typedef {{graceDays:number, mode:'flat'|'perDay', amountPaise:number, capPaise:number|null, shiftDueToWorkingDay:boolean}} LateFeeRule
@@ -16,13 +18,19 @@ export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents
  *   The school-wide banner: plain text, at most 280 characters; until = last day it shows (null: until cleared).
  * @typedef {{name:string, address:string, phone:string, weeklyOffs:number[], currentAcademicYearId:string|null,
  *   invoicePrefix:string, receiptPrefix:string, refundPrefix:string, lateFeeRule:LateFeeRule|null, retention:Retention,
- *   announcement:Announcement|null}} School
+ *   announcement:Announcement|null, reportFooter?:{address:string, phones:string[], email:string, website:string}|null, directorName?:string|null,
+ *   privacyContact?:{name:string, role:string, email:string}|null, officeHours?:{start:string, end:string, days:number[]}|null,
+ *   upi?:{vpa:string, payeeName:string}|null}} School
+ *   The v5 settings are entered by the principal (src/domain/school.js); null until set.
  * @typedef {{id:string, label:string, startDate:string, endDate:string}} AcademicYear
  * @typedef {{id:string, name:string, ageRange:string, teacherIds:string[]}} Program
  * @typedef {{id:string, firstName:string, lastName:string, dob:string, programId:string, admissionNo:string,
  *   status:'active'|'left', guardianIds:string[], routeId:string|null, stopId:string|null,
- *   feeCategory:'regular'|'sibling'|'staffWard', healthNotes:string|null, leftOn:string|null}} Student
+ *   feeCategory:'regular'|'sibling'|'staffWard', healthNotes:string|null, leftOn:string|null,
+ *   level?:'toddlers'|'mont1'|'mont2'|'mont3'|null, levelAy?:string|null}} Student
  *   leftOn: date the child left; null = still enrolled, or left and the date is unknown (set when status becomes 'left').
+ *   level: the Progress Report form the child is on (rooms are mixed-age); levelAy: the academic year it was set or
+ *   promoted for (people.promoteLevels runs once per year).
  * @typedef {{id:string, firstName:string, lastName:string, relation:string, phone:string, email:string, studentIds:string[]}} Guardian
  * @typedef {{id:string, firstName:string, lastName:string, role:'admin'|'teacher'|'accountant'|'driver', programIds:string[], phone:string}} Staff
  * @typedef {{scope:'school'}|{scope:'program', programIds:string[]}|{scope:'students', studentIds:string[]}} Audience
@@ -102,6 +110,16 @@ export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents
  *   Who collected the child that day; id = 'pck-<date>-<studentId>' (one per child and day). name only for kind 'other'.
  *   time = when collected ('HH:MM', required for an earlier day); at = when it was recorded.
  *   history = earlier versions when the record was corrected, oldest first.
+ * @typedef {{id:string, studentId:string, academicYearId:string, level:string, programId:string, ratings:Object<string,string>,
+ *   attendance:{workingDays:number, present:number, unmarked:number|null, source:'register'|'teacher', from:string, to:string, reason:string|null},
+ *   remarks:string, status:'draft'|'submitted'|'published', revision:number, createdBy:string, createdAt:string, updatedBy:string, updatedAt:string,
+ *   submittedBy:string|null, submittedAt:string|null, publishedBy:string|null, publishedAt:string|null, lastPublishedAt:string|null,
+ *   unpublishedReason:string|null, signers:{teacherIds:string[], centerHeadId:string}|null}} Evaluation
+ *   The annual Progress Report; id = 'evl-<academicYearId>-<studentId>' (one per child and year). level is frozen at start.
+ * @typedef {{id:string, ownerKind:'staff'|'director', staffId:string|null, path:string, mime:string, bytes:number|null, sha256:string|null,
+ *   width:number|null, height:number|null, status:'ready'|'removed', uploadedBy:string, uploadedAt:string, removedBy:string|null,
+ *   removedAt:string|null, objectDeletedAt:string|null, demo?:{svg:string}}} Signature
+ *   Metadata only: the image is in the private bucket `signatures` (real app) or IndexedDB / a drawn SVG (demo).
  * @typedef {{id:string, ts:string, actorRole:string, actorId:string, entity:string, entityId:string, action:string, summary:string}} AuditRow
  * @typedef {{invoice:Object<string,number>, receipt:Object<string,number>, refund:Object<string,number>}} Counters
  * @typedef {{schemaVersion:number, rev:number, school:School, academicYears:AcademicYear[], programs:Program[],
@@ -110,7 +128,8 @@ export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents
  *   feeHeads:FeeHead[], feeStructures:FeeStructure[], invoices:Invoice[], payments:Payment[], refunds:Refund[],
  *   credits:Credit[], attendance:AttendanceRecord[], diaryEntries:DiaryEntry[], auditLog:AuditRow[], counters:Counters,
  *   presentations:Presentation[], observations:Observation[], photos:Photo[], progressEvents:ProgressEvent[], reports:Report[],
- *   consents:Consent[], dataRequests:DataRequest[], leaveRequests:LeaveRequest[], pickupContacts:PickupContact[], pickups:Pickup[]}} Db
+ *   consents:Consent[], dataRequests:DataRequest[], leaveRequests:LeaveRequest[], pickupContacts:PickupContact[], pickups:Pickup[],
+ *   evaluations:Evaluation[], signatures:Signature[]}} Db
  * @typedef {{role:'admin'|'teacher'|'accountant'|'driver'|'parent'|'system', id:string}} Actor
  * @typedef {{actor:Actor, now:string, today:string}} Ctx  now = ISO timestamp, today = local 'YYYY-MM-DD'
  */
@@ -121,8 +140,12 @@ export const COLLECTIONS = [
   'threads', 'messages', 'calendarEvents', 'routes', 'trips', 'feeHeads', 'feeStructures',
   'invoices', 'payments', 'refunds', 'credits', 'attendance', 'diaryEntries', 'auditLog',
   'presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'dataRequests',
-  'leaveRequests', 'pickupContacts', 'pickups',
+  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'signatures',
 ];
+/** Collections added by schema v5 (migrate() gives an older document empty lists). */
+export const V5_COLLECTIONS = ['evaluations', 'signatures'];
+/** School settings added by schema v5 (null until the principal sets them). */
+export const V5_SCHOOL_KEYS = ['reportFooter', 'directorName', 'privacyContact', 'officeHours', 'upi'];
 
 export const RETENTION_KEYS = [
   'photosMonthsAfterLeaving', 'diaryMonthsAfterLeaving', 'observationsMonthsAfterLeaving',
@@ -147,6 +170,7 @@ export function createEmptyDb() {
       lateFeeRule: null,
       retention: Object.fromEntries(RETENTION_KEYS.map(k => [k, null])),
       announcement: null,
+      reportFooter: null, directorName: null, privacyContact: null, officeHours: null, upi: null,
     },
     counters: { invoice: {}, receipt: {}, refund: {} },
   };

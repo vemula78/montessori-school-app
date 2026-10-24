@@ -20,6 +20,9 @@
 //  11. photosCleanup: delete the objects of 'deleting' rows (→ deleted/expired), reject uploads abandoned for 2 hours,
 //      delete objects of closed rows at once and objects without a row (or with a pending one) after 2 hours
 //  12. signInEventsPruned: sign-in activity older than 90 days is deleted (data minimisation)
+//  13. filesCleanup (schema v5): delete the objects of removed signatures not deleted yet (a failure at removal), and
+//      objects in the signatures bucket that no row points at, once they are an hour old (an upload in flight is never
+//      touched)
 // Every step runs; the answer is HTTP 500 {ok:false, failedSteps, report} if any step threw, if a privacy step (photo
 // consent sweep, retention, photo cleanup, erasure clean-up) reports errors[] / failed > 0, or if gateway events reached
 // the retry cap in the last 7 days (failedStepsOf, _shared/cron.js). A failed push in the reminders step is routine
@@ -41,6 +44,9 @@ import { timingSafeEqual } from '../_shared/razorpay.js';
 import { SLICES, COMMANDS } from '../_shared/domain/commands.js';
 import { retentionPlan } from '../_shared/domain/retention.js';
 import { cleanupDeleting, sweepPhotos } from '../_shared/photos.ts';
+import { cleanupSignatures } from '../_shared/signatures.ts';
+import { listObjects, removeObjects } from '../_shared/files.ts';
+import { SIGNATURE_BUCKET } from '../_shared/domain/signatures.js';
 import { remindersDue, lateFeesDueList } from '../_shared/domain/reminders.js';
 import { dateInZone, IST_OFFSET_MIN } from '../_shared/domain/dates.js';
 import { byId } from '../_shared/domain/people.js';
@@ -49,7 +55,7 @@ import { failedStepsOf, reminderStatus, healthcheckUrl } from '../_shared/cron.j
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
 const HEALTHCHECK_URL = Deno.env.get('HEALTHCHECK_URL') ?? '';
 const TRIP_MAX_MS = 3 * 3600_000, STALE_MS = 20 * 60_000, POSITIONS_DAYS = 30, SIGN_IN_DAYS = 90, MAX_EVENT_ATTEMPTS = 10, STRANDED_MS = 10 * 60_000;
-const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup', 'photosConsentSweep', 'retention', 'photosCleanup', 'signInEventsPruned'];
+const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup', 'photosConsentSweep', 'retention', 'photosCleanup', 'signInEventsPruned', 'filesCleanup'];
 
 async function step<T>(report: Record<string, unknown>, only: Set<string>, name: string, fn: () => Promise<T>) {
   if (!only.has(name)) return;
@@ -195,6 +201,14 @@ Deno.serve(async (req) => {
     });
 
     await step(report, only, 'photosCleanup', async () => ({ ...(await cleanupDeleting(null)), ...(await sweepPhotos(nowMs)) }));
+    await step(report, only, 'filesCleanup', async () => {
+      const sig = await cleanupSignatures(null);
+      const known = new Set((await restAll('signatures?select=id,path:doc->>path,status&order=id')).filter((r: any) => r.status === 'ready' || r.status === 'removed').map((r: any) => r.path));
+      const objects = await listObjects(SIGNATURE_BUCKET, 'sig');
+      const orphans = objects.filter(o => !known.has(o.name) && o.createdAt && Date.parse(o.createdAt) < nowMs - 3600_000).map(o => o.name);
+      const orphanObjectsDeleted = orphans.length ? await removeObjects(SIGNATURE_BUCKET, orphans) : 0;
+      return { signaturesRemoved: sig.removed, signatureObjectsDeleted: sig.objectsDeleted, orphanObjectsDeleted, errors: sig.errors };
+    });
 
     // every step ran; any failure makes the whole run a failure the scheduler can see (audit C6)
     // a step failed if it threw, or if it reports errors or a failure count without throwing (audit R3)
