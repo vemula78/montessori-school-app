@@ -201,7 +201,7 @@ export function readFileText(file) {
 
 // Plain words for stored codes (fee tables, reports, exports).
 export const PAYMENT_MODE_LABEL = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank transfer', online: 'Online', 'online-mock': 'Online (mock)', credit: 'Credit applied' };
-export const CONCESSION_LABEL = { sibling: 'Sibling', staffWard: 'Staff ward', scholarship: 'Scholarship', adhoc: 'Ad-hoc' };
+export const CONCESSION_LABEL = { sibling: 'Sibling', staffWard: 'Staff ward', scholarship: 'Scholarship', adhoc: 'Other (one-off)' };
 
 export const invoiceStatusBadge = (status, overdue = false) => {
   if (status === 'paid') return badge('Paid', 'ok');
@@ -224,8 +224,6 @@ export function offlineBanner({ stale, at } = {}) {
   return banner('warn', `<div class="row between"><span><strong>Offline - showing information from ${esc(when)}.</strong></span><button class="btn sm" data-act="refresh">Try again</button></div>`);
 }
 
-// How each payment mode reads on screens and receipts.
-export const PAY_MODE = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank transfer', 'online-mock': 'Online (mock)', online: 'Online (Razorpay)', credit: 'Credit on account' };
 // Due now = overdue or due within the same two weeks as dueHint; a later instalment issued early is "upcoming".
 export const isDueNow = (dueDate, today) => diffDays(today, dueDate) <= 14;
 

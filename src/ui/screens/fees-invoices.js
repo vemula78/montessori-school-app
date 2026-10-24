@@ -9,7 +9,6 @@ import { payOnline, resumePending } from './pay-online.js';
 const REAL = isRealMode();
 
 const STAFF = ['admin', 'accountant'];
-const CONCESSION = { sibling: 'Sibling', staffWard: 'Staff ward', scholarship: 'Scholarship', adhoc: 'Other (one-off)' };
 const isOpen = (i) => i.status !== 'cancelled' && i.status !== 'paid' && i.balancePaise > 0;
 
 // ---------------- staff list ----------------

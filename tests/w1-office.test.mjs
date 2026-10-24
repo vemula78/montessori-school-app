@@ -405,7 +405,7 @@ test('#51 #54 invoice detail: a part-paid invoice still offers Add concession (u
   const withCon = (await api.fees.invoices({})).find((i) => i.concessions.length);
   const h2 = await draw(api, ACCOUNTANT_P, Invoices, {}, { id: withCon.id });
   assert.ok(!/badge info">(sibling|staffWard|adhoc|scholarship)</.test(h2), 'no raw concession code');
-  assert.match(h2, /badge info">(Sibling|Staff ward|Ad-hoc|Scholarship)</);
+  assert.match(h2, /badge info">(Sibling|Staff ward|Other \(one-off\)|Scholarship)</);
   api.session.set(PRINCIPAL_P);
   await api.people.updateStudent({ studentId: part.studentId, status: 'left' });
   const list = await draw(api, ACCOUNTANT_P, Invoices);

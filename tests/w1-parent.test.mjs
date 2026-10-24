@@ -541,7 +541,7 @@ test('#18 payment modes and concession types are shown as words; a health note w
   const kid = api.session.current().studentIds[0];
   const pays = await api.fees.payments({ studentId: kid });
   assert.ok(pays.length, 'the seed has a payment');
-  const { PAY_MODE } = await import('../src/ui/components.js');
+  const { PAYMENT_MODE_LABEL: PAY_MODE } = await import('../src/ui/components.js');
   const html = await draw(api, PARENT, await import('../src/ui/screens/fees-payment.js'), {}, { studentId: kid });
   for (const p of pays) { assert.ok(html.includes(PAY_MODE[p.mode]), p.mode); assert.ok(!html.includes(`<td>${p.mode}`), `raw ${p.mode}`); }
   // invoice detail: concession type and payment mode
@@ -657,11 +657,13 @@ test('#13 a route map asked for before Leaflet has loaded shows "Loading the map
   const map = await import('../src/ui/map.js?w1-lazy');
   const markers = [];
   const L = {
-    map: () => ({ fitBounds() {}, setView() {}, invalidateSize() {}, getBounds: () => ({ contains: () => true }), remove() {} }),
+    map: () => ({ fitBounds() {}, setView() {}, invalidateSize() {}, getBounds: () => ({ contains: () => true }), on() {}, remove() {} }),
     tileLayer: () => ({ addTo() {} }),
     polyline: () => { const l = { addTo: () => l, getBounds: () => ({ isValid: () => true }), bindTooltip: () => l }; return l; },
     marker: (ll) => { const m = { ll, addTo: () => m, bindTooltip: () => m, setLatLng(x) { m.ll = x; } }; markers.push(m); return m; },
     divIcon: () => ({}), latLngBounds: () => ({}),
+    control: () => { const c = { addTo() { c.onAdd(); return c; } }; return c; },
+    DomUtil: { create: () => ({}) }, DomEvent: { on() {}, disableClickPropagation() {} },
   };
   try {
     const el = fake();
