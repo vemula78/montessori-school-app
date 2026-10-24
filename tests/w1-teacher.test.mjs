@@ -363,3 +363,40 @@ test('#23 Going home: one tap per child today (the bus first for a bus child, th
   assert.match(d.innerHTML, /value="bus:"/);
   assert.match(d.innerHTML, /href="tel:\+91\d+">Call /);
 });
+
+// ---------------------------------------------------------------- #27 forms ask before discarding what was typed
+test('#27 formModal: Cancel/back with nothing typed closes at once; with something typed it asks "Discard what you typed?" first', async () => {
+  const { formModal } = await import('../src/ui/components.js');
+  const vals = { text: '' };
+  const PrevFD = globalThis.FormData;
+  globalThis.FormData = class { constructor() { this.e = Object.entries(vals); } entries() { return this.e[Symbol.iterator](); } [Symbol.iterator]() { return this.e[Symbol.iterator](); } };
+  const made = [];
+  const orig = document.createElement;
+  document.createElement = () => { const d = fake(); d.showModal = () => {}; d.close = () => {}; made.push(d); return d; };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const button = (act) => ({ target: { closest: () => ({ hasAttribute: () => false, dataset: { act } }) } });
+  try {
+    // nothing typed: closes at once
+    let p = formModal({ title: 'T', fieldsHtml: '', onSubmit: async () => {} });
+    made[0].handlers.cancel[0]({ preventDefault() {} });
+    assert.equal(await p, false);
+    assert.equal(made.length, 1, 'no question asked');
+    // typed: asks; "Cancel" keeps the form open, "Discard" closes it
+    made.length = 0;
+    let settled = false;
+    p = formModal({ title: 'T', fieldsHtml: '', onSubmit: async () => {} }).then((v) => { settled = true; return v; });
+    vals.text = 'A long observation';
+    made[0].handlers.cancel[0]({ preventDefault() {} });
+    await tick();
+    assert.equal(made.length, 2, 'a confirmation opened');
+    assert.match(made[1].innerHTML, /Discard what you typed\?/);
+    made[1].handlers.click[0](button('0')); // Cancel: keep typing
+    await tick();
+    assert.equal(settled, false, 'the form is still open');
+    made[0].handlers.click[0]({ target: { closest: (sel) => (sel === '[data-close]' ? {} : null) } }); // the close button
+    await tick();
+    assert.equal(made.length, 3);
+    made[2].handlers.click[0](button('1')); // Discard
+    assert.equal(await p, false);
+  } finally { document.createElement = orig; globalThis.FormData = PrevFD; }
+});

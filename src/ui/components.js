@@ -122,7 +122,11 @@ export async function confirmDialog(title, message, { okLabel = 'Confirm', kind 
   return r === true;
 }
 
-// formModal({title, fieldsHtml, submitLabel, onSubmit(values, form) -> may throw}) ; resolves true if submitted OK
+// What a form holds (text, choices, chosen file names), to tell whether anything was typed since it opened.
+const formState = (form) => { try { return JSON.stringify([...new FormData(form)].map(([k, v]) => [k, typeof v === 'string' ? v : v?.name || ''])); } catch { return ''; } };
+
+// formModal({title, fieldsHtml, submitLabel, onSubmit(values, form) -> may throw}) ; resolves true if submitted OK.
+// Cancel, the close button, Esc and Android back ask before discarding anything typed.
 export function formModal({ title, fieldsHtml, submitLabel = 'Save', onSubmit, onOpen }) {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
@@ -137,8 +141,19 @@ export function formModal({ title, fieldsHtml, submitLabel = 'Save', onSubmit, o
     const errEl = d.querySelector('[data-err]');
     let done = false;
     const finish = (v) => { if (done) return; done = true; d.close(); d.remove(); resolve(v); };
-    d.addEventListener('cancel', (e) => { e.preventDefault(); finish(false); });
-    d.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) finish(false); });
+    let initial = '', asking = false;
+    const close = async () => {
+      if (done || asking) return;
+      if (formState(form) !== initial) {
+        asking = true;
+        const discard = await confirmDialog('Discard what you typed?', 'Nothing in this form has been saved.', { okLabel: 'Discard', kind: 'danger' });
+        asking = false;
+        if (!discard) return;
+      }
+      finish(false);
+    };
+    d.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+    d.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) close(); });
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       errEl.textContent = '';
@@ -159,6 +174,7 @@ export function formModal({ title, fieldsHtml, submitLabel = 'Save', onSubmit, o
     });
     d.showModal();
     if (onOpen) onOpen(d, form);
+    initial = formState(form);
   });
 }
 
