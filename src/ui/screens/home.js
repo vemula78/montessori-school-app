@@ -39,7 +39,7 @@ function eventList(res) {
   if (res.error) return empty('Calendar unavailable', errMessage(res.error));
   const evs = res.evs;
   if (!evs.length) return empty('Nothing coming up', 'No events or holidays on the calendar yet.');
-  return `<ul class="list card-list">${evs.map((e) => `<li><div class="row"><span class="dot ${esc(e.type)}"></span><div class="grow"><div class="item-title">${esc(e.title)}</div><small>${fdate(e.startDate)}${e.endDate !== e.startDate ? ' to ' + fdate(e.endDate) : ''}</small></div>${badge(TYPE_LABEL[e.type] || e.type, 'mute')}</div></li>`).join('')}</ul>`;
+  return `<ul class="list card-list">${evs.map((e) => `<li><div class="row"><span class="dot ${esc(e.type)}"></span><div class="grow"><div class="item-title">${e.type === 'ptm' ? `<a href="#/ptm/${esc(e.id)}">${esc(e.title)}</a>` : esc(e.title)}</div><small>${fdate(e.startDate)}${e.endDate !== e.startDate ? ' to ' + fdate(e.endDate) : ''}</small></div>${badge(TYPE_LABEL[e.type] || e.type, 'mute')}</div></li>`).join('')}</ul>`;
 }
 
 async function parentHome(ctx) {
@@ -52,6 +52,18 @@ async function parentHome(ctx) {
   const notices = indexBy(db.notices);
   const pending = receipts.filter((r) => notices.get(r.noticeId)?.requiresAck && !r.ackAt);
   const evs = await upcomingEvents(ctx);
+  // parent-teacher meetings: each child's booking, or a nudge when times are open and the child has none
+  const meetings = [];
+  try {
+    const slots = (await api.ptm.slots({})).filter((s) => s.status === 'open' && s.date >= today);
+    for (const k of kids.filter((x) => x.status === 'active')) {
+      const booked = slots.filter((s) => s.booking?.studentId === k.id);
+      for (const s of booked) meetings.push(`<div class="banner"><div class="row between"><span><strong>Meeting for ${esc(k.firstName)}:</strong> ${fdate(s.date)}, ${esc(s.start)}-${esc(s.end)}${s.teacherName ? ` with ${esc(s.teacherName)}` : ''}</span><a class="btn sm" href="#/ptm/${esc(s.eventId)}">Details</a></div></div>`);
+      for (const eventId of new Set(slots.filter((s) => s.programId === k.programId && !s.taken).map((s) => s.eventId))) {
+        if (!booked.some((s) => s.eventId === eventId)) meetings.push(`<div class="banner warn"><div class="row between"><span><strong>Parent-teacher meeting:</strong> book a time for ${esc(k.firstName)}.</span><a class="btn sm" href="#/ptm/${esc(eventId)}">Book a time</a></div></div>`);
+      }
+    }
+  } catch { /* the calendar still lists the meeting */ }
 
   const cards = [];
   for (const k of kids) {
@@ -96,6 +108,7 @@ async function parentHome(ctx) {
   return `
     <div class="page-head"><div><h1>Hello${g ? ', ' + esc(g.firstName) : ''}</h1><div class="sub">${fdate(today)}</div></div></div>
     ${pending.length ? `<div class="banner warn"><div class="row between"><span><strong>${esc(pending.length)} notice${pending.length === 1 ? ' needs' : 's need'} your acknowledgement.</strong></span><a class="btn sm" href="#/notices">Open notices</a></div></div>` : ''}
+    ${meetings.join('')}
     <div id="home-install"></div>
     <div class="stack">${cards.join('') || empty('No children linked to this account')}</div>
     <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}

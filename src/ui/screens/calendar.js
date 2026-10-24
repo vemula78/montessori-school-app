@@ -97,12 +97,17 @@ export async function render(ctx) {
   };
 
   const progs = indexBy(db.programs);
+  // parent-teacher meetings: a way to the meeting times, and a parent's own bookings
+  const ptmRole = ['admin', 'teacher', 'parent'].includes(persona.role);
+  let booked = [];
+  if (persona.role === 'parent' && inMonth.some((e) => e.type === 'ptm')) { try { booked = (await api.ptm.slots({})).filter((s) => s.booking && s.status === 'open'); } catch { /* the link still works */ } }
   const list = inMonth.map((e) => {
     const scope = e.type === 'birthday' ? '' : e.programIds.length ? e.programIds.map((id) => badge(progs.get(id)?.name || id, 'info')).join(' ') : badge('Whole school', 'mute');
     const editable = admin && e.source !== 'derived' && e.type !== 'birthday';
+    const mine = booked.filter((s) => s.eventId === e.id).map((s) => `${s.booking.studentName} ${s.start}`);
     return `<li><div class="row"><span class="dot ${esc(e.type)}"></span><div class="grow"><div class="item-title">${esc(e.title)}</div>
-      <small>${fdate(e.startDate)}${e.endDate !== e.startDate ? ' to ' + fdate(e.endDate) : ''} &middot; ${esc(TYPE_LABEL[e.type] || e.type)}${e.source === 'import' ? ' &middot; imported' : ''}${e.leapDayShifted ? ' &middot; born 29 Feb, shown on 28 Feb in non-leap years' : ''}</small></div>
-      ${scope}${editable ? `<button class="btn sm" data-edit="${esc(e.id)}">Edit</button><button class="btn sm ghost" data-del="${esc(e.id)}">Delete</button>` : ''}</div></li>`;
+      <small>${fdate(e.startDate)}${e.endDate !== e.startDate ? ' to ' + fdate(e.endDate) : ''} &middot; ${esc(TYPE_LABEL[e.type] || e.type)}${e.source === 'import' ? ' &middot; imported' : ''}${e.leapDayShifted ? ' &middot; born 29 Feb, shown on 28 Feb in non-leap years' : ''}${mine.length ? ` &middot; <strong>Booked: ${esc(mine.join(', '))}</strong>` : ''}</small></div>
+      ${e.type === 'ptm' && ptmRole ? `<a class="btn" href="${esc(ctx.href(`/ptm/${e.id}`, { ay: ay.id }))}">${persona.role !== 'parent' ? 'Meeting times' : mine.length ? 'Your booking' : 'Book a time'}</a>` : ''}${scope}${editable ? `<button class="btn sm" data-edit="${esc(e.id)}">Edit</button><button class="btn sm ghost" data-del="${esc(e.id)}">Delete</button>` : ''}</div></li>`;
   });
 
   ctx.el.innerHTML = `${pageHead('Calendar', `${ay.label || ay.id}`, admin ? `<a class="btn" href="#/calendar/import">${icon('upload', 'sm')} Import CSV</a><button class="btn primary" id="c-add">${icon('plus', 'sm')} Add entry</button>` : '')}

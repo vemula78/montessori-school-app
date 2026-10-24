@@ -164,3 +164,76 @@ test('#81 report -> waiting; the accountant checks it (home + list), confirms ->
   assert.match(await draw(api, ACCOUNTANT, Upi, { query: { status: 'rejected' } }), /Rejected .*: Not in the bank/);
   assert.doesNotMatch(await draw(api, OTHER_PARENT, Fees), /UTR123456789|UTR999999999/, "another family's page");
 });
+
+// ---------------------------------------------------------------- #88 parent-teacher meeting slots
+
+const Ptm = await import('../src/ui/screens/ptm.js');
+const Calendar = await import('../src/ui/screens/calendar.js');
+
+async function meeting(api) {
+  api.session.set(PRINCIPAL);
+  const day = addDays(todayISO(), 9);
+  const ev = await api.calendar.create({ type: 'ptm', title: 'Meeting (test)', startDate: day, endDate: day, programIds: ['prog-primary-a'], description: '', academicYearId: api.getDb().school.currentAcademicYearId });
+  return { ev, day };
+}
+
+test('#88 teacher publishes times; the parent books one per child, sees it on home and in the calendar; the teacher sees who', async () => {
+  const api = await mkApi();
+  const { ev, day } = await meeting(api);
+  let staff = await draw(api, TEACHER, Ptm, { params: { id: ev.id } });
+  assert.match(staff, /No times published yet/);
+  assert.match(staff, /data-publish="prog-primary-a">Publish times/);
+  api.session.set(TEACHER);
+  const { slots } = await api.ptm.publishSlots({ eventId: ev.id, programId: 'prog-primary-a', from: '15:00', to: '16:00', minutes: 15, teacherId: 'stf-teacher-pa' });
+  assert.equal(slots.length, 4);
+  staff = await draw(api, TEACHER, Ptm, { params: { id: ev.id } });
+  assert.match(staff, /0 of 4 booked/);
+  assert.match(staff, /15:00-15:15/);
+  assert.match(staff, /Not booked yet: .*Neel/);
+  assert.ok(staff.includes(`data-cancel="${slots[0].id}"`), 'a free time can be removed');
+  assert.doesNotMatch(staff, /class="btn sm/, 'teacher tap targets stay 44 px');
+
+  assert.match(await draw(api, PARENT, Home), /book a time for Neel/);
+  let parent = await draw(api, PARENT, Ptm, { params: { id: ev.id } });
+  assert.match(parent, /Choose a time/);
+  assert.ok(parent.includes(`data-book="${slots[1].id}" data-kid="stu-01"`));
+  assert.doesNotMatch(parent, /Vivaan/, 'the meeting is not for Primary B');
+
+  api.session.set(PARENT);
+  await api.ptm.book(slots[1].id, 'stu-01');
+  parent = await draw(api, PARENT, Ptm, { params: { id: ev.id } });
+  assert.match(parent, /Booked:<\/strong> [0-9]{2}-[A-Z][a-z]{2}-[0-9]{4}, 15:15-15:30 with Anita Demoson/);
+  assert.ok(parent.includes(`data-unbook="${slots[1].id}"`));
+  assert.match(parent, /Move to another time/);
+  const home = await draw(api, PARENT, Home);
+  assert.match(home, /Meeting for Neel:<\/strong> [^<]*15:15-15:30/);
+  assert.doesNotMatch(home, /book a time for Neel/);
+  const cal = await draw(api, PARENT, Calendar, { query: { month: day.slice(0, 7) } });
+  assert.match(cal, /Booked: Neel Notrealsen 15:15/);
+  assert.match(cal, /Your booking<\/a>/);
+
+  staff = await draw(api, TEACHER, Ptm, { params: { id: ev.id } });
+  assert.match(staff, /1 of 4 booked/);
+  assert.match(staff, /Neel Notrealsen <small>\(Meena Notrealsen\)<\/small>/);
+  assert.ok(staff.includes(`data-unbook="${slots[1].id}"`), 'staff may cancel a booking');
+  assert.match(await draw(api, TEACHER, Calendar, { query: { month: day.slice(0, 7) } }), /Meeting times<\/a>/);
+
+  // another family of the class sees the time as taken, never whose
+  const other = await draw(api, OTHER_PARENT, Ptm, { params: { id: ev.id } });
+  assert.doesNotMatch(other, /Neel/);
+  assert.ok(!other.includes(`data-book="${slots[1].id}"`) && other.includes(`data-book="${slots[0].id}"`));
+  // a teacher of another class does not even get the meeting from the calendar
+  const pb = await draw(api, TEACHER_PB, Ptm, { params: { id: ev.id } });
+  assert.match(pb, /Meeting not found/);
+  assert.doesNotMatch(pb, /Neel/);
+});
+
+test('#88 the meetings list and the home page link to the meeting; an unknown meeting says so', async () => {
+  const api = await mkApi();
+  const { ev } = await meeting(api);
+  const list = await draw(api, TEACHER, Ptm);
+  assert.ok(list.includes(`#/ptm/${ev.id}`) && /No times published yet/.test(list));
+  assert.ok((await draw(api, TEACHER, Home)).includes(`<a href="#/ptm/${ev.id}">Meeting (test)</a>`), 'Coming up links the meeting');
+  assert.match(await draw(api, PARENT, Ptm), /Times not published yet/);
+  assert.match(await draw(api, PARENT, Ptm, { params: { id: 'evt-nope' } }), /Meeting not found/);
+});
