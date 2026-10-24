@@ -17,15 +17,15 @@ function reconBanner(recon, t) {
   return `<div class="banner ${allOk ? 'ok' : 'bad'}">${allOk ? 'All reconciliation checks pass.' : '<strong>Reconciliation checks are failing</strong> - see the Reconciliation tab.'} All academic years: <strong>${money(recon.school.outstanding)}</strong> = this year's report <strong>${money(t.balancePaise)}</strong>${prior ? ` + other years <strong>${money(prior)}</strong>` : ''}.</div>`;
 }
 
-/** The first guardian of a child (the one the office calls), with click-to-call and click-to-chat links. */
+/** The first guardian of a child (the one the office calls), with a click-to-call link. */
 export function contactFor(db, studentId, balancePaise, overdueDays) {
   const s = db.students.find((x) => x.id === studentId);
   const g = s ? db.guardians.find((x) => x.id === (s.guardianIds || [])[0]) : null;
-  if (!g || !g.phone) return { name: g ? fullName(g) : DASH, phone: '', tel: null, wa: null };
+  if (!g || !g.phone) return { name: g ? fullName(g) : DASH, phone: '', tel: null };
   let digits = String(g.phone).replace(/\D/g, '');
   if (digits.length === 10) digits = `91${digits}`;
-  const text = `Fee reminder from ${db.school.name}: ${money(balancePaise)} is due for ${s.firstName}${overdueDays > 0 ? ` (overdue by ${overdueDays} days)` : ''}. Please pay or contact the school office.`;
-  return { name: fullName(g), phone: g.phone, tel: `tel:+${digits}`, wa: `https://wa.me/${digits}?text=${encodeURIComponent(text)}` };
+  // no WhatsApp link (owner decision 24-Oct-2026): the child's name and the amount are not handed to a messaging service
+  return { name: fullName(g), phone: g.phone, tel: `tel:+${digits}` };
 }
 
 async function outstanding(ctx, host) {
@@ -57,10 +57,9 @@ async function outstanding(ctx, host) {
     ${recon ? reconBanner(recon, t) : ''}
     ${rows.length ? `<div class="tablewrap"><table><thead><tr><th>Child</th><th>Programme</th><th>Parent</th><th class="r">Invoiced</th><th class="r">Concessions</th><th class="r">Late fees</th><th class="r">Paid</th><th class="r">Balance</th><th class="r">Overdue</th></tr></thead><tbody>
       ${rows.map((r) => { const c = contact.get(r.studentId); return `<tr><td><a href="#/fees/student/${esc(r.studentId)}">${esc(r.name)}</a></td><td>${esc(r.program)}</td>
-        <td>${esc(c.name)}${c.tel ? `<br><a class="nowrap" href="${esc(c.tel)}">${esc(c.phone)}</a>${r.balancePaise > 0 ? ` &middot; <a href="${esc(c.wa)}" target="_blank" rel="noopener noreferrer">WhatsApp</a>` : ''}` : ''}</td>
+        <td>${esc(c.name)}${c.tel ? `<br><a class="nowrap" href="${esc(c.tel)}">${esc(c.phone)}</a>` : ''}</td>
         <td class="r num">${money(r.invoicedPaise)}</td><td class="r num">${money(r.concessionPaise)}</td><td class="r num">${money(r.lateFeePaise)}</td><td class="r num">${money(r.paidPaise)}</td><td class="r num"><strong>${money(r.balancePaise)}</strong></td><td class="r">${r.overdueDays > 0 && r.balancePaise > 0 ? badge(`${r.overdueDays} d`, 'bad') : DASH}</td></tr>`; }).join('')}
-      </tbody><tfoot><tr><td colspan="3">Total (${rows.length} shown)</td><td class="r num">${money(tot.invoicedPaise)}</td><td class="r num">${money(tot.concessionPaise)}</td><td class="r num">${money(tot.lateFeePaise)}</td><td class="r num">${money(tot.paidPaise)}</td><td class="r num">${money(tot.balancePaise)}</td><td></td></tr></tfoot></table></div>
-      <small class="muted">WhatsApp opens a chat with a reminder already typed; nothing is sent until you press send in WhatsApp.</small>` : empty(defaultersOnly ? 'No defaulters' : 'No invoices in this view')}`;
+      </tbody><tfoot><tr><td colspan="3">Total (${rows.length} shown)</td><td class="r num">${money(tot.invoicedPaise)}</td><td class="r num">${money(tot.concessionPaise)}</td><td class="r num">${money(tot.lateFeePaise)}</td><td class="r num">${money(tot.paidPaise)}</td><td class="r num">${money(tot.balancePaise)}</td><td></td></tr></tfoot></table></div>` : empty(defaultersOnly ? 'No defaulters' : 'No invoices in this view')}`;
 
   const go = (patch) => ctx.setQuery({ tab: 'outstanding', ...patch });
   host.querySelector('#rp-prog').addEventListener('change', (e) => go({ program: e.target.value }));

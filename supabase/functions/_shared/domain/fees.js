@@ -234,7 +234,7 @@ export function startAcademicYear(db, { startDate, endDate, label, copyFrom = nu
   if (clash) fail('VALIDATION', `These dates overlap ${clash.label || clash.id} (${formatDate(clash.startDate)} – ${formatDate(clash.endDate)})`);
   const yearCreated = !ay;
   if (!ay) {
-    ay = { id, label: String(label || '').trim() || id.slice(2), startDate, endDate };
+    ay = { id, label: String(label || '').trim() || `AY ${id.slice(2)}`, startDate, endDate }; // 'AY 2027-28', like the seed's labels
     db.academicYears.push(ay);
     appendAudit(db, ctx, { entity: 'academicYear', entityId: id, action: 'create', summary: `${ay.label}: ${formatDate(startDate)} – ${formatDate(endDate)}` });
   }

@@ -63,7 +63,7 @@ test('#41 after the year ends no payment can be recorded; starting the next year
   assert.throws(() => execute('fees.startAcademicYear', db, [NEXT], june, ACCOUNTANT), { code: 'NOT_ALLOWED' }, 'the principal starts a year');
   const r = execute('fees.startAcademicYear', db, [NEXT], ctx('2027-06-02', 'admin', 'stf-p'), PRINCIPAL);
   assert.equal(r.academicYear.id, 'AY2027-28');
-  assert.equal(r.academicYear.label, '2027-28');
+  assert.equal(r.academicYear.label, 'AY 2027-28');
   assert.equal(r.yearCreated, true);
   assert.deepEqual([r.sourceStructures, r.structuresCopied, r.structuresSkippedExisting], [2, 2, 0]);
   const fs = db.feeStructures.find(x => x.academicYearId === 'AY2027-28' && x.programId === 'P1');
@@ -124,7 +124,7 @@ test('#41 home notice: 60 days before the year ends without a next year; after i
   assert.equal(F.yearRolloverNotice(db, '2027-06-02').kind, 'startNext', 'ended with no next year: still start it');
   execute('fees.startAcademicYear', db, [{ startDate: '2027-06-01', endDate: '2028-05-31' }], ctx('2027-04-01', 'admin', 'stf-p'), PRINCIPAL);
   assert.equal(F.yearRolloverNotice(db, '2027-04-01'), null, 'next year exists, current year still running');
-  assert.deepEqual(F.yearRolloverNotice(db, '2027-06-01'), { kind: 'switch', currentId: 'AY2026-27', nextId: 'AY2027-28', nextLabel: '2027-28' });
+  assert.deepEqual(F.yearRolloverNotice(db, '2027-06-01'), { kind: 'switch', currentId: 'AY2026-27', nextId: 'AY2027-28', nextLabel: 'AY 2027-28' });
 });
 
 // ---------------------------------------------------------------- #51 concession on a part-paid invoice
@@ -447,18 +447,19 @@ test('#45 day book: Today and Export, per-day subtotals by mode that add up, rec
   assert.match(mine, new RegExp(`"Receipt","${yesterday}",".*","UPI","'=HYPERLINK\\(""x""\\)","100.00","Valid","who-stf-accountant",".*","yes \\(${todayISO()}\\)"`), 'formula guarded; entered later');
 });
 
-test('#47 defaulters: each row has the first parent with a call link and a WhatsApp link carrying the reminder', async () => {
+test('#47 defaulters: each row has the first parent with a call link, and no WhatsApp link (owner decision: no child data to WhatsApp)', async () => {
   const api = await mkApi();
   const html = await drawReport(api, ACCOUNTANT_P, { tab: 'outstanding', def: '1' });
   assert.match(html, /<th>Parent<\/th>/);
   assert.match(html, /href="tel:\+919000000\d{3}">\+91-90000-00\d{3}<\/a>/);
-  assert.match(html, /href="https:\/\/wa\.me\/919000000\d{3}\?text=Fee%20reminder%20from%20/);
+  assert.ok(!/wa\.me/.test(html) && !/WhatsApp/.test(html), 'no WhatsApp link or note');
   const db = api.getDb();
   const s = db.students.find((x) => x.status === 'active');
   const c = Reports.contactFor(db, s.id, 123456, 9);
   const g = db.guardians.find((x) => x.id === s.guardianIds[0]);
   assert.equal(c.phone, g.phone);
-  assert.match(decodeURIComponent(c.wa.split('text=')[1]), new RegExp(`₹1,234\\.56 is due for ${s.firstName} \\(overdue by 9 days\\)`));
+  assert.match(c.tel, /^tel:\+919000000\d{3}$/);
+  assert.equal(c.wa, undefined, 'no WhatsApp link is built');
 });
 
 test('#48 Summary tab: grid, by head, ageing; agrees with the Outstanding report; CSV has a line per row and a total', async () => {
