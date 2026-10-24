@@ -173,3 +173,147 @@ test('#67 register: a child who boarded the morning bus shows "Came by bus" and 
   const flagged = await draw(api, TEACHER, Attendance, { program: kid.programId, date: today });
   assert.match(flagged, /but marked away: check where the child is/);
 });
+
+// ---------------------------------------------------------------- domain: the registry, as both modes run it
+import { execute, personaFor, SLICES } from '../src/domain/commands.js';
+import { diffChanges } from '../supabase/functions/_shared/slices.js';
+
+const D_NOW = new Date(Date.UTC(2026, 9, 2, 5, 0, 0)); // Friday 02-Oct-2026
+const D_TODAY = '2026-10-02';
+const dSeed = () => Object.assign(buildSeed(D_NOW), { leaveRequests: [], pickupContacts: [], pickups: [] });
+const dCtx = (p, now = `${D_TODAY}T05:00:00.000Z`) => ({ actor: { role: p.role, id: p.staffId || p.guardianId }, now, today: now.slice(0, 10) });
+const dRun = (db, link, name, args, now) => { const p = personaFor(db, link); return execute(name, db, args, dCtx(p, now), p); };
+const T_PA = { role: 'teacher', staffId: 'stf-teacher-pa' };
+const T_PB = { role: 'teacher', staffId: 'stf-teacher-pb' };
+const PRINCIPAL = { role: 'admin', staffId: 'stf-principal' };
+const kidsOf = (db, pid) => db.students.filter((s) => s.programId === pid && s.status === 'active').map((s) => s.id);
+const primaryA = (db) => db.programs.find((p) => p.name === 'Primary A').id;
+
+test('#21 diary.correct: the author within 24 hours (history kept, audited); not another teacher, not after 24 hours; the principal always', () => {
+  const db = dSeed();
+  const kid = kidsOf(db, primaryA(db))[0];
+  const e = dRun(db, T_PA, 'diary.add', [{ studentId: kid, date: D_TODAY, type: 'meal', data: { meal: 'lunch', ate: 'none' } }]);
+  const fixed = dRun(db, T_PA, 'diary.correct', [e.id, { data: { meal: 'lunch', ate: 'all', note: '' } }]);
+  assert.equal(fixed.data.ate, 'all');
+  assert.equal(fixed.history.length, 1);
+  assert.equal(fixed.history[0].data.ate, 'none', 'what the family saw before is kept');
+  assert.ok(db.auditLog.some((a) => a.entity === 'diaryEntry' && a.entityId === e.id && a.action === 'correct'));
+  assert.throws(() => dRun(db, T_PA, 'diary.correct', [e.id, { data: { meal: 'lunch', ate: 'maybe' } }]), { code: 'VALIDATION' });
+  assert.throws(() => dRun(db, T_PB, 'diary.correct', [e.id, { data: { meal: 'lunch', ate: 'some' } }]), { code: 'NOT_ALLOWED' }, 'another programme');
+  const later = '2026-10-03T06:00:00.000Z';
+  assert.throws(() => dRun(db, T_PA, 'diary.correct', [e.id, { data: { meal: 'lunch', ate: 'some' } }], later), { code: 'NOT_ALLOWED' }, 'after 24 hours');
+  assert.equal(dRun(db, PRINCIPAL, 'diary.correct', [e.id, { data: { meal: 'lunch', ate: 'some' } }], later).data.ate, 'some');
+  const byPrincipal = dRun(db, PRINCIPAL, 'diary.add', [{ studentId: kid, date: D_TODAY, type: 'activity', data: { text: 'Garden walk' } }]);
+  assert.throws(() => dRun(db, T_PA, 'diary.correct', [byPrincipal.id, { data: { text: 'x' } }]), { code: 'NOT_ALLOWED' }, 'only the author or the principal');
+  assert.throws(() => dRun(db, T_PA, 'diary.correct', ['dia-none', { data: {} }]), { code: 'NOT_FOUND' });
+});
+
+test('#21 diary.remove: the entry leaves the diary (the server deletes the row), audited; a parent cannot remove', () => {
+  const db = dSeed();
+  const kid = kidsOf(db, primaryA(db))[0];
+  const e = dRun(db, T_PA, 'diary.add', [{ studentId: kid, date: D_TODAY, type: 'activity', data: { text: 'Wrong child' } }]);
+  const parentLink = { role: 'parent', guardianId: db.students.find((s) => s.id === kid).guardianIds[0] };
+  assert.throws(() => dRun(db, parentLink, 'diary.remove', [e.id]), { code: 'NOT_ALLOWED' });
+  const before = structuredClone(db);
+  assert.deepEqual(dRun(db, T_PA, 'diary.remove', [e.id]), { removed: e.id });
+  assert.ok(!db.diaryEntries.some((x) => x.id === e.id));
+  assert.ok(db.auditLog.some((a) => a.entity === 'diaryEntry' && a.entityId === e.id && a.action === 'remove' && !/Wrong child/.test(a.summary)));
+  const ch = diffChanges(before, db, SLICES.classroom.writes);
+  assert.deepEqual(ch.deletes.diaryEntries, [e.id], 'persist deletes the row (diaryEntries is on its delete list)');
+});
+
+test('#24 diary.addMany: a ticked child who ate a different amount gets their own amount in the same write; overrides are checked', () => {
+  const db = dSeed();
+  const pid = primaryA(db);
+  const ids = kidsOf(db, pid);
+  const r = dRun(db, T_PA, 'diary.addMany', [{ programId: pid, date: D_TODAY, studentIds: ids, type: 'meal', data: { meal: 'lunch', ate: 'all' }, overrides: { [ids[1]]: { ate: 'some' } } }]);
+  assert.equal(r.added, ids.length);
+  assert.equal(r.entries.find((e) => e.studentId === ids[1]).data.ate, 'some');
+  assert.ok(r.entries.filter((e) => e.studentId !== ids[1]).every((e) => e.data.ate === 'all'));
+  const n = db.diaryEntries.length;
+  const bad = (over, type = 'meal', data = { meal: 'lunch', ate: 'all' }) => assert.throws(() => dRun(db, T_PA, 'diary.addMany', [{ programId: pid, date: D_TODAY, studentIds: ids.slice(0, 2), type, data, overrides: over }]), { code: 'VALIDATION' });
+  bad({ [ids[1]]: { ate: 'lots' } });
+  bad({ [ids[3]]: { ate: 'some' } }); // not ticked
+  bad({ [ids[1]]: { ate: 'some', meal: 'snack' } });
+  bad({ [ids[1]]: { ate: 'some' } }, 'activity', { text: 'Songs' });
+  assert.equal(db.diaryEntries.length, n, 'all or none');
+});
+
+// ---------------------------------------------------------------- diary screen
+const Diary = await import('../src/ui/screens/diary.js');
+
+/** Open a modal from a click handler and return the fake dialog it built. */
+async function modalFrom(fn) {
+  const made = [];
+  const orig = document.createElement;
+  document.createElement = () => { const d = fake(); d.showModal = () => {}; d.close = () => {}; made.push(d); return d; };
+  try {
+    fn();
+    for (let i = 0; i < 40 && !made.length; i++) await new Promise((r) => setTimeout(r, 5));
+  } finally { document.createElement = orig; }
+  return made[0];
+}
+
+test('#25 diary: "Lunch 1/N" counts the children in class with that entry; tapping it lists the ones still without', async () => {
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER);
+  const pid = ctx.persona.programIds[0];
+  const day = await lastSchoolDay(api, pid);
+  const here = (await api.attendance.forDate(day, pid)).filter((r) => r.status === 'present' || r.status === 'late').map((r) => r.studentId);
+  assert.ok(here.length > 2, 'the sample register has children in class');
+  await api.diary.add({ studentId: here[0], date: day, type: 'meal', data: { meal: 'lunch', ate: 'all', note: '' } });
+  const html = await draw(api, TEACHER, Diary, { program: pid, date: day });
+  const lunches = new Set((await api.diary.forProgramDate(pid, day)).filter((e) => e.type === 'meal' && e.data.meal === 'lunch' && here.includes(e.studentId)).map((e) => e.studentId));
+  assert.match(html, new RegExp(`data-missing="lunch"[^>]*>Lunch ${lunches.size}/${here.length}<`));
+  const only = await draw(api, TEACHER, Diary, { program: pid, date: day, missing: 'lunch' });
+  assert.ok(!only.includes(`data-add="${here[0]}"`), 'a child with lunch is not listed');
+  assert.equal((only.match(/data-add=/g) || []).length, here.length - lunches.size);
+  assert.match(only, /Show everyone/);
+});
+
+test('#21 diary screen: Correct and Remove on the entries this teacher wrote today, not on others\'; #37 no next day after today', async () => {
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER);
+  const pid = ctx.persona.programIds[0];
+  const kid = (await api.people.students({ programId: pid }))[0];
+  const today = todayISO();
+  const mine = await api.diary.add({ studentId: kid.id, date: today, type: 'activity', data: { text: 'Painting' } });
+  api.session.set('persona-stf-principal');
+  const theirs = await api.diary.add({ studentId: kid.id, date: today, type: 'activity', data: { text: 'Garden' } });
+  const html = await draw(api, TEACHER, Diary, { program: pid, date: today });
+  assert.match(html, new RegExp(`data-fix="${mine.id}"`));
+  assert.match(html, new RegExp(`data-rm="${mine.id}"`));
+  assert.ok(!html.includes(`data-fix="${theirs.id}"`), "not another person's entry");
+  assert.match(html, new RegExp(`id="d-date" value="${today}" max="${today}"`));
+  assert.match(html, /id="d-next" aria-label="Next day" disabled/);
+  await api.diary.correct(mine.id, { data: { text: 'Painting with sponges' } });
+  const fixed = await draw(api, TEACHER, Diary, { program: pid, date: today });
+  assert.match(fixed, /Painting with sponges/);
+  assert.match(fixed, /&middot; corrected/);
+  await api.diary.remove(mine.id);
+  assert.ok(!(await draw(api, TEACHER, Diary, { program: pid, date: today })).includes('Painting'));
+  // #31 the real app loads 30 days of diary: the oldest is the date input's min, and an older day says so
+  const real = Object.assign(Object.create(api), { mode: 'supabase' });
+  const old = await draw(real, TEACHER, Diary, { program: pid, date: addDays(today, -40) });
+  assert.match(old, new RegExp(`min="${addDays(today, -30)}"`));
+  assert.match(old, /Older days are not loaded in the app/);
+});
+
+test('#24 whole-class diary: a meal has a per-child amount ("As above"); a nap starts from the last whole-class nap times', async () => {
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER);
+  const pid = ctx.persona.programIds[0];
+  const day = await lastSchoolDay(api, pid);
+  const ids = (await api.people.students({ programId: pid })).filter((s) => s.status === 'active').map((s) => s.id);
+  await api.diary.addMany({ programId: pid, date: addDays(day, -1), studentIds: ids, type: 'sleep', data: { from: '13:05', to: '14:20' } });
+  ctx.query = { program: pid, date: day };
+  await Diary.render(ctx);
+  const d = await modalFrom(() => ctx.el.querySelector('#d-class').handlers.click[0]());
+  assert.match(d.innerHTML, new RegExp(`name="ate-${ids[0]}"`));
+  assert.match(d.innerHTML, /<option value="">As above<\/option>/);
+  const sel = d.querySelector('#d-type');
+  sel.value = 'sleep';
+  sel.handlers.change[0]();
+  assert.match(d.querySelector('#d-fields').innerHTML, /name="from" value="13:05"/);
+  assert.match(d.querySelector('#d-fields').innerHTML, /name="to" value="14:20"/);
+});

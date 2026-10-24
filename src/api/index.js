@@ -321,6 +321,9 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     add: cmd('diary.add'),
     /** addMany({programId, date, studentIds, type, data}) — the same entry for several children, all or none. */
     addMany: cmd('diary.addMany'),
+    /** correct(entryId, {data}) / remove(entryId) — the teacher who wrote it within 24 hours, the principal at any time. */
+    correct: cmd('diary.correct'),
+    remove: cmd('diary.remove'),
     markRead: cmd('diary.markRead'),
   };
 

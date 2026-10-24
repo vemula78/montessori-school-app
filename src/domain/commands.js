@@ -123,6 +123,7 @@ export function allow(p, ...roles) {
   return p;
 }
 export const sees = (p, studentId) => STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(studentId);
+const diaryEntryOf = (db, id) => byId(db.diaryEntries, id) || fail('NOT_FOUND', 'Diary entry not found');
 export function mustSee(p, db, studentId) {
   if (!byId(db.students, studentId)) fail('NOT_FOUND', 'Student not found');
   if (!sees(p, studentId)) deny('Not your student');
@@ -352,6 +353,17 @@ export const COMMANDS = {
       for (const id of (input && input.studentIds) || []) if (byId(db.students, id) && !sees(p, id)) deny('Not your student');
     },
     run: (db, [input], ctx) => D.addDiaryEntries(db, input || {}, ctx),
+  },
+  /** correct(entryId, {data}) / remove(entryId) — the teacher who wrote it within 24 hours, the principal at any time. */
+  'diary.correct': {
+    slice: 'classroom', load: ([entryId]) => ({ diaryEntryId: String(entryId ?? '') }),
+    authorize: (p, db, [entryId]) => { allow(p, 'admin', 'teacher'); mustSee(p, db, diaryEntryOf(db, entryId).studentId); },
+    run: (db, [entryId, a], ctx) => D.correctDiaryEntry(db, entryId, a || {}, ctx),
+  },
+  'diary.remove': {
+    slice: 'classroom', load: ([entryId]) => ({ diaryEntryId: String(entryId ?? '') }),
+    authorize: (p, db, [entryId]) => { allow(p, 'admin', 'teacher'); mustSee(p, db, diaryEntryOf(db, entryId).studentId); },
+    run: (db, [entryId], ctx) => D.removeDiaryEntry(db, entryId, ctx),
   },
   'diary.markRead': {
     slice: 'classroom', load: ([entryId]) => ({ diaryEntryId: entryId }),

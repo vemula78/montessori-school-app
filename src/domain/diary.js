@@ -1,11 +1,13 @@
 // Daily diary entries per child (meal, sleep, health, activity; 'observation' entries written before Phase 3 stay valid).
 
 import { fail, newId } from './ids.js';
-import { isISODate, compareISO, isHHMM } from './dates.js';
+import { isISODate, compareISO, isHHMM, tsToMs } from './dates.js';
 import { mustGet, activeStudents } from './people.js';
+import { appendAudit } from './audit.js';
 
 export const DIARY_TYPES = ['observation', 'meal', 'sleep', 'health', 'activity'];
 export const OBSERVATION_AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
+export const DIARY_CHANGE_WINDOW_MS = 24 * 3600_000; // the teacher who wrote an entry may correct or remove it this long; the principal always
 
 const text = (v, label) => { if (!v || !String(v).trim()) fail('VALIDATION', `${label} is required`); return String(v).trim(); };
 
@@ -48,14 +50,22 @@ export function addDiaryEntry(db, { studentId, date, type, data }, ctx) {
 /**
  * One entry of the same type and content for several children of one programme (lunch, nap, a class activity), in one
  * write: every child and the entry are checked first, so either all entries are added or none.
+ * overrides (meals only): {studentId: {ate}} for a ticked child who ate a different amount than the rest.
  */
-export function addDiaryEntries(db, { programId, studentIds, date, type, data }, ctx) {
+export function addDiaryEntries(db, { programId, studentIds, date, type, data, overrides = null }, ctx) {
   if (!Array.isArray(studentIds) || !studentIds.length) fail('VALIDATION', 'Choose at least one child');
   if (new Set(studentIds).size !== studentIds.length) fail('VALIDATION', 'A child is listed twice');
   const inProgram = new Set(activeStudents(db, programId).map(s => s.id));
   for (const id of studentIds) if (!inProgram.has(id)) fail('VALIDATION', 'Every child must be an active child of this programme');
+  const over = overrides || {};
+  if (typeof over !== 'object' || Array.isArray(over)) fail('VALIDATION', 'overrides must be an object');
+  for (const [id, o] of Object.entries(over)) {
+    if (type !== 'meal') fail('VALIDATION', 'Only a meal can differ per child');
+    if (!studentIds.includes(id)) fail('VALIDATION', 'A different amount is given for a child who is not ticked');
+    if (!o || typeof o !== 'object' || Object.keys(o).some(k => k !== 'ate')) fail('VALIDATION', 'Only the amount eaten can differ per child');
+  }
   const draft = { diaryEntries: [], students: db.students };
-  const entries = studentIds.map(studentId => addDiaryEntry(draft, { studentId, date, type, data }, ctx));
+  const entries = studentIds.map(studentId => addDiaryEntry(draft, { studentId, date, type, data: over[studentId] ? { ...data, ate: over[studentId].ate } : data }, ctx));
   db.diaryEntries.push(...entries);
   return { added: entries.length, entries };
 }
@@ -69,6 +79,36 @@ export function diaryForStudentDate(db, studentId, date) {
 export function diaryForProgramDate(db, programId, date) {
   const ids = new Set(activeStudents(db, programId).map(s => s.id));
   return db.diaryEntries.filter(e => ids.has(e.studentId) && e.date === date).sort(byCreated);
+}
+
+/** The teacher who wrote the entry within 24 hours of writing it, or the principal at any time. */
+function mayChange(e, ctx) {
+  if (e.type === 'observation') fail('VALIDATION', 'Observations written in the diary before Learning existed cannot be changed');
+  if (ctx.actor.role === 'admin') return;
+  if (e.createdBy !== ctx.actor.id) fail('NOT_ALLOWED', 'Only the teacher who wrote this entry, or the principal, can change it');
+  if (tsToMs(ctx.now) - tsToMs(e.createdAt) > DIARY_CHANGE_WINDOW_MS) fail('NOT_ALLOWED', 'An entry can be changed within 24 hours of writing it; after that, ask the principal');
+}
+
+/** Correct a slip (the amount eaten, a nap time, a temperature): the type stays; what was there before is kept in history. Audited. */
+export function correctDiaryEntry(db, id, { data } = {}, ctx) {
+  const e = mustGet(db, 'diaryEntries', id, 'Diary entry');
+  mayChange(e, ctx);
+  if (mustGet(db, 'students', e.studentId, 'Student').status !== 'active') fail('VALIDATION', 'Student is not active');
+  const clean = cleanData(e.type, data);
+  if (JSON.stringify(clean) === JSON.stringify(e.data)) return e;
+  e.history = [...(e.history || []), { data: e.data, at: e.correctedAt || e.createdAt, by: e.correctedBy || e.createdBy }];
+  Object.assign(e, { data: clean, correctedAt: ctx.now, correctedBy: ctx.actor.id });
+  appendAudit(db, ctx, { entity: 'diaryEntry', entityId: e.id, action: 'correct', summary: `diary entry corrected for ${e.studentId} (${e.type}, ${e.date})` });
+  return e;
+}
+
+/** Remove an entry written in error (the wrong child, the wrong type). It leaves the family's diary at once. Audited. */
+export function removeDiaryEntry(db, id, ctx) {
+  const e = mustGet(db, 'diaryEntries', id, 'Diary entry');
+  mayChange(e, ctx);
+  db.diaryEntries.splice(db.diaryEntries.indexOf(e), 1);
+  appendAudit(db, ctx, { entity: 'diaryEntry', entityId: e.id, action: 'remove', summary: `diary entry removed for ${e.studentId} (${e.type}, ${e.date})` });
+  return { removed: e.id };
 }
 
 export function markDiaryRead(db, entryId, ctx) {
