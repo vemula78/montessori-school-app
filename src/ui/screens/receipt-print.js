@@ -1,9 +1,9 @@
 // A5 printable receipt (browser "Save as PDF"). Demo, mock and test-mode receipts carry a stamp: the demo is public and
 // uses the real school's name, so a printed demo receipt must never pass for a real one.
-import { esc, money, fdate, fdatetime, empty, notFoundOrThrow, DASH } from '../components.js';
+import { esc, money, fdate, fdatetime, empty, notFoundOrThrow, PAY_MODE, DASH } from '../components.js';
 import { isRealMode } from '../mode.js';
 
-const MODE = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank transfer', 'online-mock': 'Online (mock)', online: 'Online (Razorpay)', credit: 'Credit on account' };
+const MODE = PAY_MODE;
 
 export async function render(ctx) {
   const v = await ctx.api.fees.receiptView(ctx.params.id).catch(notFoundOrThrow);

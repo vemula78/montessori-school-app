@@ -483,3 +483,88 @@ test('#82 parent home: "This month: present X of Y school days" with the absent,
   const abs = api.getDb().attendance.filter((a) => a.studentId === kid && a.date >= from && a.status === 'absent');
   for (const a of abs) assert.ok(html.includes(fdate(a.date)), `absent ${a.date} listed`);
 });
+
+// ---- #16 absence form: one tap for today or tomorrow -----------------------------------------------------------
+test('#16 the absence form has Today and Tomorrow buttons that set both dates', async () => {
+  const api = await mkApi();
+  const Care = await import('../src/ui/screens/care.js');
+  const ctx = mkCtx(api, PARENT);
+  await Care.render(ctx);
+  const made = [];
+  const orig = document.createElement;
+  document.createElement = () => { const d = fake(); d.showModal = () => {}; d.close = () => {}; made.push(d); return d; };
+  try {
+    ctx.el.querySelector('#c-leave').handlers.click[0]();
+    for (let i = 0; i < 20 && !made.length; i++) await tick();
+  } finally { document.createElement = orig; }
+  const d = made[0];
+  assert.match(d.innerHTML, /data-day="0"[^>]*>Today</);
+  assert.match(d.innerHTML, /data-day="1"[^>]*>Tomorrow</);
+  const form = d.querySelector('form');
+  const click = (day) => form.handlers.click.forEach((h) => h({ target: { closest: (s) => (s === '[data-day]' ? { dataset: { day } } : null) } }));
+  click('0');
+  assert.equal(form.querySelector('[name=fromDate]').value, todayISO());
+  assert.equal(form.querySelector('[name=toDate]').value, todayISO());
+  click('1');
+  assert.equal(form.querySelector('[name=toDate]').value, addDays(todayISO(), 1));
+});
+
+// ---- #18 no internal codes or raw values in front of parents ----------------------------------------------------
+test('#18 error toasts and form errors show the message without the internal code', async () => {
+  const C = await import('../src/ui/components.js');
+  const shown = [];
+  const host = { appendChild: (t) => shown.push(t.textContent) };
+  const origGet = document.getElementById;
+  document.getElementById = (id) => (id === 'toasts' ? host : null);
+  const errs = console.error; console.error = () => {};
+  try {
+    await C.attempt(() => { throw Object.assign(new Error('Cannot reach the school server.'), { code: 'OFFLINE' }); });
+  } finally { document.getElementById = origGet; console.error = errs; }
+  assert.deepEqual(shown, ['Cannot reach the school server.']);
+  // a form's error line
+  const made = [];
+  const orig = document.createElement;
+  const FD = globalThis.FormData;
+  document.createElement = () => { const d = fake(); d.showModal = () => {}; d.close = () => {}; made.push(d); return d; };
+  globalThis.FormData = class { entries() { return []; } };
+  try {
+    C.formModal({ title: 'T', fieldsHtml: '', onSubmit: async () => { throw Object.assign(new Error('Choose a date'), { code: 'VALIDATION' }); } });
+    await made[0].querySelector('form').handlers.submit[0]({ preventDefault() {} });
+    assert.equal(made[0].querySelector('[data-err]').textContent, 'Choose a date');
+  } finally { document.createElement = orig; globalThis.FormData = FD; }
+});
+
+test('#18 payment modes and concession types are shown as words; a health note without a temperature has no "temperature —"', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const kid = api.session.current().studentIds[0];
+  const pays = await api.fees.payments({ studentId: kid });
+  assert.ok(pays.length, 'the seed has a payment');
+  const { PAY_MODE } = await import('../src/ui/components.js');
+  const html = await draw(api, PARENT, await import('../src/ui/screens/fees-payment.js'), {}, { studentId: kid });
+  for (const p of pays) { assert.ok(html.includes(PAY_MODE[p.mode]), p.mode); assert.ok(!html.includes(`<td>${p.mode}`), `raw ${p.mode}`); }
+  // invoice detail: concession type and payment mode
+  const Fees = await import('../src/ui/screens/fees-invoices.js');
+  const ctx = mkCtx(api, PARENT, {}, { id: 'x' });
+  const fakeInv = { id: 'x', number: 'INV/W1/x', studentId: kid, studentName: 'N', programName: 'P', installmentName: 'Term 1', status: 'paid', dueDate: todayISO(), effectiveDueDate: todayISO(),
+    totalPaise: 100, paidPaise: 100, balancePaise: 0, overdueDays: 0, lines: [{ description: 'Tuition', amountPaise: 200, kind: 'fee' }], concessions: [{ id: 'c1', type: 'staffWard', description: 'Staff-ward concession', amountPaise: 100 }], locked: true };
+  ctx.api = { ...api, fees: { ...api.fees, invoice: async () => fakeInv, payments: async () => [{ id: 'p1', receiptNumber: 'R1', paidOn: todayISO(), mode: 'upi', status: 'valid', allocations: [{ invoiceId: 'x', amountPaise: 100 }] }] } };
+  await Fees.render(ctx);
+  assert.match(ctx.el.innerHTML, /badge info">Staff ward</);
+  assert.match(ctx.el.innerHTML, /<td>UPI<\/td>/);
+  // diary
+  api.session.set(TEACHER);
+  await api.diary.add({ studentId: kid, date: todayISO(), type: 'health', data: { note: 'Sneezing a little' } });
+  const diary = await draw(api, PARENT, await import('../src/ui/screens/diary.js'), { student: kid, date: todayISO() });
+  assert.match(diary, /<strong>Health<\/strong> &mdash; Sneezing a little/);
+  assert.doesNotMatch(diary, /temperature —/);
+});
+
+// ---- #98 smaller photos ----------------------------------------------------------------------------------------
+test('#98 photos are prepared at 1024 px from quality 0.7, under the same 400 KiB ceiling', async () => {
+  const Prep = await import('../src/ui/photo-prep.js');
+  assert.equal(Prep.MAX_EDGE, 1024);
+  assert.equal(Prep.QUALITIES[0], 0.7);
+  assert.equal(Prep.MAX_BYTES, 400 * 1024);
+  assert.deepEqual(Prep.fitWithin(4000, 3000), { width: 1024, height: 768 });
+});

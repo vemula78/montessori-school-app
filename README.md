@@ -75,7 +75,7 @@ scripts/      dev server, scan, domain sync, seed/first-run SQL generators, mock
   `importCsv`: preview shows counts that add up and every duplicate or rejected line with its reason; a repeat is
   never a silent update). Presentations are retired, never deleted.
 - **Photos**: one child per photo (the teacher ticks "only this child is in the frame"), only with photo consent
-  (every guardian using the app agrees, per child, at sign-up or in Settings). The browser shrinks to 1280 px and
+  (every guardian using the app agrees, per child, at sign-up or in Settings). The browser shrinks to 1024 px and
   re-saves as JPEG (`src/ui/photo-prep.js`), which drops EXIF/GPS, and refuses rather than uploads if it cannot decode.
   Images are shown only as `URL.createObjectURL(blob)` from `api.photos.blob(id)` (revoked when the screen is left);
   no signed URL ever reaches the page. **Demo photos** are drawn SVGs of Montessori materials (no people) or a file

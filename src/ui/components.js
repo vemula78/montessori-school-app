@@ -81,7 +81,8 @@ export async function attempt(fn, okMsg) {
     return { ok: true, value };
   } catch (e) {
     notifyQuota(e);
-    toast(`${e?.code ? e.code + ': ' : ''}${errMessage(e)}`, 'bad');
+    console.error(e); // the code (OFFLINE, VALIDATION...) stays here; people see the message only
+    toast(errMessage(e), 'bad');
     return { ok: false, error: e };
   }
 }
@@ -168,7 +169,8 @@ export function formModal({ title, fieldsHtml, submitLabel = 'Save', onSubmit, o
         finish(true);
       } catch (ex) {
         notifyQuota(ex);
-        errEl.textContent = `${ex?.code ? ex.code + ': ' : ''}${errMessage(ex)}`;
+        console.error(ex);
+        errEl.textContent = errMessage(ex);
         btn.disabled = false;
       }
     });
@@ -214,6 +216,8 @@ export function dueHint(dueDate, today) {
   if (d < 0 || d > 14) return '';
   return d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
 }
+// How each payment mode reads on screens and receipts.
+export const PAY_MODE = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank transfer', 'online-mock': 'Online (mock)', online: 'Online (Razorpay)', credit: 'Credit on account' };
 // Due now = overdue or due within the same two weeks as dueHint; a later instalment issued early is "upcoming".
 export const isDueNow = (dueDate, today) => diffDays(today, dueDate) <= 14;
 

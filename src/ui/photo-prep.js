@@ -1,13 +1,13 @@
-// Prepare a photo before it is registered or uploaded: decode it, scale the long edge to 1280 px and re-encode as JPEG
-// (quality 0.8, then lower until it fits 400 KiB). Drawing to a canvas and re-encoding drops EXIF and GPS by
+// Prepare a photo before it is registered or uploaded: decode it, scale the long edge to 1024 px and re-encode as JPEG
+// (quality 0.7, then lower until it fits 400 KiB; on a phone screen a child's work looks the same, at about half the bytes). Drawing to a canvas and re-encoding drops EXIF and GPS by
 // construction, and bakes in the camera's rotation. If the browser cannot decode the file (HEIC on an older
 // browser, a damaged file) the photo is REFUSED: the original is never uploaded.
 // The server checks the bytes again (second line); this is the first.
 
-export const MAX_EDGE = 1280;
+export const MAX_EDGE = 1024;
 export const MAX_BYTES = 400 * 1024;          // equals the bucket limit (tests/phase3-ui.test.mjs checks it against the domain)
 export const MAX_SOURCE_BYTES = 40 * 1024 * 1024;
-export const QUALITIES = [0.8, 0.7, 0.6, 0.5];
+export const QUALITIES = [0.7, 0.6, 0.5, 0.4];
 
 export class PhotoPrepError extends Error {
   constructor(message) { super(message); this.name = 'PhotoPrepError'; this.code = 'PHOTO_REFUSED'; }

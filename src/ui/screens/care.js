@@ -35,9 +35,18 @@ async function reportAbsence(ctx, kid) {
   const today = todayISO();
   return formModal({
     title: `Report an absence - ${kid.firstName}`, submitLabel: 'Send to the teacher',
-    fieldsHtml: `<div class="grid cols-2"><label class="field"><span class="lbl">First day</span><input type="date" name="fromDate" required min="${esc(today)}" value="${esc(addDays(today, 1))}"></label>
+    fieldsHtml: `<div class="row"><button type="button" class="btn sm" data-day="0">Today</button><button type="button" class="btn sm" data-day="1">Tomorrow</button></div>
+      <div class="grid cols-2"><label class="field"><span class="lbl">First day</span><input type="date" name="fromDate" required min="${esc(today)}" value="${esc(addDays(today, 1))}"></label>
       <label class="field"><span class="lbl">Last day</span><input type="date" name="toDate" required min="${esc(today)}" value="${esc(addDays(today, 1))}"></label></div>
       <label class="field"><span class="lbl">Reason (optional)</span><input name="reason" maxlength="200" placeholder="For example: family function"><small>No medical details are needed.</small></label>`,
+    // one tap sets both dates (a child who woke up unwell is the usual case)
+    onOpen: (d, form) => form.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-day]');
+      if (!b) return;
+      const day = addDays(today, Number(b.dataset.day));
+      form.querySelector('[name=fromDate]').value = day;
+      form.querySelector('[name=toDate]').value = day;
+    }),
     onSubmit: (v) => ctx.api.care.requestLeave({ studentId: kid.id, fromDate: v.fromDate, toDate: v.toDate, reason: v.reason }),
   });
 }

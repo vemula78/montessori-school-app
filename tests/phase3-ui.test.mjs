@@ -466,33 +466,33 @@ test('the new UI files never fetch, never read a signed URL, and show images onl
 });
 
 // ---------------------------------------------------------------- photo prep
-test('fitWithin scales the long edge to 1280 and never enlarges', () => {
-  assert.deepEqual(Prep.fitWithin(4000, 3000), { width: 1280, height: 960 });
-  assert.deepEqual(Prep.fitWithin(3000, 4000), { width: 960, height: 1280 });
+test('fitWithin scales the long edge to 1024 and never enlarges', () => { // 1024 since review 2026-10-19 #98 (was 1280)
+  assert.deepEqual(Prep.fitWithin(4000, 3000), { width: 1024, height: 768 });
+  assert.deepEqual(Prep.fitWithin(3000, 4000), { width: 768, height: 1024 });
   assert.deepEqual(Prep.fitWithin(800, 600), { width: 800, height: 600 });
-  assert.deepEqual(Prep.fitWithin(1280, 1280), { width: 1280, height: 1280 });
-  assert.deepEqual(Prep.fitWithin(10000, 1), { width: 1280, height: 1 });
+  assert.deepEqual(Prep.fitWithin(1280, 1280), { width: 1024, height: 1024 });
+  assert.deepEqual(Prep.fitWithin(10000, 1), { width: 1024, height: 1 });
   assert.throws(() => Prep.fitWithin(0, 10), /no size/);
 });
 
-test('preparePhoto: 1280 px JPEG, quality steps down until it fits, limits equal the server\'s, refusals upload nothing', async () => {
+test('preparePhoto: 1024 px JPEG, quality steps down until it fits, limits equal the server\'s, refusals upload nothing', async () => {
   assert.equal(Prep.MAX_BYTES, PHOTO_MAX_BYTES, 'client limit = bucket limit');
-  assert.equal(Prep.MAX_EDGE, 1280);
-  assert.equal(Prep.QUALITIES[0], 0.8);
+  assert.equal(Prep.MAX_EDGE, 1024); // review 2026-10-19 #98: 1024 px from quality 0.7 (was 1280 px from 0.8)
+  assert.equal(Prep.QUALITIES[0], 0.7);
   const calls = [];
   const env = (sizes) => ({
     decode: async () => ({ width: 4000, height: 3000, source: {}, close() { calls.push('close'); } }),
     encode: async (d, w, h, q) => { calls.push([w, h, q]); return JPEG(sizes[q] ?? 1, 'image/jpeg'); },
   });
   const file = { size: 1000, type: 'image/jpeg' };
-  const ok = await Prep.preparePhoto(file, env({ 0.8: 300 * 1024 }));
-  assert.deepEqual([ok.width, ok.height, ok.quality, ok.bytes], [1280, 960, 0.8, 300 * 1024]);
+  const ok = await Prep.preparePhoto(file, env({ 0.7: 300 * 1024 }));
+  assert.deepEqual([ok.width, ok.height, ok.quality, ok.bytes], [1024, 768, 0.7, 300 * 1024]);
   calls.length = 0;
-  const stepped = await Prep.preparePhoto(file, env({ 0.8: 500 * 1024, 0.7: 450 * 1024, 0.6: 390 * 1024 }));
-  assert.equal(stepped.quality, 0.6);
-  assert.deepEqual(calls.filter((c) => Array.isArray(c)).map((c) => c[2]), [0.8, 0.7, 0.6]);
+  const stepped = await Prep.preparePhoto(file, env({ 0.7: 500 * 1024, 0.6: 450 * 1024, 0.5: 390 * 1024 }));
+  assert.equal(stepped.quality, 0.5);
+  assert.deepEqual(calls.filter((c) => Array.isArray(c)).map((c) => c[2]), [0.7, 0.6, 0.5]);
   assert.equal(calls.at(-1), 'close', 'the decoded image is released');
-  await assert.rejects(Prep.preparePhoto(file, env({ 0.8: 9e6, 0.7: 9e6, 0.6: 9e6, 0.5: 9e6 })), /still too large/);
+  await assert.rejects(Prep.preparePhoto(file, env({ 0.7: 9e6, 0.6: 9e6, 0.5: 9e6, 0.4: 9e6 })), /still too large/);
   let encoded = 0;
   await assert.rejects(Prep.preparePhoto(file, { decode: async () => { throw new Error('HEIC'); }, encode: async () => { encoded++; return JPEG(1); } }), (e) => e.code === 'PHOTO_REFUSED' && /Nothing was uploaded/.test(e.message));
   assert.equal(encoded, 0, 'decode failure: the original is never encoded or passed on');

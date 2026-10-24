@@ -19,7 +19,7 @@ function entryHtml(e, actions = '') {
     case 'observation': body = `<strong>${esc(AREAS[d.area] || d.area || DASH)}</strong> &mdash; ${esc(d.text || DASH)}`; break;
     case 'meal': body = `<strong>${esc(d.meal === 'snack' ? 'Snack' : d.meal === 'lunch' ? 'Lunch' : d.meal || 'Meal')}</strong>: ${esc(ATE[d.ate] || d.ate || DASH)}${d.note ? ` &mdash; ${esc(d.note)}` : ''}`; break;
     case 'sleep': body = `<strong>Nap</strong> ${esc(d.from || DASH)} to ${esc(d.to || DASH)}`; break;
-    case 'health': body = `<strong>Health</strong> &mdash; temperature ${d.temperatureC == null ? DASH : esc(d.temperatureC) + ' °C'}${d.note ? `, ${esc(d.note)}` : ''}`; break;
+    case 'health': body = `<strong>Health</strong> &mdash; ${[d.temperatureC == null ? '' : `temperature ${esc(d.temperatureC)} °C`, d.note ? esc(d.note) : ''].filter(Boolean).join(', ') || DASH}`; break;
     default: body = `<strong>Activity</strong> &mdash; ${esc(d.text || DASH)}`;
   }
   return `<div class="diary-entry ${esc(e.type)}">${body}<div><small>${esc(TYPES[e.type] || e.type)} &middot; ${ftime(e.createdAt)}${e.correctedAt ? ' &middot; corrected' : ''}</small></div>${actions}</div>`;
