@@ -24,7 +24,7 @@ export async function render(ctx) {
   const { api } = ctx;
   const tab = TABS.some(([k]) => k === ctx.query.tab) ? ctx.query.tab : 'accounts';
   let open = 0;
-  try { open = (await api.rights.list()).filter((r) => r.status === 'open' || r.status === 'in_progress').length; } catch { /* the Data requests tab reports its own failure */ }
+  try { open = await openRequestCount(api); } catch { /* the Data requests tab reports its own failure */ }
   ctx.el.innerHTML = `${pageHead('Administration', 'Accounts, oversight, data requests, the school notice and two-step sign-in')}
     <div class="seg" style="margin-bottom:14px">${TABS.map(([k, l]) => `<a href="${esc(ctx.href('/admin', { tab: k }))}"${k === tab ? ' aria-current="page"' : ''}>${esc(l)}${k === 'requests' && open ? ` ${badge(String(open), 'warn')}` : ''}</a>`).join('')}</div>
     <div id="ad-body" class="stack"></div>`;
@@ -166,26 +166,43 @@ async function oversight(ctx, host) {
 }
 
 // ---------------------------------------------------------------- Data requests
+// Withdrawing app consent files its own erasure request (erasure_requests, real app only); it is listed here with the
+// rights desk's requests, in the same row shape, so the principal has one queue. It closes when the erasure finishes.
+const ERASURE_STATUS = { open: 'open', cleanup: 'in_progress', done: 'done' };
+async function withdrawals(api) {
+  return (await api.admin.erasureRequests()).map((r) => ({ id: r.id, guardianId: r.guardianId, guardianName: r.guardianName, kind: 'withdrawal',
+    filedAt: r.requestedAt, status: ERASURE_STATUS[r.status] || r.status, lastError: r.status === 'cleanup' ? r.lastError || null : null }));
+}
+// a withdrawal whose clean-up is running needs nothing from the principal (cron retries it); a failed one does
+const needsAction = (r) => r.status === 'open' || (r.status === 'in_progress' && (r.kind !== 'withdrawal' || Boolean(r.lastError)));
+/** Requests waiting for the principal: the rights desk's and erasures filed by withdrawing consent (home page, tab badge). */
+export async function openRequestCount(api) {
+  const [desk, wd] = await Promise.all([api.rights.list(), withdrawals(api).catch(() => [])]);
+  return [...desk, ...wd].filter(needsAction).length;
+}
+
 async function requests(ctx, host) {
   const { api } = ctx;
-  let rows;
+  let rows, wdErr = null;
   try { rows = await api.rights.list(); } catch (e) { host.innerHTML = banner('bad', `<strong>The requests could not be loaded.</strong> ${esc(errMessage(e))}`); return; }
+  try { rows = [...rows, ...await withdrawals(api)]; } catch (e) { wdErr = e; }
   const showClosed = ctx.query.closed === '1';
   const isOpen = (r) => r.status === 'open' || r.status === 'in_progress';
   const shown = rows.filter((r) => showClosed || isOpen(r)).sort((a, b) => (isOpen(b) - isOpen(a)) || (a.filedAt < b.filedAt ? 1 : -1));
-  host.innerHTML = `<div class="row between"><div><strong>${esc(rows.filter(isOpen).length)}</strong> open of ${esc(rows.length)}</div>
+  host.innerHTML = `${wdErr ? banner('bad', `<strong>Erasure requests from withdrawn consent could not be loaded.</strong> ${esc(errMessage(wdErr))}`) : ''}<div class="row between"><div><strong>${esc(rows.filter(needsAction).length)}</strong> open of ${esc(rows.length)}</div>
       <label class="check sm"><input type="checkbox" id="rq-closed"${showClosed ? ' checked' : ''}> Show closed requests</label></div>
     ${shown.length ? `<div class="tablewrap"><table><thead><tr><th>Filed</th><th>Parent</th><th>Request</th><th>Status</th><th>Actions</th></tr></thead><tbody>
       ${shown.map((r) => {
         const [label, kind] = REQUEST_STATUS[r.status] || [r.status, ''];
+        const desk = r.kind !== 'withdrawal';
         return `<tr><td class="nowrap">${r.filedAt ? esc(fdate(String(r.filedAt).slice(0, 10))) : DASH}</td><td>${esc(r.guardianName || DASH)}</td>
-          <td><strong>${esc(KIND_LABEL[r.kind] || r.kind)}</strong>${r.details ? `<br><small>${esc(r.details)}</small>` : ''}${r.resolution ? `<br><small><strong>Answer:</strong> ${esc(r.resolution)}</small>` : ''}</td><td>${badge(label, kind)}</td>
+          <td><strong>${esc(desk ? KIND_LABEL[r.kind] || r.kind : 'Erase personal details (consent withdrawn)')}</strong>${r.details ? `<br><small>${esc(r.details)}</small>` : ''}${r.resolution ? `<br><small><strong>Answer:</strong> ${esc(r.resolution)}</small>` : ''}${r.lastError ? `<br><small>Clean-up failed: ${esc(r.lastError)}. Erase again to retry.</small>` : ''}</td><td>${badge(label, kind)}</td>
           <td><div class="row" style="gap:6px">
-            ${r.status === 'open' ? `<button class="btn sm" data-act="start" data-id="${esc(r.id)}">Start</button>` : ''}
-            ${isOpen(r) && r.kind !== 'erasure' ? `<button class="btn sm primary" data-act="done" data-id="${esc(r.id)}">Mark done</button>` : ''}
-            ${r.kind === 'erasure' && isOpen(r) ? `<button class="btn sm danger" data-act="erase" data-guardian="${esc(r.guardianId)}">Erase personal details</button>` : ''}
-            ${isOpen(r) ? `<button class="btn sm" data-act="declined" data-id="${esc(r.id)}">Decline</button>` : ''}
-            ${r.kind === 'export' ? `<button class="btn sm" data-act="export" data-guardian="${esc(r.guardianId)}">Download data</button>` : ''}
+            ${desk && r.status === 'open' ? `<button class="btn sm" data-act="start" data-id="${esc(r.id)}">Start</button>` : ''}
+            ${desk && isOpen(r) && r.kind !== 'erasure' ? `<button class="btn sm primary" data-act="done" data-id="${esc(r.id)}">Mark done</button>` : ''}
+            ${(r.kind === 'erasure' || !desk) && isOpen(r) ? `<button class="btn sm danger" data-act="erase" data-guardian="${esc(r.guardianId)}">Erase personal details</button>` : ''}
+            ${desk && isOpen(r) ? `<button class="btn sm" data-act="declined" data-id="${esc(r.id)}">Decline</button>` : ''}
+            ${r.kind === 'export' || !desk ? `<button class="btn sm" data-act="export" data-guardian="${esc(r.guardianId)}">Download data</button>` : ''}
             ${r.kind === 'correction' && isOpen(r) ? `<small>Correct the details in the people records, then mark done.</small>` : ''}
           </div></td></tr>`;
       }).join('')}

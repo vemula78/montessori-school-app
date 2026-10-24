@@ -2,6 +2,7 @@
 import { todayISO } from '../../domain/dates.js';
 import { esc, icon, money, fdate, fdatetime, badge, empty, fullName, indexBy, errMessage, DASH } from '../components.js';
 import { mountInstall } from '../install.js';
+import { openRequestCount } from './admin.js';
 
 const tile = (href, ic, label, sub = '') => `<a class="card link" href="${esc(href)}"><div class="row">${icon(ic)}<div class="grow"><div class="item-title">${esc(label)}</div>${sub ? `<small>${esc(sub)}</small>` : ''}</div></div></a>`;
 const TYPE_LABEL = { holiday: 'Holiday', event: 'Event', ptm: 'PTM', halfDay: 'Half day', workingSaturday: 'Working Saturday', birthday: 'Birthday' };
@@ -151,7 +152,7 @@ async function adminHome(ctx) {
     overdueKids = r.rows.filter((x) => (x.overdueDays || 0) > 0 && x.balancePaise > 0).length;
   } catch { /* unavailable: shown as a dash */ }
   let openRequests = null;
-  try { openRequests = (await api.rights.list()).filter((r) => r.status === 'open' || r.status === 'in_progress').length; } catch { /* unavailable */ }
+  try { openRequests = await openRequestCount(api); } catch { /* unavailable */ }
   let active = 0, busFail = 0;
   try {
     for (const r of await api.transport.routes()) { try { if (await api.transport.activeTrip(r.id)) active += 1; } catch { busFail += 1; } }

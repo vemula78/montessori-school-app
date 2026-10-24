@@ -1,7 +1,7 @@
 // Settings in the real app: who I am, notifications on this device, my privacy choices (withdraw consent),
-// download my data, and for the principal the data-request queue and school details.
+// download my data, and for the principal the school details and retention (data requests: Administration).
 import { todayISO } from '../../domain/dates.js';
-import { esc, money, fdate, badge, banner, pageHead, downloadText, confirmDialog, attempt, toast, errMessage, fullName, DASH } from '../components.js';
+import { esc, money, fdate, badge, banner, pageHead, downloadText, confirmDialog, attempt, toast, errMessage, DASH } from '../components.js';
 import { PURPOSES, PRIVACY_VERSION, noticeHash } from '../privacy.js';
 import * as push from '../push.js';
 import { mountInstall } from '../install.js';
@@ -136,16 +136,7 @@ async function drawAdmin(ctx, host) {
   const { api, db } = ctx;
   const rule = db.school.lateFeeRule;
   const ay = db.academicYears.find((a) => a.id === db.school.currentAcademicYearId);
-  let reqs = null, reqErr = null;
-  try { reqs = await api.admin.erasureRequests(); } catch (e) { reqErr = e; }
-  const guardians = indexById(db.guardians);
   host.innerHTML = `<div class="stack">
-    <div class="card stack"><h2>Data requests (erasure)</h2>
-      ${reqErr ? banner('bad', `<strong>The request list could not be loaded.</strong> ${esc(errMessage(reqErr))}`)
-        : reqs.length ? `<div class="tablewrap"><table><thead><tr><th>Requested</th><th>Parent</th><th>Status</th><th></th></tr></thead><tbody>${reqs.map((r) => `<tr><td class="nowrap">${r.requestedAt ? fdate(String(r.requestedAt).slice(0, 10)) : DASH}</td><td>${esc(fullName(guardians.get(r.guardianId)))}</td><td>${r.status === 'open' ? badge('Open', 'warn') : badge(r.status, 'ok')}</td>
-          <td class="nowrap"><button class="btn sm" data-export-g="${esc(r.guardianId)}">Export data</button>${r.status === 'open' && api.admin.anonymiseGuardian ? ` <button class="btn sm danger" data-erase="${esc(r.guardianId)}">Erase personal details</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
-          <small>Erasing replaces the parent’s name, phone and email; fee numbers and amounts are kept because the law requires the school to keep them.</small>`
-        : '<p class="muted" style="margin:0">No open requests.</p>'}</div>
     <div class="card stack"><h2>School</h2>
       <dl style="display:grid;grid-template-columns:150px 1fr;gap:4px 10px;margin:0">
         <dt class="muted">Name</dt><dd style="margin:0">${esc(db.school.name)}</dd>
@@ -154,25 +145,9 @@ async function drawAdmin(ctx, host) {
         <dt class="muted">Academic year</dt><dd style="margin:0">${esc(ay?.label || DASH)} ${ay ? `(${fdate(ay.startDate)} to ${fdate(ay.endDate)})` : ''}</dd>
         <dt class="muted">Late fee rule</dt><dd style="margin:0">${rule ? `${esc(rule.graceDays)} grace days, ${rule.mode === 'perDay' ? `${money(rule.amountPaise)} per day${rule.capPaise != null ? `, capped at ${money(rule.capPaise)}` : ''}` : `${money(rule.amountPaise)} flat`}` : DASH}</dd>
       </dl>
-      <div class="row"><a class="btn" href="#/invites">Invite codes</a><a class="btn" href="#/import">Import data</a><a class="btn" href="#/reports/settlements">Online settlements</a></div></div>
+      <div class="row"><a class="btn" href="#/invites">Invite codes</a><a class="btn" href="#/import">Import data</a><a class="btn" href="#/reports/settlements">Online settlements</a><a class="btn" href="#/admin?tab=requests">Data requests</a></div></div>
     <div id="st-retention"></div></div>`;
   await drawRetention(ctx, host.querySelector('#st-retention'));
-  host.addEventListener('click', async (e) => {
-    const x = e.target.closest('[data-export-g]');
-    const er = e.target.closest('[data-erase]');
-    if (x) {
-      const r = await attempt(() => api.admin.dataExport(x.dataset.exportG));
-      if (r.ok) { downloadText(`family-data_${todayISO()}.json`, r.value, 'application/json'); toast('Downloaded'); }
-    } else if (er) {
-      if (!(await confirmDialog('Erase personal details', 'Erase this parent’s name, phone, email, their own messages and their sign-in? This cannot be undone. Fee numbers and amounts, and the children’s school records, are kept.', { okLabel: 'Erase', kind: 'danger' }))) return;
-      const r = await attempt(() => api.admin.anonymiseGuardian(er.dataset.erase));
-      if (!r.ok) return;
-      // the sign-in and gateway copies are removed after the erasure is saved; a failure there is shown, and erasing again retries it
-      const errs = r.value?.server?.errors || [];
-      toast(errs.length ? `Details erased, but ${errs.length} clean-up step(s) failed: ${errs.join('; ')}. Erase again to retry.` : 'Personal details erased', errs.length ? 'bad' : undefined);
-      ctx.rerender();
-    }
-  });
 }
 
 // ---- retention (principal): how long records are kept after a child leaves ------------------------------------------
@@ -220,5 +195,3 @@ export async function drawRetention(ctx, host) {
     if ((await attempt(() => api.admin.setRetention(out), 'Retention periods saved')).ok) ctx.rerender();
   });
 }
-
-const indexById = (arr) => new Map((arr || []).map((x) => [x.id, x]));
