@@ -64,6 +64,15 @@ async function list(ctx) {
   });
 }
 
+// Outside office hours a parent is told when the school will reply (nothing is blocked); the hours come from school settings.
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+export function officeHoursNote(h) {
+  if (!h || !h.set || h.open) return '';
+  const nx = h.nextOpen;
+  const when = nx ? `next: ${nx.inDays === 0 ? 'today' : nx.inDays === 1 ? 'tomorrow' : DAYS[nx.day]} at ${nx.time}` : `${h.hours.start} to ${h.hours.end}`;
+  return `<div class="banner" style="margin-top:14px">The school will reply during office hours (${esc(when)}).</div>`;
+}
+
 async function detail(ctx) {
   const { api, db, persona } = ctx;
   const id = ctx.params.id;
@@ -73,11 +82,12 @@ async function detail(ctx) {
   const stu = db.students.find((s) => s.id === thread.studentId);
   const mine = (m) => m.senderRole === persona.role && m.senderId === me(persona);
   const dayOf = (m) => fdatetime(m.sentAt).split(' ')[0]; // DD-MMM-YYYY, in the same zone as the HH:MM under each bubble
+  const hoursNote = persona.role === 'parent' && thread.status !== 'closed' ? officeHoursNote(await api.school.officeHours().catch(() => null)) : '';
   ctx.el.innerHTML = `<p><a href="#/messages">&larr; All messages</a></p>
     <div class="page-head"><div><h1>${esc(thread.subject)}</h1><div class="sub">About ${esc(fullName(stu))} &middot; ${esc(db.programs.find((p) => p.id === thread.programId)?.name || DASH)}</div></div>
       ${thread.status === 'closed' ? badge('Closed', 'mute') : persona.role !== 'parent' ? '<button class="btn sm" id="t-close">Close conversation</button>' : ''}</div>
     <div class="bubbles" aria-live="polite">${messages.map((m, i) => `${dayOf(m) !== (i ? dayOf(messages[i - 1]) : '') ? `<small class="bubble-day muted">${esc(dayOf(m))}</small>` : ''}<div class="bubble ${mine(m) ? 'mine' : ''}">${esc(m.body)}<span class="meta">${esc(senderName(db, m))} &middot; ${ftime(m.sentAt)}${mine(m) ? (m.readAt ? ` &middot; Read ${ftime(m.readAt)}` : ' &middot; Sent') : ''}</span></div>`).join('')}</div>
-    ${thread.status === 'closed' ? '<div class="banner" style="margin-top:14px">This conversation is closed.</div>' : `
+    ${hoursNote}${thread.status === 'closed' ? '<div class="banner" style="margin-top:14px">This conversation is closed.</div>' : `
     <form id="t-reply" class="stack" style="margin-top:14px"><label class="field"><span class="lbl">Reply</span><textarea name="body" required></textarea></label><button class="btn primary" type="submit">Send reply</button></form>`}`;
   ctx.el.querySelector('#t-reply')?.addEventListener('submit', async (e) => {
     e.preventDefault();
