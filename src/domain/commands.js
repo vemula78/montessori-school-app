@@ -547,11 +547,20 @@ export const COMMANDS = {
     authorize: (p, db, [i = {}]) => { staffLearning(p); O.mustSeeLearner(p, db, i?.studentId); },
     run: (db, [i], ctx) => O.observationView(db, O.addObservation(db, i || {}, ctx)),
   },
-  /** edit(id, {date?, area?, presentationId?, text?}) — only while unshared. */
+  /** edit(id, {date?, area?, presentationId?, text?, studentId?}) — only while unshared; studentId only without photos. */
   'observations.edit': {
     slice: 'learning', load: ([id]) => ({ observationId: String(id ?? '') }),
-    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, observationOf(db, id).studentId); },
+    authorize: (p, db, [id, patch]) => {
+      staffLearning(p); O.mustSeeLearner(p, db, observationOf(db, id).studentId);
+      if (patch && patch.studentId !== undefined) O.mustSeeLearner(p, db, patch.studentId);
+    },
     run: (db, [id, patch], ctx) => O.observationView(db, O.editObservation(db, id, patch || {}, ctx)),
+  },
+  /** remove(id) — an unshared observation with no photo left. */
+  'observations.remove': {
+    slice: 'learning', load: ([id]) => ({ observationId: String(id ?? '') }),
+    authorize: (p, db, [id]) => { staffLearning(p); O.mustSeeLearner(p, db, observationOf(db, id).studentId); },
+    run: (db, [id], ctx) => O.removeObservation(db, id, ctx),
   },
   'observations.share': {
     slice: 'learning', load: ([id]) => ({ observationId: String(id ?? '') }),

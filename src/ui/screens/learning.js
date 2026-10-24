@@ -83,7 +83,7 @@ function obsCard(o, s, { staff, canShare, noPhoto }) {
     <div class="obs-text">${esc(o.text)}</div>
     ${photos.length ? `<div class="photo-row">${photos.join('')}</div>` : ''}
     ${staff && canShare ? `<div class="row">
-      ${o.sharedAt ? `<button class="btn" data-unshare="${esc(o.id)}">Unshare</button>` : `<button class="btn primary" data-share="${esc(o.id)}">Share with family</button><button class="btn" data-edit="${esc(o.id)}">Edit</button>`}
+      ${o.sharedAt ? `<button class="btn" data-unshare="${esc(o.id)}">Unshare</button>` : `<button class="btn primary" data-share="${esc(o.id)}">Share with family</button><button class="btn" data-edit="${esc(o.id)}">Edit</button><button class="btn" data-remove-obs="${esc(o.id)}">Remove</button>`}
       ${noPhoto.has(o.studentId) ? '' : `<button class="btn" data-add-photo="${esc(o.id)}">Add photo</button>`}
       ${noPhoto.has(o.studentId) ? badge('No photo consent', 'warn') : ''}</div>` : ''}</div>`;
 }
@@ -127,6 +127,9 @@ async function observationsTab(ctx, host, { programId, students }) {
     } else if ((b = t('[data-edit]'))) {
       const o = obs.find((x) => x.id === b.dataset.edit);
       if (await observationForm(ctx, { students, presentations, noPhoto, edit: o })) ctx.rerender();
+    } else if ((b = t('[data-remove-obs]'))) {
+      if (await confirmDialog('Remove observation', 'Remove this observation? It has not been shared, so the family never saw it. Remove its photo first if it has one.', { okLabel: 'Remove', kind: 'danger' })
+        && (await attempt(() => api.observations.remove(b.dataset.removeObs), 'Observation removed')).ok) ctx.rerender();
     } else if ((b = t('[data-add-photo]'))) {
       if (await addPhotoForm(ctx, obs.find((x) => x.id === b.dataset.addPhoto), noPhoto)) ctx.rerender();
     } else if ((b = t('[data-rm-photo]'))) {
@@ -140,7 +143,8 @@ async function observationsTab(ctx, host, { programId, students }) {
 function observationForm(ctx, { students, presentations, noPhoto, studentId = '', edit = null }) {
   const { api } = ctx;
   const today = todayISO();
-  const firstId = edit ? edit.studentId : (studentId || students[0]?.id || '');
+  // no child is chosen for the teacher: an observation (and its photo) under the wrong child is a privacy slip
+  const firstId = edit ? edit.studentId : studentId;
   const ph = edit ? null : photoBlock(noPhoto);
   let photo = null;
   const presFor = (area) => presentations.filter((p) => p.area === area);
@@ -148,7 +152,7 @@ function observationForm(ctx, { students, presentations, noPhoto, studentId = ''
   const area0 = edit ? edit.area : 'practicalLife';
   return formModal({
     title: edit ? 'Edit observation' : 'Add observation', submitLabel: edit ? 'Save changes' : 'Save observation',
-    fieldsHtml: `${edit ? '' : `<label class="field"><span class="lbl">Child</span><select name="studentId" id="o-child">${options(students.map((s) => ({ value: s.id, label: fullName(s) })), firstId)}</select></label>`}
+    fieldsHtml: `${edit && (edit.photoIds || []).length ? '' : `<label class="field"><span class="lbl">Child</span><select name="studentId" id="o-child" required>${options(students.map((s) => ({ value: s.id, label: fullName(s) })), firstId, firstId ? {} : { blank: 'Choose the child' })}</select></label>`}
       <div class="grid cols-2"><label class="field"><span class="lbl">Date</span><input type="date" name="date" value="${esc(edit ? edit.date : today)}" max="${esc(today)}" required></label>
       <label class="field"><span class="lbl">Montessori area</span><select name="area" id="o-area">${options(AREA_KEYS.map((a) => ({ value: a, label: AREA_LABEL[a] })), area0)}</select></label></div>
       <label class="field"><span class="lbl">Presentation (optional)</span><select name="presentationId" id="o-pres">${presOptions(area0, edit ? edit.presentationId : '')}</select></label>
@@ -162,7 +166,8 @@ function observationForm(ctx, { students, presentations, noPhoto, studentId = ''
       d.querySelector('#o-child')?.addEventListener('change', () => photo && photo.sync());
     },
     onSubmit: async (v) => {
-      if (edit) { await api.observations.edit(edit.id, { date: v.date, area: v.area, presentationId: v.presentationId || null, text: v.text }); return; }
+      if (v.studentId === '') throw new Error('Choose the child');
+      if (edit) { await api.observations.edit(edit.id, { date: v.date, area: v.area, presentationId: v.presentationId || null, text: v.text, ...(v.studentId && v.studentId !== edit.studentId ? { studentId: v.studentId } : {}) }); return; }
       if (photo && photo.state.prepared && !photo.solo()) throw new Error('Tick "Only this child is in the frame" to add the photo, or choose no photo.');
       await saveObservation(ctx, v, photo && photo.state.prepared);
     },

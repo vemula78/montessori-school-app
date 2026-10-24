@@ -388,6 +388,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     list: op((q = {}) => listObservations(db(), me(), q)),
     add: cmd('observations.add'),
     edit: cmd('observations.edit'),
+    remove: cmd('observations.remove'),
     share: cmd('observations.share'),
     unshare: cmd('observations.unshare'),
   };

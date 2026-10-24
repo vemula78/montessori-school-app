@@ -400,3 +400,43 @@ test('#27 formModal: Cancel/back with nothing typed closes at once; with somethi
     assert.equal(await p, false);
   } finally { document.createElement = orig; globalThis.FormData = PrevFD; }
 });
+
+// ---------------------------------------------------------------- #28 observations: the right child
+test('#28 observations: an unshared one can move to the right child or be removed (audited); not with a photo on it, not once shared', () => {
+  const db = dSeed();
+  const [a, b] = kidsOf(db, primaryA(db));
+  const o = dRun(db, T_PA, 'observations.add', [{ studentId: a, date: D_TODAY, area: 'math', text: 'Counted to twenty' }]);
+  const moved = dRun(db, T_PA, 'observations.edit', [o.id, { studentId: b }]);
+  assert.equal(moved.studentId, b);
+  assert.ok(db.auditLog.some((x) => x.entityId === o.id && x.action === 'edit' && x.summary.includes(`from student ${a} to ${b}`)));
+  const other = kidsOf(db, db.programs.find((p) => p.name === 'Primary B').id)[0];
+  assert.throws(() => dRun(db, T_PA, 'observations.edit', [o.id, { studentId: other }]), { code: 'NOT_ALLOWED' }, "another teacher's child");
+  db.photos.push({ id: 'pho-test-28', observationId: o.id, studentId: b, status: 'ready', createdAt: `${D_TODAY}T05:00:00.000Z` });
+  assert.throws(() => dRun(db, T_PA, 'observations.edit', [o.id, { studentId: a }]), { code: 'VALIDATION' }, 'a photo stays with its child');
+  assert.throws(() => dRun(db, T_PA, 'observations.remove', [o.id]), { code: 'VALIDATION' });
+  db.photos.find((x) => x.id === 'pho-test-28').status = 'deleted';
+  const before = structuredClone(db);
+  assert.deepEqual(dRun(db, T_PA, 'observations.remove', [o.id]), { removed: o.id });
+  assert.ok(db.auditLog.some((x) => x.entityId === o.id && x.action === 'remove'));
+  assert.deepEqual(diffChanges(before, db, SLICES.learning.writes).deletes.observations, [o.id]);
+  const s = dRun(db, T_PA, 'observations.add', [{ studentId: a, date: D_TODAY, area: 'math', text: 'Shared one' }]);
+  dRun(db, T_PA, 'observations.share', [s.id]);
+  assert.throws(() => dRun(db, T_PA, 'observations.remove', [s.id]), { code: 'VALIDATION' });
+});
+
+test('#28 Add observation starts with no child chosen ("Choose the child") unless the list is filtered to one child', async () => {
+  const Learning = await import('../src/ui/screens/learning.js');
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER, { tab: 'observations' });
+  await Learning.render(ctx);
+  const host = ctx.el.querySelector('#l-body');
+  const d = await modalFrom(() => host.querySelector('#l-add').handlers.click[0]());
+  assert.match(d.innerHTML, /<option value="">Choose the child<\/option>/);
+  assert.doesNotMatch(d.innerHTML, /<option value="stu-[^"]+" selected>/);
+  const kid = (await api.people.students({ programId: ctx.persona.programIds[0] }))[0];
+  const one = mkCtx(api, TEACHER, { tab: 'observations', student: kid.id });
+  await Learning.render(one);
+  const d1 = await modalFrom(() => one.el.querySelector('#l-body').querySelector('#l-add').handlers.click[0]());
+  assert.match(d1.innerHTML, new RegExp(`<option value="${kid.id}" selected>`));
+  assert.doesNotMatch(d1.innerHTML, /Choose the child/);
+});

@@ -54,14 +54,39 @@ export function addObservation(db, input = {}, ctx) {
   return o;
 }
 
-/** Edit while unshared only: what a parent has seen never changes under them. */
+// a photo belongs to the child it was taken of: an observation with one cannot move to another child or be removed
+const LIVE_PHOTO = ['pending', 'ready', 'deleting'];
+const hasLivePhotos = (db, o) => (db.photos || []).some(x => x.observationId === o.id && LIVE_PHOTO.includes(x.status));
+
+/**
+ * Edit while unshared only: what a parent has seen never changes under them. studentId moves an observation written
+ * under the wrong child (not while it has photos).
+ */
 export function editObservation(db, id, patch = {}, ctx) {
   const o = mustGet(db, 'observations', id, 'Observation');
   if (o.sharedAt) fail('VALIDATION', 'A shared observation cannot be edited; add a new one (or unshare it first)');
-  const f = cleanFields(db, { date: o.date, area: o.area, presentationId: o.presentationId, text: o.text, ...patch }, ctx.today);
-  Object.assign(o, f, { editedAt: ctx.now, editedBy: ctx.actor.id });
-  appendAudit(db, ctx, { entity: 'observation', entityId: o.id, action: 'edit', summary: `observation edited (${o.area})` });
+  const { studentId, ...rest } = patch;
+  let moved = null;
+  if (studentId !== undefined && studentId !== o.studentId) {
+    const s = mustGet(db, 'students', studentId, 'Student');
+    if (s.status !== 'active') fail('VALIDATION', 'Student is not active');
+    if (hasLivePhotos(db, o)) fail('VALIDATION', 'This observation has a photo of the child: remove the photo first, then choose the other child');
+    moved = { from: o.studentId, to: s.id, programId: s.programId };
+  }
+  const f = cleanFields(db, { date: o.date, area: o.area, presentationId: o.presentationId, text: o.text, ...rest }, ctx.today);
+  Object.assign(o, f, { editedAt: ctx.now, editedBy: ctx.actor.id }, moved ? { studentId: moved.to, programId: moved.programId } : {});
+  appendAudit(db, ctx, { entity: 'observation', entityId: o.id, action: 'edit', summary: moved ? `observation moved from student ${moved.from} to ${moved.to} (${o.area})` : `observation edited (${o.area})` });
   return o;
+}
+
+/** Remove an unshared observation written in error (no photo left on it). Audited. */
+export function removeObservation(db, id, ctx) {
+  const o = mustGet(db, 'observations', id, 'Observation');
+  if (o.sharedAt) fail('VALIDATION', 'A shared observation cannot be removed; unshare it first');
+  if (hasLivePhotos(db, o)) fail('VALIDATION', 'Remove the photo first');
+  db.observations.splice(db.observations.indexOf(o), 1);
+  appendAudit(db, ctx, { entity: 'observation', entityId: o.id, action: 'remove', summary: `observation removed for student ${o.studentId} (${o.area})` });
+  return { removed: o.id };
 }
 
 export function shareObservation(db, id, ctx) {
