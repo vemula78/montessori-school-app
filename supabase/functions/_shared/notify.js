@@ -90,6 +90,16 @@ export function pushMessages(name, before, after, result) {
       payload: { title: report ? 'Termly report' : 'New from the classroom', body: report ? `${s ? `${s.firstName}'s ` : ''}${result.termName} report is ready` : `A note about ${s ? s.firstName : 'your child'}'s work was shared`,
         url: '#/learning', tag: report ? `report-${result.id}-${result.revision}` : `obs-${result.id}` } });
   }
+  // a message from the school (a reply, or a conversation staff started): the thread's guardian only; never the text
+  const sent = name === 'threads.reply' ? result : name === 'threads.open' ? result && result.messages && result.messages[0] : null;
+  if (sent && sent.threadId && sent.senderRole && sent.senderRole !== 'parent') {
+    const t = byId(after.threads || [], sent.threadId);
+    const s = t && byId(after.students, t.studentId);
+    if (t && t.guardianId) {
+      out.push({ guardianIds: [t.guardianId], studentIds: [t.studentId], purposes: ['push'],
+        payload: { title: 'Message from school', body: `New message about ${s ? s.firstName : 'your child'}`, url: `#/messages/${t.id}`, tag: `msg-${sent.id}` } });
+    }
+  }
   if (name === 'notices.send' && result && result.important) {
     const rs = after.noticeReceipts.filter(r => r.noticeId === result.id);
     out.push({ guardianIds: [...new Set(rs.map(r => r.guardianId))], studentIds: [...new Set(rs.flatMap(r => r.studentIds || []))], purposes: ['push'], payload: { title: 'Important notice', body: result.title, url: `#/notices/${result.id}`, tag: `notice-${result.id}` } });
