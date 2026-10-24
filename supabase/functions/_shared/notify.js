@@ -6,6 +6,7 @@
 
 import { formatPaise } from './domain/money.js';
 import { byId } from './domain/people.js';
+import { stopsForDirection, effectiveChildEvents } from './domain/transport.js';
 
 const STOP_TEXT = { nearing: 'Bus is nearing', arrived: 'Bus has arrived at' };
 const CHILD_TEXT = { boarded: 'boarded the bus at', dropped: 'was dropped at', absent: 'was marked absent at' };
@@ -36,16 +37,26 @@ export function pushEndpointAllowed(url, extraOrigins = []) {
 /** @returns {{guardianIds:string[], studentIds:string[], purposes:string[], payload:{title:string, body:string, url:string, tag:string}}[]} */
 export function pushMessages(name, before, after, result) {
   const out = [];
-  if (name === 'transport.recordPosition' && result && result.newEvents && result.newEvents.length) {
+  // stop events: nearing/arrived to the families at that stop; leaving a stop tells the next stop (visiting order) it is
+  // next, unless the bus is already nearing it. A child marked absent on this trip is left out. A batch of backlog
+  // fixes (recordPositions) can hold several events for one stop: only the latest is news.
+  if ((name === 'transport.recordPosition' || name === 'transport.recordPositions') && result && result.newEvents && result.newEvents.length) {
     const trip = byId(after.trips, result.trip.id);
     const route = trip && byId(after.routes, trip.routeId);
+    const absent = new Set(trip ? effectiveChildEvents(trip).filter(e => e.type === 'absent').map(e => e.studentId) : []);
+    const ridersAt = stopId => after.students.filter(s => s.status === 'active' && s.routeId === route.id && s.stopId === stopId && !absent.has(s.id)).map(s => s.id);
+    const send = (kids, body, tag) => { if (kids.length) out.push({ guardianIds: guardiansOf(after, kids), studentIds: kids, purposes: ['push', 'bus_live'], payload: { title: 'School bus', body, url: '#/bus', tag } }); };
+    const latest = new Map(result.newEvents.map(ev => [ev.stopId, ev]));
+    const order = route ? stopsForDirection(route, trip.direction) : [];
     for (const ev of result.newEvents) {
-      if (!STOP_TEXT[ev.type] || !route || trip.simulated) continue; // a simulated trip (demo, training) never alerts real parents
+      if (!route || trip.simulated || latest.get(ev.stopId) !== ev) continue; // a simulated trip (demo, training) never alerts real parents
       const stop = route.stops.find(s => s.id === ev.stopId);
-      const kids = after.students.filter(s => s.status === 'active' && s.routeId === route.id && s.stopId === ev.stopId).map(s => s.id);
-      if (!kids.length) continue;
-      out.push({ guardianIds: guardiansOf(after, kids), studentIds: kids, purposes: ['push', 'bus_live'],
-        payload: { title: 'School bus', body: `${STOP_TEXT[ev.type]} ${stop ? stop.name : 'your stop'}`, url: '#/bus', tag: `trip-${trip.id}-${ev.stopId}-${ev.type}` } });
+      if (STOP_TEXT[ev.type]) send(ridersAt(ev.stopId), `${STOP_TEXT[ev.type]} ${stop ? stop.name : 'your stop'}`, `trip-${trip.id}-${ev.stopId}-${ev.type}`);
+      const next = ev.type === 'departed' ? order[order.findIndex(s => s.id === ev.stopId) + 1] : null;
+      if (next && !(trip.stopEvents || []).some(e => e.stopId === next.id)) {
+        const at = trip.direction === 'drop' ? next.scheduledDrop : next.scheduledPickup;
+        send(ridersAt(next.id), `Bus left ${stop ? stop.name : 'the previous stop'}. ${next.name} is next${at ? ` (scheduled ${at})` : ''}`, `trip-${trip.id}-${next.id}-next`);
+      }
     }
   }
   if (name === 'transport.markChild' && result && result.studentId) {
@@ -56,6 +67,11 @@ export function pushMessages(name, before, after, result) {
     if (s && CHILD_TEXT[result.type]) {
       out.push({ guardianIds: guardiansOf(after, [s.id]), studentIds: [s.id], purposes: ['push', 'bus_live'],
         payload: { title: 'School bus', body: `${s.firstName} ${CHILD_TEXT[result.type]} ${stop ? stop.name : 'the stop'}`, url: '#/bus', tag: `child-${s.id}-${result.type}-${result.ts}` } });
+    }
+    // an undone mark (a wrong tap): same tag as the wrong message, so the phone replaces it
+    if (s && result.type === 'corrected' && CHILD_TEXT[result.corrects]) {
+      out.push({ guardianIds: guardiansOf(after, [s.id]), studentIds: [s.id], purposes: ['push', 'bus_live'],
+        payload: { title: 'School bus', body: `Correction: ${s.firstName} ${CHILD_TEXT[result.corrects]} ${stop ? stop.name : 'the stop'} was a mistake. Please ignore that message.`, url: '#/bus', tag: `child-${s.id}-${result.corrects}-${result.correctsTs}` } });
     }
   }
   const pay = name === 'fees.recordGatewayPayment' ? (result && result.created ? result.payment : null)

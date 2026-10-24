@@ -14,7 +14,7 @@
 import { todayISO, nowISO, addDays, setBusinessZone, IST_OFFSET_MIN } from '../domain/dates.js';
 import * as T from '../domain/transport.js';
 import { auditMatches } from '../domain/audit.js';
-import { tripOut, consentStatus, allow, mustRoute, STAFF_SEES_ALL } from '../domain/commands.js';
+import { tripOut, consentStatus, allow, mustRoute, visibleRoutes, STAFF_SEES_ALL } from '../domain/commands.js';
 import { makeClient, functionCaller } from './supabase/client.js';
 import { fetchSnapshot } from './supabase/snapshot.js';
 import { subscribeNudges, subscribeTripFeed } from './supabase/realtime.js';
@@ -163,13 +163,34 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     const now = clock();
     return T.parentView(d2, studentId, nowISO(now), todayISO(now));
   });
+  // the route's running trip as the server has it now, stop and child events included: trips are not a snapshot nudge
+  // (a stop event would make every signed-in user re-download it), so the snapshot's copy can be behind
   transport.activeTrip = op(async routeId => {
     const p = me(); const d = db();
     mustRoute(p, d, routeId);
-    const t = T.activeTripFor(d, routeId);
+    const t = (await freshTrips(routeId)).find(x => x.status === 'active');
     if (!t) return null;
     return { ...tripOut(d, t, p), positions: await positionsTail(t.id) };
   });
+  // a GPS fix (or a backlog of them) changes nothing the driver's screens read from the snapshot: no snapshot download
+  // per fix; stop events reach the screens through the trip feed
+  transport.recordPosition = op((...args) => command('transport.recordPosition', args, { reload: false }));
+  // trip history: the trip rows as the server has them now (a trip that ended shows as ended), the last 7 days as in
+  // the snapshot; child events from the snapshot's copy (one more query here could exceed the API's row cap)
+  transport.trips = op(async ({ routeId, date } = {}) => {
+    const p = me(); const d = db();
+    if (p.role === 'parent') throw new ApiError('NOT_ALLOWED', 'Use the bus view for your child');
+    const routeIds = new Set(visibleRoutes(p, d).map(r => r.id));
+    let q = sb.from('trips').select('doc');
+    if (routeId) q = q.eq('route_id', routeId);
+    const { data, error } = await q.gte('date', addDays(todayISO(clock()), -7));
+    if (error) throw new ApiError('OFFLINE', `Could not load the trips (${error.message})`);
+    const known = new Map(d.trips.map(t => [t.id, t]));
+    return (data || []).map(r => ({ ...r.doc, positions: [], childEvents: known.get(r.doc.id)?.childEvents || [] }))
+      .filter(t => routeIds.has(t.routeId) && (!date || t.date === date))
+      .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1)).map(t => tripOut(d, t, p));
+  });
+  transport.recordPositions = op((...args) => command('transport.recordPositions', args, { reload: false }));
   transport.subscribeTrip = (routeId, fn) => {
     const p = me(); const d = db();
     mustRoute(p, d, routeId);

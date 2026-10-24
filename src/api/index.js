@@ -235,6 +235,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     startTrip: cmd('transport.startTrip'),
     endTrip: cmd('transport.endTrip'),
     recordPosition: cmd('transport.recordPosition'),
+    recordPositions: cmd('transport.recordPositions'),
     markChild: cmd('transport.markChild'),
     activeTrip: op(routeId => { const p = me(); mustRoute(p, db(), routeId); const t = T.activeTripFor(db(), routeId); return t ? tripOut(t, p) : null; }),
     /** For the driver's screen, of a trip it holds (from activeTrip): riders not yet marked, each child's standing mark, the next stop, whether the route is finished. */

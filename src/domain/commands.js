@@ -257,6 +257,16 @@ export const COMMANDS = {
       return { trip: tripOut(db, r.trip), newEvents: r.newEvents, rejected: r.rejected ?? null };
     },
   },
+  'transport.recordPositions': {
+    slice: 'transport', load: ([tripId]) => ({ tripId }),
+    authorize: (p, db, [tripId]) => { allow(p, 'admin', 'driver'); driverTrip(p, db, tripId); },
+    // a backlog queued while the phone was offline, in one write (the answer leaves the positions out)
+    run(db, [tripId, fixes], ctx) {
+      const r = T.recordPositions(db, tripId, fixes, ctx);
+      const { positions, ...trip } = tripOut(db, r.trip);
+      return { trip, newEvents: r.newEvents, accepted: r.accepted, rejected: r.rejected };
+    },
+  },
   'transport.markChild': {
     slice: 'transport', load: ([tripId]) => ({ tripId }),
     authorize: (p, db, [tripId]) => { allow(p, 'admin', 'driver'); driverTrip(p, db, tripId); },

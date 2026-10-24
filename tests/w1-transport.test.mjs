@@ -191,6 +191,10 @@ function fake() {
 globalThis.document = { createElement: () => { const d = fake(); dialogs.push(d); return d; }, body: { appendChild() {} }, head: { appendChild() {} }, getElementById: () => null, addEventListener() {}, visibilityState: 'visible' };
 globalThis.location ??= { hash: '', reload() {} };
 const allHtml = el => el.innerHTML + [...el.children.values()].map(allHtml).join('');
+// The real app's entry defines the config before src/api/index.js loads: sim-runner then queues and sends fixes as it
+// does in the real app (its api methods are replaced in the runner tests; nothing touches the network). Screens get
+// a demo api through ctx.
+globalThis.__APP_CONFIG__ = { supabaseUrl: 'http://127.0.0.1:9', supabaseAnonKey: 'test-anon-key', vapidPublicKey: '', gatewayMode: 'test', persistSession: false };
 const { createApi } = await import('../src/api/index.js');
 const { buildSeed } = await import('../src/seed/seed-data.js');
 const { memoryBackend } = await import('../src/store/storage.js');
@@ -306,4 +310,182 @@ test('#70 with no trip running the direction defaults from the time of day, and 
       try { assert.match(d.html(), new RegExp(label)); } finally { d.done(); }
     } finally { mock.timers.reset(); }
   }
+});
+
+// ---------------------------------------------------------------- #62 #65 pushes
+const { pushMessages } = await import('../supabase/functions/_shared/notify.js');
+
+test('#62 when the bus leaves a stop, the next stop\'s families hear "your stop is next"; a child marked absent gets no bus alerts', () => {
+  const db = loopFixture();
+  db.guardians.push({ id: 'GK3', firstName: 'G', lastName: 'Demoson', relation: 'father', phone: '+91-90000-00101', email: 'gk3@example.com', studentIds: ['K3'] });
+  db.students.push({ id: 'K3', firstName: 'Ravi', lastName: 'Demoson', dob: '2022-01-01', programId: 'PA', admissionNo: 'K3', status: 'active', guardianIds: ['GK3'], routeId: 'R1', stopId: 'S2', feeCategory: 'regular', healthNotes: null });
+  const r = db.routes[0];
+  const trip = T.startTrip(db, { routeId: 'R1', direction: 'pickup' }, ctx());
+  T.markChild(db, trip.id, { studentId: 'K2', type: 'absent' }, ctx(BASE_MS + 500));
+  const msgs = [];
+  for (const f of drive([{ lat: 12.966, lng: 77.750 }, r.stops[0], r.stops[1]])) {
+    const res = T.recordPosition(db, trip.id, f);
+    msgs.push(...pushMessages('transport.recordPosition', db, db, res));
+  }
+  const next = msgs.filter(m => m.payload.tag === `trip-${trip.id}-S2-next`);
+  assert.equal(next.length, 1);
+  assert.equal(next[0].payload.body, 'Bus left First. Second is next (scheduled 07:35)');
+  assert.deepEqual(next[0].guardianIds, ['GK3'], 'Asha is absent today: her family is not alerted');
+  assert.equal(msgs.filter(m => m.studentIds.includes('K2')).length, 0, 'no nearing/arrived for the absent child either');
+  assert.ok(msgs.some(m => /nearing Second/.test(m.payload.body) && m.guardianIds.includes('GK3')));
+});
+
+test('#58 #62 a batch of backlog fixes pushes only the latest event per stop (no stale "nearing" after the bus has left)', () => {
+  const db = loopFixture();
+  const trip = T.startTrip(db, { routeId: 'R1', direction: 'pickup' }, ctx());
+  const t = iso(BASE_MS + 5000);
+  const newEvents = [{ stopId: 'S1', type: 'nearing', ts: t }, { stopId: 'S1', type: 'arrived', ts: t }, { stopId: 'S1', type: 'departed', ts: t }];
+  trip.stopEvents.push(...newEvents);
+  const msgs = pushMessages('transport.recordPositions', db, db, { trip, newEvents });
+  assert.deepEqual(msgs.map(m => m.payload.body), ['Bus left First. Second is next (scheduled 07:35)']);
+});
+
+test('#65 undoing a mark sends a correction that replaces the wrong notification on the phone', () => {
+  const db = loopFixture();
+  const trip = T.startTrip(db, { routeId: 'R1', direction: 'pickup' }, ctx());
+  const wrong = T.markChild(db, trip.id, { studentId: 'K2', type: 'absent' }, ctx(BASE_MS + 60000));
+  const [first] = pushMessages('transport.markChild', db, db, wrong);
+  const fix = T.markChild(db, trip.id, { studentId: 'K2', type: 'corrected' }, ctx(BASE_MS + 70000));
+  const [corr] = pushMessages('transport.markChild', db, db, fix);
+  assert.equal(corr.payload.tag, first.payload.tag, 'same tag: the phone replaces the wrong message');
+  assert.match(corr.payload.body, /^Correction: Asha was marked absent at Second was a mistake/);
+  assert.deepEqual(corr.guardianIds, ['GK2']);
+});
+
+// ---------------------------------------------------------------- #58 backlog in one write
+test('#58 recordPositions takes a backlog in one write: each fix as recordPosition would, refusals listed, not fatal', () => {
+  const db = loopFixture();
+  const trip = T.startTrip(db, { routeId: 'R1', direction: 'pickup' }, ctx());
+  const fixes = drive([{ lat: 12.966, lng: 77.750 }, db.routes[0].stops[0]]).slice(0, 13);
+  const dup = fixes[3];
+  const out = COMMANDS['transport.recordPositions'].run(db, [trip.id, [...fixes.slice(0, 4), dup, ...fixes.slice(4), { lat: 'x', lng: 1, accuracy: 5, ts: iso(BASE_MS + 999999) }]], ctx(BASE_MS + 120000));
+  assert.equal(out.accepted, 13);
+  assert.deepEqual(out.rejected, ['not newer than the last fix', 'Invalid coordinates']);
+  assert.deepEqual(out.newEvents.map(e => `${e.stopId}:${e.type}`), ['S1:nearing', 'S1:arrived']);
+  assert.equal(out.trip.positions, undefined, 'the answer does not carry the positions back');
+  assert.throws(() => COMMANDS['transport.recordPositions'].run(db, [trip.id, []], ctx()), { code: 'VALIDATION' });
+  assert.throws(() => COMMANDS['transport.recordPositions'].run(db, [trip.id, Array(101).fill(fixes[0])], ctx()), { code: 'VALIDATION' });
+});
+
+// ---------------------------------------------------------------- sim-runner (real-app mode, api methods replaced)
+const { api: appApi } = await import('../src/api/index.js');
+const netErr = () => Object.assign(new Error('Failed to fetch'), { code: 'NETWORK' });
+const gpsFix = (nav, n, kind = 'watch') => {
+  const pos = { coords: { latitude: 12.9 + n / 1e4, longitude: 77.6, accuracy: 5 }, timestamp: Date.parse('2026-10-05T03:00:00Z') + n * 60000 };
+  (kind === 'watch' ? nav.watched.at(-1).ok : nav.onCurrent)(pos);
+  return new Promise(r => setImmediate(r));
+};
+
+test('#58 after a dead zone the queued fixes go out in one batched request, not one request each', async () => {
+  const nav = stubNavigator();
+  appApi.session.current = () => ({ id: 'drv-1' });
+  let offline = true;
+  const singles = [], batches = [];
+  appApi.transport.recordPosition = async (t, f) => { singles.push(f); if (offline) throw netErr(); return {}; };
+  appApi.transport.recordPositions = async (t, fs) => { batches.push(fs.length); if (offline) throw netErr(); return { accepted: fs.length, rejected: [] }; };
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  try {
+    runner.startGps('trip-1', 'r1');
+    for (let n = 1; n <= 4; n++) await gpsFix(nav, n);
+    assert.equal(runner.snapshot().queued, 4);
+    offline = false;
+    const before = singles.length;
+    await runner.flushNow();
+    assert.equal(runner.snapshot().queued, 0);
+    assert.equal(batches.at(-1), 4, 'the whole backlog in one call');
+    assert.equal(singles.length, before, 'no single sends for the backlog');
+    assert.equal(runner.snapshot().sent, 4);
+  } finally { mock.timers.reset(); runner.resetAfterTripEnd(); }
+});
+
+test('#60 with no GPS callback for 20 s the runner asks for a fresh fix and sends it; a watch timeout right after a fix is not an error', async () => {
+  const nav = stubNavigator();
+  appApi.session.current = () => ({ id: 'drv-1' });
+  const sent = [];
+  appApi.transport.recordPosition = async (t, f) => { sent.push(f); return {}; };
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-10-05T03:00:00Z') });
+  try {
+    runner.startGps('trip-1', 'r1');
+    mock.timers.tick(20000);
+    assert.equal(nav.current, 1, 'getCurrentPosition after 20 s of silence');
+    assert.equal(nav.currentOpts.maximumAge, 0, 'a fresh fix, never a cached one');
+    await gpsFix(nav, 1, 'current');
+    assert.equal(sent.length, 1, 'the fresh fix is sent (parents see the bus is alive)');
+    mock.timers.tick(10000);
+    nav.watched.at(-1).err({ code: 3, message: 'Timeout expired' });
+    assert.equal(runner.snapshot().gps.status, 'ok', 'standing still is not a GPS failure');
+    mock.timers.tick(70000);
+    nav.watched.at(-1).err({ code: 3, message: 'Timeout expired' });
+    assert.equal(runner.snapshot().gps.status, 'timeout', 'a long silence still shows');
+  } finally { mock.timers.reset(); runner.resetAfterTripEnd(); }
+});
+
+// ---------------------------------------------------------------- remote api (fake Supabase client)
+const { createRemoteApi } = await import('../src/api/remote.js');
+const { createSurface, ApiError, toApiError, op } = await import('../src/api/index.js');
+const { subscribeNudges } = await import('../src/api/supabase/realtime.js');
+
+function fakeSb({ snapshot, tables = {} }) {
+  const session = { user: { id: 'u-drv', email: 'driver1@example.com' }, access_token: 't' };
+  const sb = {
+    rpcs: 0, channels: [],
+    auth: { getSession: async () => ({ data: { session } }), onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }), signOut: async () => ({}) },
+    rpc: async () => { sb.rpcs += 1; return { data: snapshot(), error: null }; },
+    from(table) {
+      const q = { table, filters: [] };
+      const b = {
+        select() { return b; }, eq(c, v) { q.filters.push(['eq', c, v]); return b; }, gte(c, v) { q.filters.push(['gte', c, v]); return b; },
+        in(c, v) { q.filters.push(['in', c, v]); return b; }, order() { return b; }, limit() { return b; },
+        then(res, rej) { return Promise.resolve(tables[table] ? tables[table](q) : { data: [], error: null }).then(res, rej); },
+      };
+      return b;
+    },
+    channel(name) { const ch = { name, tables: [], on(_t, f) { ch.tables.push(f.table); return ch; }, subscribe() { return ch; } }; sb.channels.push(ch); return ch; },
+    removeChannel() {},
+  };
+  return sb;
+}
+
+test('#57 #72 real app: a GPS fix or a backlog does not re-download the school snapshot; the driver\'s trip is read fresh from the server', async () => {
+  const NOW2 = new Date();
+  const seedDb = buildSeed(NOW2);
+  const me = { userId: 'u-drv', role: 'driver', staffId: 'stf-driver-1', guardianId: null };
+  const tripDoc = { id: 'trp-live', routeId: 'route-1', direction: 'pickup', date: seedDb.trips[0]?.date || '2026-10-02', driverId: 'stf-driver-1', simulated: false, status: 'active',
+    startedAt: new Date(Date.now() - 60000).toISOString(), endedAt: null, stopEvents: [{ stopId: 'route-1-stop-1', type: 'arrived', ts: new Date().toISOString() }] };
+  const snapTrip = { ...tripDoc, stopEvents: [], positions: [], childEvents: [] }; // what the (older) snapshot holds
+  const sb = fakeSb({
+    snapshot: () => ({ status: 'active', me, revs: {}, remindersSent: [], ...structuredClone(seedDb), trips: [snapTrip], auditLog: [] }),
+    tables: {
+      trips: q => ({ data: q.filters.every(f => f[1] !== 'route_id' || f[2] === 'route-1') ? [{ doc: tripDoc }] : [], error: null }),
+      trip_child_events: () => ({ data: [{ trip_id: 'trp-live', seq: 1, doc: { studentId: 'stu-01', stopId: 'route-1-stop-1', type: 'boarded', ts: new Date().toISOString(), by: 'stf-driver-1' } }], error: null }),
+      trip_positions: () => ({ data: [{ lat: 12.9, lng: 77.6, accuracy: 5, ts: new Date().toISOString() }], error: null }),
+    },
+  });
+  const called = [];
+  const api = await createRemoteApi({ supabaseUrl: 'http://127.0.0.1:9', supabaseAnonKey: 'x' }, { createSurface, ApiError, toApiError, op, sb,
+    call: async (fn, body) => { called.push(body.name); return { result: { trip: { id: 'trp-live' }, newEvents: [], rejected: null, accepted: 1 } }; } });
+  await api.ready();
+  const after = sb.rpcs;
+  const fix = { lat: 12.9, lng: 77.6, accuracy: 5, ts: new Date().toISOString() };
+  await api.transport.recordPosition('trp-live', fix);
+  await api.transport.recordPositions('trp-live', [fix, fix]);
+  assert.deepEqual(called, ['transport.recordPosition', 'transport.recordPositions']);
+  assert.equal(sb.rpcs, after, 'no snapshot download per fix');
+  const t = await api.transport.activeTrip('route-1');
+  assert.deepEqual(t.stopEvents.map(e => e.type), ['arrived'], 'stop events from the server, not the older snapshot');
+  assert.deepEqual(t.childEvents.map(e => e.type), ['boarded']);
+  assert.equal(t.positions.length, 1);
+  const hist = await api.transport.trips({});
+  assert.deepEqual(hist.map(x => [x.id, x.stopEvents.length]), [['trp-live', 1]], 'trip history from the server too');
+
+  const nudges = fakeSb({ snapshot: () => null });
+  subscribeNudges(nudges, () => {});
+  const tables = nudges.channels.flatMap(c => c.tables);
+  assert.ok(!tables.includes('trips') && !tables.includes('trip_child_events'), 'a stop event no longer makes every signed-in user re-download the snapshot');
+  assert.ok(tables.includes('messages'));
 });

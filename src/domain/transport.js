@@ -234,6 +234,30 @@ export function recordPosition(db, tripId, { lat, lng, accuracy, ts }, ctx = nul
   return { trip, newEvents };
 }
 
+export const MAX_BATCH = 100;
+
+/**
+ * A backlog of fixes (oldest first) in one write, each taken exactly as recordPosition takes it. A refused or invalid
+ * fix is listed in `rejected` and skipped; only an ended trip fails the whole batch.
+ */
+export function recordPositions(db, tripId, fixes, ctx = null) {
+  if (!Array.isArray(fixes) || !fixes.length || fixes.length > MAX_BATCH) fail('VALIDATION', `Send 1 to ${MAX_BATCH} positions at a time`);
+  const trip = mustGet(db, 'trips', tripId, 'Trip');
+  if (trip.status !== 'active') fail('VALIDATION', 'Trip has ended');
+  const newEvents = [], rejected = [];
+  let accepted = 0;
+  for (const f of fixes) {
+    try {
+      const r = recordPosition(db, tripId, f || {}, ctx);
+      if (r.rejected) rejected.push(r.rejected); else { accepted += 1; newEvents.push(...r.newEvents); }
+    } catch (e) {
+      if (e?.code !== 'VALIDATION') throw e;
+      rejected.push(e.message);
+    }
+  }
+  return { trip, newEvents, accepted, rejected };
+}
+
 /** type 'corrected' undoes the child's latest standing mark (a wrong tap); the parent is told it was a mistake. */
 export function markChild(db, tripId, { studentId, stopId, type }, ctx) {
   const trip = mustGet(db, 'trips', tripId, 'Trip');

@@ -7,7 +7,10 @@ import { isRealMode } from './mode.js';
 // Real app only: GPS fixes are sent over the network, so they are thinned before sending and queued (in order)
 // while the phone is offline. The demo records straight into browser storage and is unchanged.
 const REAL = isRealMode();
-const SEND_EVERY_MS = 3000, SEND_EVERY_M = 5, HEARTBEAT_MS = 20000, QUEUE_CAP = 500, RETRY_MS = 5000;
+// SEND_EVERY_MS matches the server's downsampling (5 s / 10 m): a fix sent sooner would only be dropped there.
+// A backlog (after a dead zone) goes out BATCH fixes per request. A watch timeout within STATIONARY_MS of the last
+// fix means the bus is standing still, not that GPS failed.
+const SEND_EVERY_MS = 5000, SEND_EVERY_M = 5, HEARTBEAT_MS = 20000, QUEUE_CAP = 500, RETRY_MS = 5000, BATCH = 50, STATIONARY_MS = 60000;
 const queue = [];
 let retryTimer = null;
 let lastSent = null; // {lat,lng,at}
@@ -28,6 +31,8 @@ const state = {
   total: 0,
   timer: null,
   watchId: null,
+  heartbeat: null, // real GPS: asks for a fresh fix when the browser has delivered none for HEARTBEAT_MS
+  lastFixAt: 0,
   wakeLock: null,
   gps: { status: 'idle', message: '', lastFixTs: null, accuracy: null, fixes: 0 }, // idle|waiting|ok|denied|unavailable|timeout|insecure|unsupported
   lastError: null,
@@ -37,7 +42,7 @@ const state = {
 const listeners = new Set();
 const emit = () => listeners.forEach((f) => { try { f(snapshot()); } catch { /* listener failure must not stop the runner */ } });
 
-export const snapshot = () => ({ ...state, gps: { ...state.gps }, timer: undefined, queued: queue.length });
+export const snapshot = () => ({ ...state, gps: { ...state.gps }, timer: undefined, heartbeat: undefined, queued: queue.length });
 export function onState(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 export const isRunning = () => state.mode !== 'idle';
 export const runningTripId = () => state.tripId;
@@ -97,11 +102,21 @@ async function doFlush() {
         state.lastError = 'Positions recorded under another trip or sign-in were discarded, not sent.';
         continue;
       }
+      // a backlog goes out in batches: the following fixes of the same trip and sign-in, up to BATCH, in one request
+      let n = 1;
+      while (n < Math.min(queue.length, BATCH) && queue[n].tripId === item.tripId && queue[n].personaId === item.personaId) n += 1;
+      const batch = queue.slice(0, n);
       try {
-        const r = await api.transport.recordPosition(item.tripId, item.fix);
-        if (queue[0] === item) queue.shift();
-        if (r && r.rejected) state.lastError = `A position was refused by the server (${r.rejected}) and skipped.`; else state.lastError = null;
-        state.sent += 1; state.online = true;
+        if (n === 1) {
+          const r = await api.transport.recordPosition(item.tripId, item.fix);
+          if (r && r.rejected) state.lastError = `A position was refused by the server (${r.rejected}) and skipped.`; else state.lastError = null;
+        } else {
+          const r = await api.transport.recordPositions(item.tripId, batch.map((b) => b.fix));
+          const refused = r?.rejected || [];
+          state.lastError = refused.length ? `${refused.length} position${refused.length === 1 ? ' was' : 's were'} refused by the server (${refused[0]}) and skipped.` : null;
+        }
+        if (queue[0] === item) queue.splice(0, n);
+        state.sent += n; state.online = true;
       } catch (e) {
         if (isNetworkError(e)) { state.online = false; break; }
         notifyQuota(e);
@@ -174,6 +189,17 @@ export async function startSimulated(tripId, routeId, plan, { speedUp = 1 } = {}
 }
 
 // ---- real GPS ----
+function onFix(pos) {
+  state.lastFixAt = Date.now();
+  state.gps = { status: 'ok', message: '', lastFixTs: new Date().toISOString(), accuracy: pos.coords.accuracy, fixes: state.gps.fixes + 1 };
+  feed({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, ts: new Date(pos.timestamp).toISOString() });
+}
+// Some phones deliver no watch callbacks while the bus stands still: ask for a real, fresh fix instead (never re-stamp an old one).
+function heartbeat() {
+  if (state.mode !== 'gps' || Date.now() - state.lastFixAt < HEARTBEAT_MS) return;
+  try { navigator.geolocation.getCurrentPosition((pos) => { if (state.mode === 'gps') onFix(pos); }, () => { /* the watch reports errors */ }, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }); } catch { /* ignore */ }
+}
+
 export function startGps(tripId, routeId) {
   stop();
   const sup = geoSupport();
@@ -188,12 +214,13 @@ export function startGps(tripId, routeId) {
   state.mode = 'gps';
   state.gps = { status: 'waiting', message: 'Waiting for the first GPS fix. Allow location access if the browser asks.', lastFixTs: null, accuracy: null, fixes: 0 };
   acquireWakeLock().then(emit);
+  state.lastFixAt = Date.now();
+  state.heartbeat = setInterval(heartbeat, HEARTBEAT_MS);
   state.watchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      state.gps = { status: 'ok', message: '', lastFixTs: new Date().toISOString(), accuracy: pos.coords.accuracy, fixes: state.gps.fixes + 1 };
-      feed({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, ts: new Date(pos.timestamp).toISOString() });
-    },
+    onFix,
     (err) => {
+      // a timeout soon after a good fix: the bus is standing still (no new position to report), not a GPS failure
+      if (err.code === 3 && state.gps.lastFixTs && Date.now() - Date.parse(state.gps.lastFixTs) < STATIONARY_MS) return;
       // Surface every failure as a visible state; the marker never silently freezes.
       const map = {
         1: ['denied', 'Location permission was denied. Enable location for this site in the browser settings, then start again.'],
@@ -202,7 +229,7 @@ export function startGps(tripId, routeId) {
       };
       const [status, message] = map[err.code] || ['unavailable', err.message || 'Unknown location error'];
       state.gps = { ...state.gps, status, message };
-      if (err.code === 1) { navigator.geolocation.clearWatch(state.watchId); state.watchId = null; state.mode = 'idle'; releaseWakeLock(); }
+      if (err.code === 1) { navigator.geolocation.clearWatch(state.watchId); state.watchId = null; clearInterval(state.heartbeat); state.heartbeat = null; state.mode = 'idle'; releaseWakeLock(); }
       emit();
     },
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
@@ -215,6 +242,8 @@ export function stop(reason) {
   if (reason) state.lastError = reason;
   if (state.timer) clearTimeout(state.timer);
   state.timer = null;
+  if (state.heartbeat) clearInterval(state.heartbeat);
+  state.heartbeat = null;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   queue.length = 0; // unsent fixes belong to the run that is ending
