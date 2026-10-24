@@ -1,22 +1,46 @@
 // Two-way parent <-> teacher messaging. Read receipts are set by the api only when the *other* party opens a thread.
+// A parent may also write to the school office (fees: the accountant and the principal read it) or to the principal.
+// Outside office hours the parent is told when the school will reply; nothing is blocked.
 import { esc, icon, badge, empty, pageHead, fdatetime, ftime, fullName, indexBy, formModal, attempt, notFoundOrThrow, notifyQuota, DASH, options } from '../components.js';
 
 const me = (p) => p.guardianId || p.staffId;
 
 function senderName(db, m) {
   if (m.senderRole === 'parent') return fullName(db.guardians.find((g) => g.id === m.senderId));
-  return fullName(db.staff.find((s) => s.id === m.senderId));
+  const s = db.staff.find((x) => x.id === m.senderId);
+  return s ? fullName(s) : m.senderRole === 'accountant' ? 'School office' : DASH; // a family may not hold the office's staff record
 }
 
-async function newThread(ctx) {
+const TO_LABEL = { teacher: 'Your child’s teacher', accountant: 'School office (fees)', principal: 'Principal' };
+const DAY = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const hoursText = (h) => {
+  const d = [...h.days].sort();
+  const run = d.length > 2 && d.every((x, i) => !i || x === d[i - 1] + 1);
+  return `${run ? `${DAY[d[0]].slice(0, 3)}-${DAY[d.at(-1)].slice(0, 3)}` : d.map((x) => DAY[x].slice(0, 3)).join(', ')} ${h.start}-${h.end}`;
+};
+/** "The school will reply during office hours (Mon-Fri 08:30-16:00; next: tomorrow at 08:30)." or '' when open or no hours are set. */
+export function officeHoursNote(st) {
+  if (!st?.set || st.open || !st.hours) return '';
+  const n = st.nextOpen;
+  const when = !n ? '' : n.inDays === 0 ? `today at ${n.time}` : n.inDays === 1 ? `tomorrow at ${n.time}` : `${DAY[n.day]} at ${n.time}`;
+  return `The school will reply during office hours (${hoursText(st.hours)}${when ? `; next: ${when}` : ''}).`;
+}
+const hoursBanner = (st) => { const t = officeHoursNote(st); return t ? `<div class="banner" role="status">${esc(t)}</div>` : ''; };
+const officeStatus = (api) => api.school.officeHours().catch(() => null); // unknown: nothing is said
+
+/** New conversation. preset {to, studentId, subject}: "Ask the office about fees" opens it addressed to the office. */
+export async function newThread(ctx, preset = {}) {
   const { api, db, persona } = ctx;
+  const parent = persona.role === 'parent';
   let kids;
-  if (persona.role === 'parent') kids = (await api.people.childrenOf(persona.guardianId)).filter((k) => k.status === 'active');
+  if (parent) kids = (await api.people.childrenOf(persona.guardianId)).filter((k) => k.status === 'active');
   else kids = (await api.people.students()).filter((s) => s.status === 'active');
-  const fields = `
-    <label class="field"><span class="lbl">About child</span><select name="studentId" id="nt-student" required>${options(kids.map((k) => ({ value: k.id, label: fullName(k) })), '', { blank: 'Choose child' })}</select></label>
-    ${persona.role === 'parent' ? '' : '<label class="field"><span class="lbl">To guardian</span><select name="guardianId" id="nt-guardian" required><option value="">Choose child first</option></select></label>'}
-    <label class="field"><span class="lbl">Subject</span><input name="subject" required maxlength="120"></label>
+  const note = parent ? officeHoursNote(await officeStatus(api)) : '';
+  const fields = `${note ? `<div class="banner" role="status">${esc(note)}</div>` : ''}
+    ${parent ? `<label class="field"><span class="lbl">To</span><select name="to">${options(Object.entries(TO_LABEL).map(([value, label]) => ({ value, label })), preset.to || 'teacher')}</select></label>` : ''}
+    <label class="field"><span class="lbl">About child</span><select name="studentId" id="nt-student" required>${options(kids.map((k) => ({ value: k.id, label: fullName(k) })), preset.studentId || (parent && kids.length === 1 ? kids[0].id : ''), { blank: 'Choose child' })}</select></label>
+    ${parent ? '' : '<label class="field"><span class="lbl">To guardian</span><select name="guardianId" id="nt-guardian" required><option value="">Choose child first</option></select></label>'}
+    <label class="field"><span class="lbl">Subject</span><input name="subject" required maxlength="120" value="${esc(preset.subject || '')}"></label>
     <label class="field"><span class="lbl">Message</span><textarea name="body" required></textarea></label>`;
   let createdId = null;
   const ok = await formModal({
@@ -32,9 +56,10 @@ async function newThread(ctx) {
     },
     onSubmit: async (v) => {
       if (!v.studentId) throw new Error('Choose a child.');
-      const guardianId = persona.role === 'parent' ? persona.guardianId : v.guardianId;
+      const guardianId = parent ? persona.guardianId : v.guardianId;
       if (!guardianId) throw new Error('Choose a guardian.');
-      const t = await api.threads.open({ guardianId, studentId: v.studentId, subject: v.subject.trim(), body: v.body.trim() });
+      const to = parent ? v.to : persona.role === 'accountant' ? 'accountant' : undefined; // the office writes as the office
+      const t = await api.threads.open({ guardianId, studentId: v.studentId, subject: v.subject.trim(), body: v.body.trim(), ...(to ? { to } : {}) });
       createdId = t?.id || t?.thread?.id || null;
     },
   });
@@ -44,6 +69,9 @@ async function newThread(ctx) {
 async function list(ctx) {
   const { api, db, persona } = ctx;
   const threads = await api.threads.list();
+  const hours = persona.role === 'parent' ? await officeStatus(api) : null;
+  const SUB = { parent: 'Talk to your child’s teacher or the school office', accountant: 'Fee questions from parents' };
+  const toBadge = (t) => (t.to === 'accountant' && persona.role !== 'accountant' ? ` ${badge('School office', 'info')}` : t.to === 'principal' ? ` ${badge('Principal', 'info')}` : '');
   const stu = indexBy(db.students);
   const prog = indexBy(db.programs);
   const rows = threads.map((t) => {
@@ -53,9 +81,10 @@ async function list(ctx) {
     const unread = msgs.filter((m) => !m.readAt && fromOtherSide(m)).length;
     return { t, last, unread };
   }).sort((a, b) => ((a.last?.sentAt || a.t.createdAt) < (b.last?.sentAt || b.t.createdAt) ? 1 : -1));
-  ctx.el.innerHTML = `${pageHead('Messages', persona.role === 'parent' ? 'Talk to your child’s teacher' : 'Conversations with parents', `<button class="btn primary" id="t-new">${icon('plus', 'sm')} New message</button>`)}
+  ctx.el.innerHTML = `${pageHead('Messages', SUB[persona.role] || 'Conversations with parents', `<button class="btn primary" id="t-new">${icon('plus', 'sm')} New message</button>`)}
+    ${hoursBanner(hours)}
     ${rows.length ? `<ul class="list card-list">${rows.map(({ t, last, unread }) => `<li class="link"><a href="#/messages/${esc(t.id)}">
-      <div class="row between"><div class="item-title">${esc(t.subject)}</div>${unread ? badge(`${unread} new`, 'clay') : t.status === 'closed' ? badge('Closed', 'mute') : ''}</div>
+      <div class="row between"><div class="item-title">${esc(t.subject)}${toBadge(t)}</div>${unread ? badge(`${unread} new`, 'clay') : t.status === 'closed' ? badge('Closed', 'mute') : ''}</div>
       <small>${esc(fullName(stu.get(t.studentId)))} &middot; ${esc(prog.get(t.programId)?.name || DASH)} &middot; ${last ? fdatetime(last.sentAt) : DASH}</small>
       ${last ? `<div class="muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(last.body)}</div>` : ''}</a></li>`).join('')}</ul>` : empty('No conversations yet', 'Start one with "New message".')}`;
   ctx.el.querySelector('#t-new').addEventListener('click', async () => {
@@ -72,13 +101,15 @@ async function detail(ctx) {
   const { thread, messages } = got;
   const stu = db.students.find((s) => s.id === thread.studentId);
   const mine = (m) => m.senderRole === persona.role && m.senderId === me(persona);
+  const hours = persona.role === 'parent' && thread.status !== 'closed' ? await officeStatus(api) : null;
+  const withWhom = thread.to === 'accountant' ? ' &middot; School office (fees)' : thread.to === 'principal' ? ' &middot; Principal' : '';
   const dayOf = (m) => fdatetime(m.sentAt).split(' ')[0]; // DD-MMM-YYYY, in the same zone as the HH:MM under each bubble
   ctx.el.innerHTML = `<p><a href="#/messages">&larr; All messages</a></p>
-    <div class="page-head"><div><h1>${esc(thread.subject)}</h1><div class="sub">About ${esc(fullName(stu))} &middot; ${esc(db.programs.find((p) => p.id === thread.programId)?.name || DASH)}</div></div>
+    <div class="page-head"><div><h1>${esc(thread.subject)}</h1><div class="sub">About ${esc(fullName(stu))} &middot; ${esc(db.programs.find((p) => p.id === thread.programId)?.name || DASH)}${withWhom}</div></div>
       ${thread.status === 'closed' ? badge('Closed', 'mute') : persona.role !== 'parent' ? '<button class="btn sm" id="t-close">Close conversation</button>' : ''}</div>
     <div class="bubbles" aria-live="polite">${messages.map((m, i) => `${dayOf(m) !== (i ? dayOf(messages[i - 1]) : '') ? `<small class="bubble-day muted">${esc(dayOf(m))}</small>` : ''}<div class="bubble ${mine(m) ? 'mine' : ''}">${esc(m.body)}<span class="meta">${esc(senderName(db, m))} &middot; ${ftime(m.sentAt)}${mine(m) ? (m.readAt ? ` &middot; Read ${ftime(m.readAt)}` : ' &middot; Sent') : ''}</span></div>`).join('')}</div>
     ${thread.status === 'closed' ? '<div class="banner" style="margin-top:14px">This conversation is closed.</div>' : `
-    <form id="t-reply" class="stack" style="margin-top:14px"><label class="field"><span class="lbl">Reply</span><textarea name="body" required></textarea></label><button class="btn primary" type="submit">Send reply</button></form>`}`;
+    ${hours && officeHoursNote(hours) ? `<div style="margin-top:14px">${hoursBanner(hours)}</div>` : ''}<form id="t-reply" class="stack" style="margin-top:14px"><label class="field"><span class="lbl">Reply</span><textarea name="body" required></textarea></label><button class="btn primary" type="submit">Send reply</button></form>`}`;
   ctx.el.querySelector('#t-reply')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = e.target.body.value.trim();

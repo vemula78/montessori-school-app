@@ -1,10 +1,11 @@
 // Invoices: staff list + detail (concessions, late fee, cancel); parent view with online payment
 // (a mock in the demo, the real payment provider in the real app).
-import { todayISO } from '../../domain/dates.js';
-import { rupeesToPaise } from '../../domain/money.js';
-import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, dueHint, isDueNow, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH, PAYMENT_MODE_LABEL, CONCESSION_LABEL } from '../components.js';
+import { todayISO, addDays } from '../../domain/dates.js';
+import { rupeesToPaise, formatPaise } from '../../domain/money.js';
+import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, dueHint, isDueNow, formModal, confirmDialog, openModal, attempt, toast, fullName, notFoundOrThrow, DASH, PAYMENT_MODE_LABEL, CONCESSION_LABEL } from '../components.js';
 import { isRealMode } from '../mode.js';
 import { payOnline, resumePending } from './pay-online.js';
+import { newThread } from './threads.js';
 
 const REAL = isRealMode();
 
@@ -36,7 +37,10 @@ async function staffList(ctx) {
   const leftWithDues = db.students.filter((s) => owing.has(s.id));
 
   const extra = REAL ? '<a class="btn" href="#/fees/late-fees">Late fees due</a><a class="btn" href="#/reminders">Reminders sent</a>' : '';
-  ctx.el.innerHTML = `${pageHead('Fees', 'Invoices for the current academic year', `${extra}<a class="btn" href="#/fees/structures">Fee structures</a>`)}
+  let upiToCheck = null; // unknown: the link stays, without a count
+  try { upiToCheck = (await api.fees.claims({ status: 'pending' })).length; } catch { /* the UPI page says why */ }
+  const upiBtn = `<a class="btn" href="#/fees/upi">UPI reports${upiToCheck ? ` ${badge(String(upiToCheck), 'clay')}` : ''}</a>`;
+  ctx.el.innerHTML = `${pageHead('Fees', 'Invoices for the current academic year', `${upiBtn}${extra}<a class="btn" href="#/fees/structures">Fee structures</a>`)}
     <div class="grid cols-3" style="margin-bottom:14px">
       <div class="kpi"><div class="v">${money(sum(live, 'totalPaise'))}</div><div class="l">invoiced (after concessions)</div></div>
       <div class="kpi good"><div class="v">${money(sum(live, 'paidPaise'))}</div><div class="l">collected (net of refunds)</div></div>
@@ -81,11 +85,57 @@ async function mockPay(ctx, student, invoices) {
   if (res.ok) ctx.go(`/print/receipt/${res.value.id}`);
 }
 
+// ---------------- parent: UPI straight to the school (#81) ----------------
+// The parent pays from their own UPI app (a upi://pay link with the amount and the invoice numbers), then reports the
+// UPI reference. The office checks it against the bank statement; only its confirmation makes a receipt.
+const CLAIM_BADGE = { pending: ['Waiting for the school to check', 'warn'], confirmed: ['Confirmed', 'ok'], rejected: ['Not confirmed', 'bad'] };
+function claimList(claims) {
+  if (!claims.length) return '';
+  return `<div><div class="lbl" style="font-weight:800;font-size:.82rem">UPI payments you reported</div><ul class="list">${claims.slice(0, 5).map((c) => `<li><div class="row between"><div>
+    <span class="num">${money(c.amountPaise)}</span> <small>UPI ref. ${esc(c.reference)} &middot; paid ${fdate(c.paidOn)}</small>
+    ${c.status === 'confirmed' && c.paymentId ? `<br><small><a href="#/print/receipt/${esc(c.paymentId)}">Receipt ${esc(c.receiptNumber || '')}</a></small>` : ''}
+    ${c.status === 'rejected' ? `<br><small>Reason: ${esc(c.rejectReason || DASH)}</small>` : ''}</div>${badge(...(CLAIM_BADGE[c.status] || [c.status, 'mute']))}</div></li>`).join('')}</ul></div>`;
+}
+
+async function upiPay(ctx, kid, link) {
+  const r = await openModal({
+    title: `Pay by UPI: ${kid.firstName}`,
+    body: `<div class="stack"><p style="margin:0">Pay <strong>${money(link.amountPaise)}</strong> straight to the school's bank account from your own UPI app.</p>
+      <a class="btn primary block" href="${esc(link.link)}">Open UPI app to pay ${money(link.amountPaise)}</a>
+      <p class="help" style="margin:0">If no app opens (or on a computer), pay to the UPI ID <strong>${esc(link.vpa)}</strong> (${esc(link.payeeName)}) with the note &ldquo;${esc(link.note)}&rdquo;.</p>
+      <p class="help" style="margin:0">After paying, tap &ldquo;I have paid&rdquo; and give the UPI reference from your app. The school office checks it with the bank and then issues the receipt.</p></div>`,
+    actions: [{ label: 'Close', value: null }, { label: 'I have paid', kind: 'primary', value: 'claim' }],
+  });
+  return r === 'claim';
+}
+
+async function reportUpi(ctx, kid, open, scope, amountPaise) {
+  const today = todayISO();
+  const rupees = amountPaise > 0 ? formatPaise(amountPaise, { symbol: false }).replace(/,/g, '') : '';
+  return formModal({
+    title: `UPI payment for ${kid.firstName}`, submitLabel: 'Send to the school office',
+    fieldsHtml: `<fieldset style="border:1px solid var(--line);border-radius:12px;padding:10px 12px"><legend style="font-weight:800;font-size:.82rem">Paid for</legend>
+        ${open.map((i) => `<label class="check"><input type="checkbox" name="inv" value="${esc(i.id)}"${scope.includes(i.id) ? ' checked' : ''}> <span>${esc(i.installmentName)} <small>${esc(i.number)} &middot; ${money(i.balancePaise)}</small></span></label>`).join('')}</fieldset>
+      <label class="field"><span class="lbl">Amount you paid (&#8377;)</span><input name="amount" inputmode="decimal" required value="${esc(rupees)}"></label>
+      <label class="field"><span class="lbl">UPI reference (UTR)</span><input name="reference" required maxlength="35" autocomplete="off" autocapitalize="characters" placeholder="the 12-digit number in your UPI app"></label>
+      <label class="field"><span class="lbl">Paid on</span><input type="date" name="paidOn" value="${esc(today)}" min="${esc(addDays(today, -60))}" max="${esc(today)}" required></label>
+      <p class="help">The invoice stays open until the school office has found the payment in the bank and issued the receipt.</p>`,
+    onSubmit: async (v) => {
+      const invoiceIds = [].concat(v.inv || []);
+      if (!invoiceIds.length) throw new Error('Tick the invoices you paid for');
+      const p = rupeesToPaise(v.amount);
+      if (p === null || p <= 0) throw new Error('Enter the amount you paid');
+      await ctx.api.fees.claimUpi({ studentId: kid.id, invoiceIds, amountPaise: p, reference: String(v.reference || '').trim(), paidOn: v.paidOn });
+    },
+  });
+}
+
 async function parentList(ctx) {
   const { api, persona } = ctx;
   const kids = await api.people.childrenOf(persona.guardianId);
   const blocks = [];
   const store = new Map();
+  const upi = new Map(); // studentId -> {link, scope}
   const pending = REAL ? await resumePending(ctx) : '';
   const today = todayISO();
   for (const k of kids) {
@@ -98,15 +148,38 @@ async function parentList(ctx) {
     const open = inv.filter(isOpen);
     const bal = open.filter((i) => isDueNow(i.dueDate, today)).reduce((s, i) => s + i.balancePaise, 0); // due now
     const up = open.reduce((s, i) => s + i.balancePaise, 0) - bal; // a later instalment issued early
+    // UPI: the same invoices as the online button (due now, else every open one); null when the school set no UPI ID
+    const due = open.filter((i) => isDueNow(i.dueDate, today));
+    const scope = (due.length ? due : open).map((i) => i.id);
+    let link = null, claims = [];
+    if (scope.length) { try { link = await api.fees.upiLink(k.id, scope); } catch { /* no UPI option */ } }
+    try { claims = await api.fees.claims({ studentId: k.id }); } catch { /* not shown */ }
+    upi.set(k.id, { link, scope });
+    // nothing left to pay once reported payments cover the balance (link null): the reports below say they are being checked
+    const upiBtns = link?.link ? `<button class="btn" data-upi="${esc(k.id)}">Pay ${money(link.amountPaise)} by UPI app</button><button class="btn ghost" data-claim="${esc(k.id)}">I paid by UPI</button>` : '';
     blocks.push(`<div class="card stack"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3><div class="row">${bal ? badge(`Due ${money(bal)}`, 'bad') : ''}${up ? badge(`Upcoming ${money(up)}`, 'info') : ''}${open.length ? '' : badge('All paid', 'ok')}<a class="btn sm" href="#/fees/student/${esc(k.id)}">Payments &amp; receipts</a></div></div>
       ${inv.length ? `<ul class="list">${inv.map((i) => `<li><div class="row between"><div><a href="#/fees/invoice/${esc(i.id)}" class="item-title">${esc(i.installmentName)}</a> <small>${esc(i.number)} &middot; due ${fdate(i.dueDate)}${isOpen(i) && dueHint(i.dueDate, today) ? ` <strong>(${esc(dueHint(i.dueDate, today))})</strong>` : ''}</small></div>
         <div class="row"><span class="num">${isOpen(i) ? money(i.balancePaise) : money(i.totalPaise)}</span>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</div></div></li>`).join('')}</ul>` : empty('No invoices yet')}
-      ${bal ? `<button class="btn primary" data-pay="${esc(k.id)}" data-scope="now">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>`
-        : open.length ? `<button class="btn" data-pay="${esc(k.id)}" data-scope="all">Pay ${money(up)} early${REAL ? ' online' : ' (mock)'}</button>` : ''}</div>`);
+      ${claimList(claims)}
+      <div class="row">${bal ? `<button class="btn primary" data-pay="${esc(k.id)}" data-scope="now">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>`
+        : open.length ? `<button class="btn" data-pay="${esc(k.id)}" data-scope="all">Pay ${money(up)} early${REAL ? ' online' : ' (mock)'}</button>` : ''}${upiBtns}</div></div>`);
   }
-  ctx.el.innerHTML = `${pageHead('Fees', '', REAL ? '<a class="btn" href="#/reminders">Reminders</a>' : '')}${pending}<div class="stack">${blocks.join('') || empty('No children linked to this account')}</div>
+  ctx.el.innerHTML = `${pageHead('Fees', '', `<button class="btn" id="fi-ask">Ask the office about fees</button>${REAL ? '<a class="btn" href="#/reminders">Reminders</a>' : ''}`)}${pending}<div class="stack">${blocks.join('') || empty('No children linked to this account')}</div>
     ${REAL ? '' : '<p class="muted" style="font-size:.82rem;margin-top:12px">Online payment here is a mock for the prototype - no real payment is taken.</p>'}`;
   ctx.el.addEventListener('click', async (e) => {
+    if (e.target.closest('#fi-ask')) {
+      const r = await newThread(ctx, { to: 'accountant', subject: 'Fees' });
+      if (typeof r === 'string') ctx.go(`/messages/${r}`);
+      return;
+    }
+    const u = e.target.closest('[data-upi], [data-claim]');
+    if (u) {
+      const kid = kids.find((k) => k.id === (u.dataset.upi || u.dataset.claim));
+      const { link, scope } = upi.get(kid.id);
+      if (u.dataset.upi && !(await upiPay(ctx, kid, link))) return;
+      if (await reportUpi(ctx, kid, store.get(kid.id).filter(isOpen), scope, link?.amountPaise || 0)) { toast('Sent to the school office to check'); ctx.rerender(); }
+      return;
+    }
     const b = e.target.closest('[data-pay]');
     if (!b) return;
     const kid = kids.find((k) => k.id === b.dataset.pay);

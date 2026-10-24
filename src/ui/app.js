@@ -24,8 +24,10 @@ const ROUTES = [
   { pattern: '/home', roles: ALL, load: () => import('./screens/home.js') },
   { pattern: '/notices', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/notices.js') },
   { pattern: '/notices/:id', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/notices.js') },
-  { pattern: '/messages', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/threads.js') },
-  { pattern: '/messages/:id', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/threads.js') },
+  { pattern: '/messages', roles: ['admin', 'teacher', 'parent', 'accountant'], load: () => import('./screens/threads.js') },
+  { pattern: '/messages/:id', roles: ['admin', 'teacher', 'parent', 'accountant'], load: () => import('./screens/threads.js') },
+  { pattern: '/ptm', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/ptm.js') },
+  { pattern: '/ptm/:id', roles: ['admin', 'teacher', 'parent'], load: () => import('./screens/ptm.js') },
   { pattern: '/calendar', roles: ALL, load: () => import('./screens/calendar.js') },
   { pattern: '/calendar/import', roles: ['admin'], load: () => import('./screens/calendar-import.js') },
   { pattern: '/attendance', roles: ['admin', 'teacher'], load: () => import('./screens/attendance.js') },
@@ -41,6 +43,7 @@ const ROUTES = [
   { pattern: '/fees', roles: ['admin', 'accountant', 'parent'], load: () => import('./screens/fees-invoices.js') },
   { pattern: '/fees/invoice/:id', roles: ['admin', 'accountant', 'parent'], load: () => import('./screens/fees-invoices.js') },
   { pattern: '/fees/structures', roles: ['admin', 'accountant'], load: () => import('./screens/fees-structures.js') },
+  { pattern: '/fees/upi', roles: ['admin', 'accountant'], load: () => import('./screens/upi-claims.js') },
   { pattern: '/fees/student/:studentId', roles: ['admin', 'accountant', 'parent'], load: () => import('./screens/fees-payment.js') },
   { pattern: '/print/receipt/:id', roles: ['admin', 'accountant', 'parent'], bare: true, load: () => import('./screens/receipt-print.js') },
   { pattern: '/print/statement/:studentId', roles: ['admin', 'accountant', 'parent'], bare: true, load: () => import('./screens/statement-print.js') },
@@ -66,7 +69,7 @@ const ROUTES = [
 const ROLE_BLURB = {
   admin: 'Notices, calendar, attendance, learning and curriculum, fees overview, reports, audit, administration, settings.',
   teacher: 'Own programme only: attendance, daily diary, observations and photos, progress, termly reports, parent messages.',
-  accountant: 'Fee structures, invoices, payments, receipts, reports.',
+  accountant: 'Fee structures, invoices, payments, receipts, UPI payment reports, fee questions from parents, reports.',
   parent: 'Notices, messages, diary, learning (shared observations and termly reports), bus tracking, fees - for own children.',
   driver: 'Start / end the trip and share the bus position.',
 };
@@ -160,8 +163,9 @@ function computeBadges() {
     out['/notices'] = rec.filter((r) => !r.readAt || (noticeById.get(r.noticeId)?.requiresAck && !r.ackAt)).length;
     const myThreads = new Set((db.threads || []).filter((t) => t.guardianId === p.guardianId).map((t) => t.id));
     out['/messages'] = (db.messages || []).filter((m) => myThreads.has(m.threadId) && m.senderRole !== 'parent' && !m.readAt).length;
-  } else if (p.role === 'teacher') {
-    const mine = new Set((db.threads || []).filter((t) => (p.programIds || []).includes(t.programId)).map((t) => t.id));
+  } else if (p.role === 'teacher' || p.role === 'accountant') {
+    // a teacher reads the class's conversations, the accountant the fee office's (never each other's)
+    const mine = new Set((db.threads || []).filter((t) => (p.role === 'teacher' ? !t.to && (p.programIds || []).includes(t.programId) : t.to === 'accountant')).map((t) => t.id));
     out['/messages'] = (db.messages || []).filter((m) => mine.has(m.threadId) && m.senderRole === 'parent' && !m.readAt).length;
   }
   return out;

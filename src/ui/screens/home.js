@@ -136,7 +136,7 @@ async function teacherHome(ctx) {
       <div class="grid cols-3">${kpi('children', list ? list.length : DASH)}${kpi('absent today', absent ?? DASH, absent ? 'bad' : '')}${kpi('unmarked', list ? list.length - marked : DASH)}${link('to go home', toGo, `#/pickup?program=${pid}`)}${link('no lunch entry', noLunch, `#/diary?program=${pid}&missing=lunch`)}</div>
       <div class="row"><a class="btn primary sm" href="#/attendance?program=${esc(pid)}">Attendance</a><a class="btn sm" href="#/diary?program=${esc(pid)}">Daily diary</a><a class="btn sm" href="#/learning?program=${esc(pid)}">Observations</a><a class="btn sm" href="#/pickup?program=${esc(pid)}">Going home</a></div></div>`);
   }
-  const myThreads = db.threads.filter((t) => (persona.programIds || []).includes(t.programId));
+  const myThreads = db.threads.filter((t) => !t.to && (persona.programIds || []).includes(t.programId)); // the office's conversations are not the teacher's
   const unread = db.messages.filter((m) => myThreads.some((t) => t.id === m.threadId) && m.senderRole === 'parent' && !m.readAt).length;
   const evs = await upcomingEvents(ctx);
   const me = db.staff.find((x) => x.id === persona.staffId);
@@ -273,6 +273,10 @@ async function accountantHome(ctx) {
     const bad = (await api.fees.reconcile()).checks.filter((c) => !c.ok).length;
     if (bad) todo.push([ctx.href('/reports', { tab: 'reconcile' }), 'shield', `${bad} reconciliation check${bad === 1 ? '' : 's'} failing`]);
   } catch { failed.push('reconciliation'); }
+  try {
+    const upi = await api.fees.claims({ status: 'pending' });
+    if (upi.length) todo.push(['#/fees/upi', 'rupee', `${upi.length} UPI payment${upi.length === 1 ? '' : 's'} reported by parents to check against the bank (${money(upi.reduce((s, c) => s + c.amountPaise, 0))})`]);
+  } catch { failed.push('UPI reports'); }
   if (real && api.fees.settlementReport) {
     try {
       const n = (await api.fees.settlementReport({ from: addDays(today, -60), to: today })).unmatchedLedger.length;
@@ -281,7 +285,7 @@ async function accountantHome(ctx) {
   }
   const attention = `<h2 style="margin-top:20px">Needs attention</h2>${failed.length ? unavailable(`The ${failed.join(', ')} check`) : ''}${todo.length
     ? `<ul class="list card-list">${todo.map(([h, ic, t]) => `<li><a class="row" href="${esc(h)}" style="text-decoration:none;color:inherit">${icon(ic)}<span class="grow">${esc(t)}</span><span aria-hidden="true">&rarr;</span></a></li>`).join('')}</ul>`
-    : failed.length ? '' : empty('All clear', 'No late fees to apply and every reconciliation check passes.')}`;
+    : failed.length ? '' : empty('All clear', 'No late fees to apply, no UPI payment to check and every reconciliation check passes.')}`;
   return `
     <div class="page-head"><div><h1>Accounts</h1><div class="sub">${fdate(today)}</div></div></div>
     ${await yearBanner(ctx)}

@@ -28,7 +28,7 @@ const N = {
 export const NAV = {
   admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'children', 'setup', 'administration', 'settings'],
   teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning'],
-  accountant: ['home', 'fees', 'structures', 'reports', 'calendar', 'audit'],
+  accountant: ['home', 'fees', 'messages', 'structures', 'reports', 'calendar', 'audit'],
   parent: ['home', 'notices', 'messages', 'diary', 'learning', 'bus', 'fees'],
   driver: ['home', 'trip', 'calendar'],
 };
