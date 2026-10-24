@@ -666,3 +666,13 @@ test('#94 privacy notice v3: the four version changes agree; the text covers wav
   const sdb = { ...db, invites: [], appUsers: [], erasureRequests: [] };
   assert.throws(() => execute('consent.give', sdb, [{ purposes: ['app_account'], version: 'v2' }], ctx, p), /Unknown privacy notice version/);
 });
+
+test('backup check: a pick-up recorded as "went home on the school bus" (wave-1 kind bus) is valid in a backup', async () => {
+  const { validateDb } = await import('../src/domain/validate.js');
+  const db = buildSeed();
+  const s = db.students.find((x) => x.routeId) || db.students[0];
+  const date = '2026-10-23';
+  db.pickups = (db.pickups || []).filter((p) => p.id !== `pck-${date}-${s.id}`);
+  db.pickups.push({ id: `pck-${date}-${s.id}`, studentId: s.id, date, kind: 'bus', personId: null, name: null, at: '15:40' });
+  assert.deepEqual(validateDb(db).filter((v) => v.entity === 'pickup' && v.severity !== 'warning'), []);
+});

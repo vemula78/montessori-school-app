@@ -411,7 +411,7 @@ function checks(db, add, v) {
   for (const p of db.pickups) {
     ref('pickup', p.id, 'studentId', 'students', p.studentId);
     if (!isISODate(p.date) || p.id !== `pck-${p.date}-${p.studentId}`) add('BAD_PICKUP_KEY', 'pickup', p.id, 'id must be pck-<date>-<studentId>');
-    if (!['guardian', 'contact', 'other'].includes(p.kind)) add('BAD_KIND', 'pickup', p.id, `kind ${String(p.kind).slice(0, 20)}`);
+    if (!['guardian', 'contact', 'other', 'bus'].includes(p.kind)) add('BAD_KIND', 'pickup', p.id, `kind ${String(p.kind).slice(0, 20)}`);
     if (p.kind === 'guardian') ref('pickup', p.id, 'personId', 'guardians', p.personId);
     if (p.kind === 'contact') ref('pickup', p.id, 'personId', 'pickupContacts', p.personId);
   }

@@ -434,12 +434,14 @@ test('photo markup carries no src (no URL in the DOM); loading uses blob object 
     const imgs = [{ dataset: { photo: 'a' }, classList: { add() {} }, parentElement: null }, { dataset: { photo: 'b' }, classList: { add() {} }, parentElement: null }];
     const root = Object.assign(fake(), { querySelectorAll: () => imgs });
     const cleanups = [];
-    const blobs = { a: JPEG(10), b: new Promise((r) => setTimeout(() => r(JPEG(10)), 5)) };
+    let releaseB;
+    const blobs = { a: JPEG(10), b: new Promise((r) => { releaseB = () => r(JPEG(10)); }) }; // b arrives only after the screen is left
     PhotoView.loadPhotos({ api: { photos: { blob: async (id) => blobs[id] } }, cleanup: (f) => cleanups.push(f) }, root);
-    await new Promise((r) => setTimeout(r, 1));
+    await until(() => imgs[0].src); // the blob resolves on a later turn; a fixed 1 ms was occasionally too short under load
     assert.equal(imgs[0].src, 'blob:test/0');
     assert.ok(imgs.every((i) => i.src === undefined || /^blob:/.test(i.src)), 'only blob: URLs');
     cleanups.forEach((f) => f()); // the screen is left before photo b arrives
+    releaseB();
     await new Promise((r) => setTimeout(r, 10));
     assert.deepEqual(revoked, ['blob:test/0'], 'the object URL made so far is revoked');
     assert.equal(made.length, 1, 'a photo that arrives after cleanup makes no URL');
@@ -447,7 +449,7 @@ test('photo markup carries no src (no URL in the DOM); loading uses blob object 
     // a failing load leaves a placeholder, never a broken URL
     const bad = { dataset: { photo: 'x' }, classList: { add() {} }, parentElement: { classList: { add: (c) => (bad.mark = c) } } };
     PhotoView.loadPhotos({ api: { photos: { blob: async () => { throw new Error('gone'); } } }, cleanup() {} }, Object.assign(fake(), { querySelectorAll: () => [bad] }));
-    await new Promise((r) => setTimeout(r, 1));
+    await until(() => bad.mark);
     assert.equal(bad.mark, 'photo-missing');
   } finally { URL.createObjectURL = realCreate; URL.revokeObjectURL = realRevoke; }
 });
