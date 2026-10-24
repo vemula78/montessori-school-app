@@ -20,7 +20,7 @@
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(285);
+select plan(286);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -47,8 +47,8 @@ grant execute on all functions in schema tests to anon, authenticated, service_r
 insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
 values ('00000000-0000-0000-0000-000000000000', '00000000-0000-4000-8000-0000000000aa', 'authenticated', 'authenticated', 'route2-parent@example.com', '', now(), now());
 insert into public.app_users (user_id, role, guardian_id, status) values ('00000000-0000-4000-8000-0000000000aa', 'parent', 'grd-05', 'active');
-insert into public.consents (id, doc) values ('cns-test-r2', jsonb_build_object('id', 'cns-test-r2', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'bus_live', 'version', 'v2', 'withdrawnAt', null));
-insert into public.consents (id, doc) values ('cns-test-r2a', jsonb_build_object('id', 'cns-test-r2a', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'app_account', 'version', 'v2', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-r2', jsonb_build_object('id', 'cns-test-r2', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'bus_live', 'version', app.consent_version(), 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-r2a', jsonb_build_object('id', 'cns-test-r2a', 'guardianId', 'grd-05', 'studentId', 'stu-09', 'purpose', 'app_account', 'version', app.consent_version(), 'withdrawnAt', null));
 
 -- ---------------------------------------------------------------- anon
 set local role anon;
@@ -86,11 +86,11 @@ select is((select count(*)::int from public.trips), 0, 'parent_positions_require
 reset role;
 -- #7 an old-version bus consent for the child, or a current one for a sibling, does not open the bus
 insert into public.consents (id, doc) values ('cns-test-g1-old', jsonb_build_object('id', 'cns-test-g1-old', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', 'v0', 'withdrawnAt', null));
-insert into public.consents (id, doc) values ('cns-test-g1-sib', jsonb_build_object('id', 'cns-test-g1-sib', 'guardianId', 'grd-01', 'studentId', 'stu-02', 'purpose', 'bus_live', 'version', 'v2', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-g1-sib', jsonb_build_object('id', 'cns-test-g1-sib', 'guardianId', 'grd-01', 'studentId', 'stu-02', 'purpose', 'bus_live', 'version', app.consent_version(), 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-000000000005');
 select is((select count(*)::int from public.trips), 0, 'bus_consent_is_per_child_and_version: old version or sibling consent opens nothing');
 reset role;
-insert into public.consents (id, doc) values ('cns-test-g1', jsonb_build_object('id', 'cns-test-g1', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', 'v2', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-g1', jsonb_build_object('id', 'cns-test-g1', 'guardianId', 'grd-01', 'studentId', 'stu-01', 'purpose', 'bus_live', 'version', app.consent_version(), 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-000000000005');
 select ok((select count(*) from public.trip_positions) > 0, 'parent_positions_require_bus_live_consent: visible once consent is given');
 reset role;
@@ -189,7 +189,7 @@ select is((select count(*)::int from public.invoices) + (select count(*)::int fr
   + (select count(*)::int from public.student_health) + (select count(*)::int from public.attendance) + (select count(*)::int from public.diary_entries),
   0, 'no_child_data_before_app_account_consent');
 reset role;
-insert into public.consents (id, doc) values ('cns-test-g3', jsonb_build_object('id', 'cns-test-g3', 'guardianId', 'grd-03', 'studentId', 'stu-05', 'purpose', 'app_account', 'version', 'v2', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-test-g3', jsonb_build_object('id', 'cns-test-g3', 'guardianId', 'grd-03', 'studentId', 'stu-05', 'purpose', 'app_account', 'version', app.consent_version(), 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-0000000000c3');
 select is((select array_agg(distinct student_id) from public.invoices), array['stu-05'], 'consent_opens_only_the_consented_child');
 select is((select array_agg(id) from public.students), array['stu-05'], 'n2_consent_opens_the_full_record_of_that_child_only');
@@ -279,7 +279,7 @@ insert into public.reports (id, doc) values
   ('rep-t-draft', jsonb_build_object('id', 'rep-t-draft', 'studentId', 'stu-04', 'academicYearId', 'AY-T', 'termName', 'Term 2', 'status', 'draft', 'progress', '[]'::jsonb, 'observations', '[]'::jsonb));
 insert into storage.objects (bucket_id, name) values ('child-photos', 'stu-04/pho-t-ok.jpg');
 
-select is(app.consent_version(), 'v2', 'p3_consent_version_is_v2');
+select is(app.consent_version(), 'v3', 'p3_consent_version_is_v3 (v3 since migration 0011: wave-2 data in the notice)');
 select tests.as_user('00000000-0000-4000-8000-000000000006');
 select ok((select count(*) from public.observations) > 0 and (select bool_and(shared_at is not null and student_id in ('stu-03', 'stu-04')) from public.observations),
   'p3_parent_sees_only_shared_observations_of_own_children');
@@ -359,13 +359,13 @@ reset role;
 -- C3: a second guardian of stu-04 starts using the app without photo consent → the flag drops, the parent sees no photo
 select is((select ok from public.photo_consent_flags where student_id = 'stu-04'), true, 'c3_flag_true_while_every_app_guardian_consents');
 insert into public.student_guardians (student_id, guardian_id, ord) values ('stu-04', 'grd-03', 9);
-insert into public.consents (id, doc) values ('cns-t-c3', jsonb_build_object('id', 'cns-t-c3', 'guardianId', 'grd-03', 'studentId', 'stu-04', 'purpose', 'app_account', 'version', 'v2', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-t-c3', jsonb_build_object('id', 'cns-t-c3', 'guardianId', 'grd-03', 'studentId', 'stu-04', 'purpose', 'app_account', 'version', app.consent_version(), 'withdrawnAt', null));
 select is((select ok from public.photo_consent_flags where student_id = 'stu-04'), false, 'c3_flag_false_when_an_app_guardian_has_no_photo_consent');
 select tests.as_user('00000000-0000-4000-8000-000000000006');
 select is((select count(*)::int from public.photos where student_id = 'stu-04'), 0, 'c3_parent_sees_no_photo_while_consent_does_not_hold');
 select is((select array_agg(student_id order by student_id) from public.photo_consent_flags), array['stu-03', 'stu-04'], 'c3_parent_reads_flags_of_own_children_only');
 reset role;
-insert into public.consents (id, doc) values ('cns-t-c3p', jsonb_build_object('id', 'cns-t-c3p', 'guardianId', 'grd-03', 'studentId', 'stu-04', 'purpose', 'photos', 'version', 'v2', 'withdrawnAt', null));
+insert into public.consents (id, doc) values ('cns-t-c3p', jsonb_build_object('id', 'cns-t-c3p', 'guardianId', 'grd-03', 'studentId', 'stu-04', 'purpose', 'photos', 'version', app.consent_version(), 'withdrawnAt', null));
 select tests.as_user('00000000-0000-4000-8000-000000000006');
 select is((select array_agg(id order by id) from public.photos where id like 'pho-t-%'), array['pho-t-ok'], 'c3_visible_again_once_every_app_guardian_consents');
 reset role;
@@ -710,6 +710,9 @@ select is(jsonb_array_length(public.load_slice('{ptmSlots}'::text[], '{}'::jsonb
   and (public.load_slice('{ptmSlots}'::text[], '{}'::jsonb)->'db'->'ptmSlots') @> '[{"booking":{"studentId":"stu-01"}}]'::jsonb, true, 'w2_load_slice_slots_carry_their_bookings');
 select lives_ok($$select public.persist('pgtap-w2-care', 1, jsonb_build_object('deletes', jsonb_build_object('ptmSlots', (select jsonb_agg(slot_id) from public.ptm_bookings where student_id = 'stu-01'))))$$, 'w2_retention_may_delete_slots');
 select is((select count(*)::int from public.ptm_bookings where student_id = 'stu-01'), 0, 'w2_booking_deleted_with_its_slot');
+
+-- privacy notice v3 (#94): consents at v3 count, the photo-consent flags were judged against v3
+select ok((select ok from public.photo_consent_flags where student_id = 'stu-03') and (select count(*) from public.consents where doc->>'version' = 'v3') > 0, 'w2_photo_flags_follow_notice_v3');
 
 select * from finish();
 rollback;

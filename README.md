@@ -180,7 +180,7 @@ security_invoker", append-only audit, unique receipt numbers, stale-rev rejectio
   stay ON: `enable_confirmations` locally, "Confirm email" in the dashboard); a password set on that address before it
   was confirmed is voided at confirmation. Revoking a user or withdrawing app consent cuts access on the next request.
 - **Consent** per (guardian, child, purpose, notice version) for `app_account` (required), `push`, `bus_live`, `photos`
-  (all optional and never pre-ticked; the sign-up screen asks photos per child when a parent has several), notice v2, with the
+  (all optional and never pre-ticked; the sign-up screen asks photos per child when a parent has several), notice v3, with the
   SHA-256 of the notice text the parent saw and the evidence `invite_code+child_dob+email_otp`. Withdrawal is live
   (RLS evaluates consent at query time); withdrawing `app_account` disables the account and opens an erasure request.
   Until `app_account` is given for a child the server neither returns that child's data nor runs parent commands for

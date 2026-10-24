@@ -752,9 +752,9 @@ test('app.js hands the consent screen the parent\'s children and the school\'s p
   assert.match(app, /retention\?\.photosMonthsAfterLeaving/);
 });
 
-// ---------------------------------------------------------------- privacy notice v2
-test('privacy notice v2: version equals the registry\'s, photos section and purpose, retention still a draft', () => {
-  assert.equal(Priv.PRIVACY_VERSION, 'v2');
+// ---------------------------------------------------------------- privacy notice (v2 sections, kept in v3)
+test('privacy notice: version equals the registry\'s, photos section and purpose, retention still a draft', () => {
+  assert.equal(Priv.PRIVACY_VERSION, 'v3');
   assert.equal(Priv.PRIVACY_VERSION, CONSENT_VERSION);
   const photos = Priv.PURPOSES.find((p) => p.key === 'photos');
   assert.ok(photos && photos.required === false);

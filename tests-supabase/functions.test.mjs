@@ -6,6 +6,7 @@ import { createECDH, randomBytes } from 'node:crypto';
 import { local, signIn, fn, command, rest, rpcAs, restAs, http, psql, MOCK } from './helpers.mjs';
 import { startMock } from '../scripts/mock-razorpay.mjs';
 import { signWebhook } from '../supabase/functions/_shared/razorpay.js';
+import { CONSENT_VERSION } from '../src/domain/commands.js';
 
 let mock, acct, parentBus, parentSib, admin;
 const env = () => local().env;
@@ -205,7 +206,7 @@ test('invite → redeem with child DOB → consent; wrong DOB and reuse are refu
   assert.equal(reuse.status, 422); assert.match(reuse.data.error.message, /already been used/);
   const snap = (await rpcAs(newbie.token, 'my_snapshot')).data;
   assert.equal(snap.status, 'active'); assert.deepEqual(snap.students.map(s => s.id), ['stu-09']);
-  const c = await command(newbie.token, 'consent.give', { purposes: ['app_account', 'bus_live'], version: 'v2' });
+  const c = await command(newbie.token, 'consent.give', { purposes: ['app_account', 'bus_live'], version: CONSENT_VERSION });
   assert.equal(c.status, 200, JSON.stringify(c.data));
   assert.equal(c.data.result.purposes.bus_live.given, true);
   const ev = psql(`select doc->'evidence'->>'method' from consents where guardian_id = 'grd-05' and purpose = 'app_account' limit 1`);

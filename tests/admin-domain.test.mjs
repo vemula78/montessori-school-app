@@ -285,5 +285,5 @@ test('schema v3: dataRequests collection and school.announcement; migrate v2 →
   assert.deepEqual(migrate(kept).school.announcement.text, 'x', 'migrate is idempotent on v3');
   const bad = structuredClone(m); bad.school.announcement = { text: 'y'.repeat(300), tone: 'info', until: null };
   assert.ok(validateDb(bad).some(v => v.code === 'BAD_SCHOOL'));
-  assert.equal(CONSENT_VERSION, 'v2', 'no new privacy notice in this module');
+  assert.equal(CONSENT_VERSION, 'v3', 'v3 came with wave 2 (migration 0011)');
 });

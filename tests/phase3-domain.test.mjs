@@ -641,8 +641,8 @@ test('audit R5: the whole file is walked — progressive and restart-marker JPEG
   assert.match(inspectJpeg(p.subarray(0, p.length - 2)).reason || '', /cut short|end of image/, 'no EOI');
 });
 
-test('CONSENT_VERSION is v2 everywhere: the UI notice and the latest migration defining app.consent_version()', async () => {
-  assert.equal(CONSENT_VERSION, 'v2');
+test('CONSENT_VERSION is v3 everywhere: the UI notice and the latest migration defining app.consent_version()', async () => {
+  assert.equal(CONSENT_VERSION, 'v3');
   const { PRIVACY_VERSION } = await import('../src/ui/privacy.js');
   assert.equal(PRIVACY_VERSION, CONSENT_VERSION);
   const dir = new URL('../supabase/migrations/', import.meta.url);

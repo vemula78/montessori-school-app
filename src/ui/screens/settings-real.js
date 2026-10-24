@@ -83,7 +83,7 @@ export async function render(ctx) {
           vapidKey,
           giveConsent: async () => {
             if (!isParent || cs?.purposes?.push?.given) return;
-            const hash = await noticeHash();
+            const hash = await noticeHash(api.getDb()?.school || null);
             await api.consent.give({ purposes: withGiven(cs, 'push'), version: PRIVACY_VERSION, ...(hash ? { textHash: hash } : {}) });
           },
           send: (json) => api.push.subscribe(json),
@@ -117,7 +117,7 @@ export async function render(ctx) {
       if (required) { await attempt(() => api.auth.signOut()); location.hash = ''; location.reload(); return; }
       ctx.rerender();
     } else if (g) {
-      const hash = await noticeHash();
+      const hash = await noticeHash(api.getDb()?.school || null);
       if ((await attempt(() => api.consent.give({ purposes: withGiven(cs, g.dataset.give), version: PRIVACY_VERSION, ...(hash ? { textHash: hash } : {}) }), 'Turned on')).ok) ctx.rerender();
     }
   });

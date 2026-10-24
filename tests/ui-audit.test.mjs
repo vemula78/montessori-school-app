@@ -97,14 +97,15 @@ test('#10 (Phase 3) the notice says an unset period is not enforced and photos a
 });
 
 // ---------------------------------------------------------------- #48 consent version, two sources
-test('#48 the UI privacy version equals the server CONSENT_VERSION, and GO-LIVE names all three places', async () => {
+test('#48 the UI privacy version equals the server CONSENT_VERSION, and GO-LIVE names all four changes', async () => {
   const { PRIVACY_VERSION } = await import('../src/ui/privacy.js');
   const { CONSENT_VERSION } = await import('../src/domain/commands.js');
   assert.equal(PRIVACY_VERSION, CONSENT_VERSION);
   const doc = read('docs/GO-LIVE.md');
   assert.ok(doc.includes('src/ui/privacy.js') && doc.includes('CONSENT_VERSION') && doc.includes('src/domain/commands.js'));
   assert.ok(doc.includes('npm run sync-domain') && doc.includes('app.consent_version()'), 'the third place: the database function, via a new migration');
-  assert.match(doc, /three changes/i);
+  assert.match(doc, /four changes/i);
+  assert.ok(doc.includes('refresh_photo_consent'), 'the fourth: the photo-consent flags');
 });
 
 // ---------------------------------------------------------------- #1 doc side

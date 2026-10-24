@@ -10,6 +10,7 @@
 --   * load_slice hints diaryEntryIds (several diary entries) and learningStudentIds (several children's learning records)
 --   * conversations with the office (threads.doc.to), UPI payment claims (payment_claims), meeting slots (ptm_slots, with
 --     bookings apart in ptm_bookings so parents see a slot is taken, never by whom); retention may delete slots
+--   * privacy notice v3: app.consent_version() and every photo consent flag
 --   * notice attachments: notice_files rows (staged → attached → removed), bytes in the PRIVATE bucket `notice-files`
 --     (no storage policies; the command function signs 60-second downloads for those who may read the notice)
 -- persist / load_slice / my_snapshot of 0010 move to schema app and are wrapped here (the 0004–0010 pattern).
@@ -183,6 +184,14 @@ create policy read_scoped on public.ptm_bookings for select to authenticated usi
     when 'teacher' then exists (select 1 from public.ptm_slots x where x.id = slot_id and x.program_id = any ((select app.my_program_ids())::text[]))
     when 'parent' then student_id = any ((select app.my_student_ids())::text[])
     else false end);
+
+-- ---------------------------------------------------------------- privacy notice v3 (#94)
+-- Must equal CONSENT_VERSION (src/domain/commands.js) and PRIVACY_VERSION (src/ui/privacy.js). Every parent accepts v3
+-- before their children's data shows again (RLS evaluates consent at this version). The photo consent flags are kept by
+-- triggers on consents and guardians only, so they are recomputed here against v3 (0006: a version change must refresh
+-- every flag): until a guardian accepts v3 with photos, that child's photos are hidden and the nightly sweep deletes them.
+create or replace function app.consent_version() returns text language sql immutable set search_path = pg_catalog as $$ select 'v3'::text $$;
+select app.refresh_photo_consent(array(select id from public.students));
 
 -- ---------------------------------------------------------------- load_slice wrapper
 alter function public.load_slice(text[], jsonb) set schema app;

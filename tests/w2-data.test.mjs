@@ -639,3 +639,30 @@ test('#88 PTM slots: published by the programme\'s teacher; one slot per child a
   api.session.set('persona-grd-02');
   await assert.rejects(api.ptm.book(free[0].id, 'stu-04'), /cancelled/);
 });
+
+test('#94 privacy notice v3: the four version changes agree; the text covers wave 2, the providers and the sign-in log; the contact is the principal\'s setting, never invented', async () => {
+  const Priv = await import('../src/ui/privacy.js');
+  const { CONSENT_VERSION } = await import('../src/domain/commands.js');
+  assert.equal(Priv.PRIVACY_VERSION, 'v3');
+  assert.equal(CONSENT_VERSION, 'v3');
+  const mig = readFileSync(new URL('../supabase/migrations/0011_wave2.sql', import.meta.url), 'utf8');
+  assert.match(mig, /function app\.consent_version\(\)[^$]*\$\$ select 'v3'::text \$\$/);
+  assert.match(mig, /select app\.refresh_photo_consent\(array\(select id from public\.students\)\);/, 'every photo-consent flag recomputed');
+  const text = Priv.noticeText(null);
+  for (const must of [/Supabase/, /Mumbai/, /Google \(Gmail\)/, /Razorpay/, /Google, Apple or Mozilla/, /GitHub Pages/, /OpenStreetMap/, /sign-in to the app are kept for 90 days/,
+    /allergies, medical alerts/i, /absences you report/i, /people you allow to collect/i, /annual progress report/i, /signatures of the class teachers, the principal and the director/,
+    /UPI/, /meeting slots you book|meeting bookings/i, /conversations you start with the fee office/, /may phone you/]) assert.match(text, must);
+  assert.match(text, /contact the school office\./, 'no contact set: the school office');
+  const db = seed();
+  assert.equal(db.school.privacyContact, null, 'the seed invents no contact');
+  assert.match(Priv.noticeText(db.school), /contact the school office \(office@example\.com\)\./, 'the office email from settings');
+  const withContact = { ...db.school, privacyContact: { name: 'Fake Exampleton', role: 'Office manager', email: 'privacy@example.com' } };
+  assert.match(Priv.noticeText(withContact), /contact Fake Exampleton \(Office manager\) at privacy@example\.com, or the school office \(office@example\.com\)\./);
+  assert.notEqual(await Priv.noticeHash(withContact), await Priv.noticeHash(db.school), 'the hash covers the rendered contact');
+  assert.match(Priv.noticeHtml(withContact), /privacy@example\.com/);
+  // consent at the old version is refused
+  const p = personaFor(db, parent('grd-02'));
+  const ctx = { ...ctxFor(p, NOW.toISOString(), TODAY), userId: 'u' };
+  const sdb = { ...db, invites: [], appUsers: [], erasureRequests: [] };
+  assert.throws(() => execute('consent.give', sdb, [{ purposes: ['app_account'], version: 'v2' }], ctx, p), /Unknown privacy notice version/);
+});

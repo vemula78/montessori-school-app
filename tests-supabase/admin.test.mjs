@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { local, signIn, fn, command, rest, rpcAs, restAs, http, psql, enrollTotp, unenrollAll, claimsOf, pastCutoff } from './helpers.mjs';
 import { PERMISSIONS } from '../src/domain/permissions.js';
+import { CONSENT_VERSION } from '../src/domain/commands.js';
 
 let admin, admin2, teacher, acct;
 const rand = () => randomBytes(4).toString('hex');
@@ -15,7 +16,7 @@ const snapshot = async who => (await rpcAs(who.token, 'my_snapshot')).data;
 async function linkedParent(guardianId) {
   const who = await signIn(`adm-${guardianId}-${rand()}@example.com`);
   assert.equal((await rest('POST', 'app_users', { user_id: who.userId, role: 'parent', guardian_id: guardianId, status: 'active' }, 'return=minimal')).status, 201);
-  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: 'v2' })).status, 200);
+  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: CONSENT_VERSION })).status, 200);
   return who;
 }
 

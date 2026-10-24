@@ -58,9 +58,11 @@ import * as PT from './ptm.js';
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
 export const CONSENT_PURPOSES = ['app_account', 'push', 'bus_live', 'photos'];
-// v2 (Phase 3): the photos purpose and the retention section of the notice. Must equal PRIVACY_VERSION
-// (src/ui/privacy.js) and app.consent_version() (latest migration defining it).
-export const CONSENT_VERSION = 'v2';
+// v2 (Phase 3): the photos purpose and the retention section of the notice. v3 (wave 2): absences and pick-up, health
+// alerts, progress reports and signatures, UPI reports, meeting bookings, notice files, the service providers, the sign-in
+// log and the school's privacy contact. Must equal PRIVACY_VERSION (src/ui/privacy.js) and app.consent_version() (latest
+// migration defining it; that migration also refreshes photo_consent_flags).
+export const CONSENT_VERSION = 'v3';
 export const MAX_INVITE_FAILURES = 5; // wrong dates of birth per invite code, across all accounts
 export const ERASED_MESSAGE = '[message erased at the guardian\'s request]';
 

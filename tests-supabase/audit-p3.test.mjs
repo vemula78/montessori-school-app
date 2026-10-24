@@ -6,6 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { local, signIn, fn, command, rest, rpcAs, http, psql, MOCK } from './helpers.mjs';
 import { startMock } from '../scripts/mock-razorpay.mjs';
 import { signWebhook } from '../supabase/functions/_shared/razorpay.js';
+import { CONSENT_VERSION } from '../src/domain/commands.js';
 
 let mock, admin, acct;
 const rand = () => randomBytes(4).toString('hex');
@@ -14,7 +15,7 @@ const cron = steps => fn('cron-daily', { steps }, null, { 'X-Cron-Secret': local
 async function linkedParent(guardianId) {
   const who = await signIn(`p3-${guardianId}-${rand()}@example.com`);
   assert.equal((await rest('POST', 'app_users', { user_id: who.userId, role: 'parent', guardian_id: guardianId, status: 'active' }, 'return=minimal')).status, 201);
-  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: 'v2' })).status, 200);
+  assert.equal((await command(who.token, 'consent.give', { purposes: ['app_account'], version: CONSENT_VERSION })).status, 200);
   return who;
 }
 

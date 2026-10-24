@@ -18,6 +18,9 @@ export const photoRetentionText = (months) => (Number.isInteger(months) && month
  * @param {HTMLElement} root
  * @param {{status?:object, children?:{id:string, firstName:string}[], photoMonths?:number|null, onDone:()=>void, onSignOut:()=>void}} o
  */
+/** The school document (for the privacy contact rendered into the notice), or null when it is not loaded. */
+const schoolNow = () => { try { return api.getDb()?.school || null; } catch { return null; } };
+
 export function renderConsent(root, { status, children = [], photoMonths = null, onDone, onSignOut }) {
   const already = (k) => !!status?.purposes?.[k]?.given;
   const hasPhotos = (id) => (status?.byChild?.[id] || []).includes('photos');
@@ -27,7 +30,7 @@ export function renderConsent(root, { status, children = [], photoMonths = null,
     : `<label class="check"><input type="checkbox" name="photos-child" value="${esc(children[0]?.id ?? '')}"${children[0] && hasPhotos(children[0].id) ? ' checked' : ''}> Yes, photos of my child</label>`;
   root.innerHTML = frame(`<h1>Your privacy</h1>
     <p class="muted">Before you continue, please read how the school uses your family&rsquo;s information and choose what you agree to. Nothing is ticked for you.</p>
-    <details class="card tight"><summary style="cursor:pointer;font-weight:800">Read the privacy notice (${esc(PRIVACY_VERSION)})</summary><div class="prose" style="margin-top:8px">${noticeHtml()}</div></details>
+    <details class="card tight"><summary style="cursor:pointer;font-weight:800">Read the privacy notice (${esc(PRIVACY_VERSION)})</summary><div class="prose" style="margin-top:8px">${noticeHtml(schoolNow())}</div></details>
     <form id="cs-form" class="stack" novalidate>
       ${PURPOSES.filter((p) => p.key !== 'photos').map((p) => `<label class="card tight consent-row"><input type="checkbox" name="purpose" value="${esc(p.key)}"${already(p.key) ? ' checked' : ''}${p.key === 'app_account' ? ' data-required="1"' : ''}>
         <span><span class="item-title">${esc(p.title)}</span> <small>${p.required ? '(required to use the app)' : '(optional)'}</small><br><small>${esc(p.detail)}</small></span></label>`).join('')}
@@ -53,7 +56,7 @@ export function renderConsent(root, { status, children = [], photoMonths = null,
     const errEl = root.querySelector('#cs-err');
     go.disabled = true; errEl.textContent = '';
     try {
-      const textHash = await noticeHash();
+      const textHash = await noticeHash(schoolNow());
       await api.consent.give({ purposes, ...(Object.keys(perChild).length ? { perChild } : {}), version: PRIVACY_VERSION, ...(textHash ? { textHash } : {}) });
     } catch (ex) { errEl.textContent = errMessage(ex); go.disabled = false; return; }
     if (purposes.includes('push')) await renderPushStep(root, { onDone }); else onDone();

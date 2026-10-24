@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createClient } from '../vendor/supabase/supabase-js.esm.js';
 import { local, signIn, command, rest } from './helpers.mjs';
+import { CONSENT_VERSION } from '../src/domain/commands.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let driver, parentA, parentB, clients = [];
@@ -35,9 +36,9 @@ before(async () => {
   // parent B: a fresh sign-in linked (by the service role, as a redeemed invite would) to the route-2 family, with bus_live consent
   parentB = await signIn(`route2-${randomBytes(3).toString('hex')}@example.com`);
   await rest('POST', 'app_users', { user_id: parentB.userId, role: 'parent', guardian_id: 'grd-05', status: 'active' }, 'return=minimal');
-  for (const purpose of ['app_account', 'bus_live']) await rest('POST', 'consents?on_conflict=id', { id: `cns-rt-grd-05-${purpose}`, doc: { id: `cns-rt-grd-05-${purpose}`, guardianId: 'grd-05', studentId: 'stu-09', purpose, version: 'v2', withdrawnAt: null } }, 'resolution=merge-duplicates,return=minimal');
+  for (const purpose of ['app_account', 'bus_live']) await rest('POST', 'consents?on_conflict=id', { id: `cns-rt-grd-05-${purpose}`, doc: { id: `cns-rt-grd-05-${purpose}`, guardianId: 'grd-05', studentId: 'stu-09', purpose, version: CONSENT_VERSION, withdrawnAt: null } }, 'resolution=merge-duplicates,return=minimal');
   // parent A must have live consent at the start
-  const g = await command(parentA.token, 'consent.give', { purposes: ['app_account', 'push', 'bus_live'], version: 'v2' });
+  const g = await command(parentA.token, 'consent.give', { purposes: ['app_account', 'push', 'bus_live'], version: CONSENT_VERSION });
   assert.equal(g.status, 200, JSON.stringify(g.data));
 });
 after(async () => { for (const c of clients) await c.removeAllChannels(); });
@@ -77,6 +78,6 @@ test('parent A receives positions + nearing; parent B (other route) nothing; A a
   assert.equal(la.got.positions.length + la.got.trips.length, before, 'parent A receives nothing after withdrawing bus_live consent');
   assert.equal((await rest('GET', `trip_positions?trip_id=eq.${tripId}&select=id`)).data.length, 8, 'the fixes were still recorded');
 
-  await command(parentA.token, 'consent.give', { purposes: ['app_account', 'push', 'bus_live'], version: 'v2' });
+  await command(parentA.token, 'consent.give', { purposes: ['app_account', 'push', 'bus_live'], version: CONSENT_VERSION });
   await command(driver.token, 'transport.endTrip', tripId);
 });

@@ -22,6 +22,7 @@ import { startMock } from './mock-razorpay.mjs';
 import { signIn, command, fn, rpcAs, http, psql, rest, enrollTotp, unenrollAll, pastCutoff, MOCK } from '../tests-supabase/helpers.mjs';
 import { signWebhook } from '../supabase/functions/_shared/razorpay.js';
 import { local } from '../tests-supabase/helpers.mjs';
+import { CONSENT_VERSION } from '../src/domain/commands.js';
 
 const problems = [];
 const check = (ok, what) => { console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) problems.push(what); };
@@ -127,7 +128,7 @@ try {
     check((await command(a2.token, 'admin.invites')).status === 200, 'after the second step (aal2) the principal works again');
     const p = await signIn(`e2e-admin-${Date.now()}@example.com`);
     if ((await rest('POST', 'app_users', { user_id: p.userId, role: 'parent', guardian_id: 'grd-17', status: 'active' }, 'return=minimal')).status !== 201) throw new Error('link parent: refused');
-    must(await command(p.token, 'consent.give', { purposes: ['app_account'], version: 'v2' }), 'consent');
+    must(await command(p.token, 'consent.give', { purposes: ['app_account'], version: CONSENT_VERSION }), 'consent');
     const req = must(await command(p.token, 'rights.file', { kind: 'export' }), 'rights.file');
     must(await command(a2.token, 'rights.update', req.id, { status: 'done', resolution: 'Export sent (fake).' }), 'rights.update');
     const desk = (action, extra) => fn('admin-accounts', { action, requestId: `e2e-${action}-${Date.now()}`, ...extra }, a2.token);
