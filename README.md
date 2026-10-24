@@ -125,8 +125,12 @@ Slice `care`: `leave.request` / `leave.withdraw` (a parent, own child; from toda
 `leave.markSeen` (teacher, principal), `pickup.addContact` / `pickup.removeContact` (the family or the principal; at most
 6 people per child, phone stored as `+91-XXXXX-XXXXX`, removal blanks the number), `pickup.record` (teacher, principal;
 one row per child and day, id `pck-<date>-<studentId>`; up to 7 days late with the time collected; someone not on the
-list needs a note and is audited). An absence never marks attendance: the register pre-ticks "On leave" and the teacher
-saves. `diary.addMany` (slice classroom) writes the same diary entry for every ticked child of one programme, all or none.
+list needs a note and is audited; kind `bus` = went home on the school bus, only for a child with a route). An absence
+never marks attendance: the register pre-ticks "On leave" and the teacher saves. `diary.addMany` (slice classroom) writes
+the same diary entry for every ticked child of one programme, all or none (a meal may give `overrides: {studentId: {ate}}`).
+`diary.correct` / `diary.remove` (the author within 24 hours, the principal always; audited; a correction keeps the
+earlier data in `history`, a removal deletes the row). `observations.remove` and a changed `studentId` in
+`observations.edit` apply only to an unshared observation with no live photo.
 The three tables read like the diary (RLS below); retention deletes them under the attendance period after a child
 leaves; the family export includes them; a guardian's erasure blanks the absence reasons they wrote.
 
