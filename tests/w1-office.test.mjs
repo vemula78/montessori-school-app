@@ -488,6 +488,32 @@ test('#49 statement print: staff and the child\'s own parent; demo stamp; anothe
   assert.match(await draw(api, ACCOUNTANT_P, Payment, {}, { studentId: kid.id }), new RegExp(`href="#/print/statement/${kid.id}"`));
 });
 
+const Audit = await import('../src/ui/screens/audit.js');
+
+test('#53 audit log: search by receipt number, person and dates, amounts in rupees, entity list not limited to recent rows, CSV of what is shown', async () => {
+  const api = await mkApi();
+  api.session.set(ACCOUNTANT_P);
+  const sid = (await api.fees.invoices({})).find((i) => i.status !== 'cancelled' && i.balancePaise > 0).studentId;
+  const pay = await api.fees.recordPayment({ studentId: sid, amountPaise: 123456, mode: 'cash', paidOn: todayISO() });
+  const html = await draw(api, PRINCIPAL_P, Audit, { q: pay.receiptNumber.toLowerCase() });
+  const rows = html.match(/<tr><td class="nowrap">/g) || [];
+  assert.equal(rows.length, 1, 'one row: the payment');
+  assert.match(html, new RegExp(`${pay.receiptNumber.replace(/\//g, '\\/')}: cash ₹1,234\\.56, allocated ₹1,234\\.56, credit ₹0\\.00`));
+  assert.match(html, /<option value="academicYear">/, 'every entity listed');
+  assert.match(html, /id="au-from"/);
+  assert.match(html, /id="au-who"/);
+  assert.match(html, /<option value="system">/);
+  api.session.set(PRINCIPAL_P);
+  const mine = await api.oversight.history({ actor: 'stf-accountant', from: todayISO(), to: todayISO(), limit: 1000 });
+  assert.ok(mine.length >= 1 && mine.every((r) => r.actorId === 'stf-accountant'));
+  assert.equal((await api.oversight.history({ q: pay.receiptNumber, to: addDays(todayISO(), -1) })).length, 0, 'not before today');
+  assert.equal((await api.oversight.history({ q: pay.receiptNumber, actor: 'stf-principal' })).length, 0, 'not by the principal');
+  const shown = await api.oversight.history({ q: pay.receiptNumber });
+  const csv = Audit.auditCsv(shown);
+  assert.equal(csv.length, shown.length + 1);
+  assert.match(csv[1], /"payment",".+","record",".*₹1,234\.56/);
+});
+
 test('#42 a programme without a structure offers Create; the editor can add instalments and heads (blank rows dropped)', async () => {
   const api = await mkApi();
   api.session.set(PRINCIPAL_P);

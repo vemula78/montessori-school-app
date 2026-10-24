@@ -387,7 +387,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     return who ? fullName(who) : null;
   };
   const oversight = {
-    /** history({entity?, entityId?, limit?}) → audit rows (newest first) with actorName; reads through audit.list, so the real app's audit_log. */
+    /** history({entity?, entityId?, from?, to?, actor? (person id | 'system'), q? (text in the summary), limit?}) → audit rows (newest first) with actorName; reads through audit.list, so the real app's audit_log. */
     history: op(async q => {
       allow('admin', 'accountant');
       const rows = await audit.list(q || {});

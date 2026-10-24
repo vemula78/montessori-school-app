@@ -13,6 +13,7 @@
 
 import { todayISO, nowISO, addDays, setBusinessZone, IST_OFFSET_MIN } from '../domain/dates.js';
 import * as T from '../domain/transport.js';
+import { auditMatches } from '../domain/audit.js';
 import { tripOut, consentStatus, allow, mustRoute, STAFF_SEES_ALL } from '../domain/commands.js';
 import { makeClient, functionCaller } from './supabase/client.js';
 import { fetchSnapshot } from './supabase/snapshot.js';
@@ -107,14 +108,20 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   const oversight = surface.oversight;
 
   // ---------------- audit: read from audit_log (RLS: principal, accountant), never from the snapshot ----------------
-  audit.list = op(async ({ entity, entityId, limit = 100 } = {}) => {
+  // from/to/actor/q filter on the server before the row cap (ts is UTC; the dates are the school's, IST), then again here
+  const istStart = d => new Date(`${d}T00:00:00.000+05:30`).toISOString();
+  audit.list = op(async ({ entity, entityId, from, to, actor, q: text, limit = 100 } = {}) => {
     allow(me(), 'admin', 'accountant');
     let q = sb.from('audit_log').select('doc').order('ts', { ascending: false }).limit(Math.max(1, Math.min(Number(limit) || 100, 1000)));
     if (entity) q = q.eq('entity', entity);
     if (entityId) q = q.eq('doc->>entityId', entityId);
+    if (from) q = q.gte('ts', istStart(from));
+    if (to) q = q.lt('ts', istStart(addDays(to, 1)));
+    if (actor === 'system') q = q.eq('doc->>actorRole', 'system'); else if (actor) q = q.eq('doc->>actorId', actor);
+    if (text) q = q.ilike('doc->>summary', `%${String(text).replace(/[\\%_]/g, c => `\\${c}`)}%`);
     const { data, error } = await q;
     if (error) throw new ApiError('OFFLINE', `Could not load the audit log (${error.message})`);
-    return (data || []).map(r => r.doc);
+    return (data || []).map(r => r.doc).filter(r => auditMatches(r, { entity, entityId, from, to, actor, q: text }));
   });
 
   // ---------------- transport: positions come from trip_positions, never from the snapshot ----------------
