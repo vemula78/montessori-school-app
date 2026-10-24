@@ -44,6 +44,14 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     bytesUsed: 0, approxQuotaBytes: 0,
   });
   const emit = () => { const i = info(); for (const fn of listeners) { try { fn(snap.db, i); } catch (e) { console.error(e); } } };
+  // is what is on screen current? at = when the snapshot last loaded; stale = the latest attempt failed (patchy data)
+  let fresh = { stale: false, at: null };
+  const freshListeners = new Set();
+  const setFresh = (next) => {
+    const changed = next.stale !== fresh.stale;
+    fresh = next;
+    if (changed) for (const fn of freshListeners) { try { fn({ ...fresh }); } catch (e) { console.error(e); } }
+  };
 
   const sessionUser = async () => { const { data } = await sb.auth.getSession(); return data && data.session ? data.session.user : null; };
   async function refresh() {
@@ -53,7 +61,9 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
       if (myGen === gen && mySeq > applied) { applied = mySeq; email = null; snap = SIGNED_OUT(); emit(); }
       return snap;
     }
-    const next = await fetchSnapshot(sb, ApiError);
+    let next;
+    try { next = await fetchSnapshot(sb, ApiError); } catch (e) { if (myGen === gen) setFresh({ stale: true, at: fresh.at }); throw e; }
+    if (myGen === gen) setFresh({ stale: false, at: Date.now() });
     // drop a response that started under another sign-in, or that a newer refresh has already overtaken
     const still = await sessionUser();
     if (myGen !== gen || !still || still.id !== user.id || mySeq < applied) return snap;
@@ -423,6 +433,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
 
   const onFocus = () => { if (document.visibilityState === 'visible' && snap.status === 'active') refresh().catch(e => console.error(toApiError(e))); };
   if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onFocus);
+  if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('online', onFocus); // the connection is back
   // a sign-out, or a session that now belongs to another user (SIGNED_IN / USER_UPDATED from another tab or client),
   // drops the snapshot at once; another user's data is then loaded fresh
   sb.auth.onAuthStateChange((event, session) => {
@@ -448,6 +459,9 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     },
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     getDb() { return snap.db; },
+    /** {stale, at}: stale when the latest snapshot load failed; at = epoch ms of the last good one. */
+    freshness() { return { ...fresh }; },
+    onFreshness(fn) { freshListeners.add(fn); return () => freshListeners.delete(fn); },
     /** Refetch the snapshot now (after a payment window closes, etc.). */
     refresh: op(() => refresh().then(() => undefined)),
     session, people, setup: surface.setup, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,

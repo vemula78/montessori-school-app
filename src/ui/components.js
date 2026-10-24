@@ -216,6 +216,14 @@ export function dueHint(dueDate, today) {
   if (d < 0 || d > 14) return '';
   return d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
 }
+// The real app could not refresh (patchy data): what is on screen is from the last good load, said plainly.
+export function offlineBanner({ stale, at } = {}) {
+  if (!stale) return '';
+  const ts = Number.isFinite(at) ? new Date(at).toISOString() : null;
+  const when = !ts ? 'earlier' : fdatetime(ts).split(' ')[0] === fdatetime(new Date().toISOString()).split(' ')[0] ? ftime(ts) : fdatetime(ts);
+  return banner('warn', `<div class="row between"><span><strong>Offline - showing information from ${esc(when)}.</strong></span><button class="btn sm" data-act="refresh">Try again</button></div>`);
+}
+
 // How each payment mode reads on screens and receipts.
 export const PAY_MODE = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank transfer', 'online-mock': 'Online (mock)', online: 'Online (Razorpay)', credit: 'Credit on account' };
 // Due now = overdue or due within the same two weeks as dueHint; a later instalment issued early is "upcoming".

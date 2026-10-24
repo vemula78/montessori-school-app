@@ -560,6 +560,70 @@ test('#18 payment modes and concession types are shown as words; a health note w
   assert.doesNotMatch(diary, /temperature —/);
 });
 
+// ---- #6 patchy data: retry at start-up, and say when the screen is out of date ------------------------------------
+const PARENT_ME = { userId: 'u-p', role: 'parent', staffId: null, guardianId: 'grd-01' };
+function remoteSb(rpc) {
+  return {
+    auth: { getSession: async () => ({ data: { session: { user: { id: 'u-p', email: 'p@example.com' }, access_token: 't' } } }), onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }), signOut: async () => ({}) },
+    rpc, channel() { const ch = { on() { return ch; }, subscribe() { return ch; } }; return ch; }, removeChannel() {},
+  };
+}
+async function remoteApi(rpc) {
+  const { createRemoteApi } = await import('../src/api/remote.js');
+  const { createSurface, ApiError, toApiError, op } = await import('../src/api/index.js');
+  const calls = [];
+  const api = await createRemoteApi({ supabaseUrl: 'http://127.0.0.1:9/', supabaseAnonKey: 'x' }, { createSurface, ApiError, toApiError, op, sb: remoteSb(rpc), call: async (fn, body) => { calls.push(body.name); return { result: null }; } });
+  return { api, calls };
+}
+const snapshotOf = (me) => ({ status: 'active', me, revs: {}, remindersSent: [], ...buildSeed(NOW), auditLog: [] });
+
+test('#6 real app: a failed refresh marks the data stale (keeping the time of the last good load) until a refresh works', async () => {
+  let fail = false;
+  const { api } = await remoteApi(async () => (fail ? { data: null, error: { message: 'Failed to fetch' } } : { data: snapshotOf(PARENT_ME), error: null }));
+  await api.ready();
+  const good = api.freshness();
+  assert.equal(good.stale, false);
+  assert.ok(Number.isFinite(good.at));
+  let told = 0;
+  api.onFreshness(() => { told++; });
+  fail = true;
+  await assert.rejects(api.refresh(), { code: 'OFFLINE' });
+  assert.deepEqual(api.freshness(), { stale: true, at: good.at });
+  assert.ok(api.getDb(), 'the data already shown stays');
+  assert.equal(told, 1);
+  fail = false;
+  await api.refresh();
+  assert.equal(api.freshness().stale, false);
+  assert.equal(told, 2);
+});
+
+test('#6 the banner says the information is from the last good load, with Try again; nothing when fresh', async () => {
+  const { offlineBanner, ftime } = await import('../src/ui/components.js');
+  assert.equal(offlineBanner({ stale: false, at: Date.now() }), '');
+  const at = Date.now() - 60000;
+  const html = offlineBanner({ stale: true, at });
+  assert.match(html, new RegExp(`Offline - showing information from ${ftime(new Date(at).toISOString())}`));
+  assert.match(html, /data-act="refresh"/);
+});
+
+test('#6 start-up: a failed first load in the real app shows the Try again screen and retries once the connection is back', () => {
+  const src = readFileSync('src/ui/app.js', 'utf8');
+  const boot = src.split('async function boot()')[1];
+  assert.match(boot, /renderBlocked\(root, 'unavailable', \{[^}]*onRetry/);
+  assert.match(boot, /addEventListener\('online'/);
+  assert.match(src, /offlineBanner\(api\.freshness/);
+});
+
+test('#4 real app: a day of diary read receipts is sent together and costs one snapshot reload', async () => {
+  let snaps = 0;
+  const { api, calls } = await remoteApi(async () => { snaps++; return { data: snapshotOf(PARENT_ME), error: null }; });
+  await api.ready();
+  const before = snaps;
+  await api.diary.markReadMany(['d1', 'd2', 'd3']);
+  assert.deepEqual(calls, ['diary.markRead', 'diary.markRead', 'diary.markRead']);
+  assert.equal(snaps - before, 1);
+});
+
 // ---- #98 smaller photos ----------------------------------------------------------------------------------------
 test('#98 photos are prepared at 1024 px from quality 0.7, under the same 400 KiB ceiling', async () => {
   const Prep = await import('../src/ui/photo-prep.js');

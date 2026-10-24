@@ -3,7 +3,7 @@ import { api } from '../api/index.js';
 import { parseHash, matchRoute, go, setQuery, href, startRouter } from './router.js';
 import { renderShell, markActive, setBadges, curatePersonas } from './shell.js';
 import * as runner from './sim-runner.js';
-import { esc, banner, announcementBanner, empty, toast, onQuotaError, downloadText, readFileText, attempt, errMessage } from './components.js';
+import { esc, banner, announcementBanner, offlineBanner, empty, toast, onQuotaError, downloadText, readFileText, attempt, errMessage } from './components.js';
 import { isRealMode } from './mode.js';
 import { todayISO } from '../domain/dates.js';
 import { renderLogin, renderBlocked } from './login.js';
@@ -113,6 +113,7 @@ async function checkReconcile() {
 function refreshBanners() {
   if (!shell) return;
   const parts = [];
+  if (REAL && api.freshness) { const off = offlineBanner(api.freshness()); if (off) parts.push(off); }
   if (!REAL && quotaErr) {
     parts.push(banner('bad', `<div class="row between"><span><strong>Browser storage is full - changes are not being saved.</strong> Export a JSON backup now, then free space (Settings).</span><span class="row"><button class="btn sm" data-act="export">Export JSON</button><a class="btn sm" href="#/settings">Settings</a></span></div>`));
   }
@@ -143,6 +144,8 @@ document.addEventListener('click', (e) => {
   if (b && b.closest('.banners')) exportJsonNow();
   const n = e.target.closest('[data-act="push-later"], [data-act="push-go"]');
   if (n && n.closest('.banners')) { if (n.dataset.act === 'push-later') push.dismissNudge(); pushNudge = null; refreshBanners(); }
+  const r = e.target.closest('[data-act="refresh"]');
+  if (r && r.closest('.banners')) { r.disabled = true; api.refresh().catch((err) => console.error(err)).finally(refreshBanners); }
 });
 
 // ---- badges (unread / pending) -----------------------------------------------
@@ -425,16 +428,27 @@ function renderRecovery(err) {
 }
 
 // ---- boot ---------------------------------------------------------------------------
+let started = false;
 async function boot() {
   try {
     await api.ready();
   } catch (e) {
     console.error(e);
     if (e?.code === 'STORAGE_CORRUPT') { renderRecovery(e); return; }
+    if (REAL) {
+      // patchy data at start-up: Try again, and one more attempt by itself when the connection comes back
+      const again = () => { window.removeEventListener('online', again); boot(); };
+      window.addEventListener('online', again);
+      renderBlocked(root, 'unavailable', { error: e, onRetry: again, onSignOut: async () => { await attempt(() => api.auth.signOut()); again(); } });
+      return;
+    }
     root.innerHTML = `<div class="main">${banner('bad', `<strong>The app could not start.</strong> ${esc(errMessage(e))}`)}</div>`;
     return;
   }
+  if (started) return; // a retry raced another one
+  started = true;
   api.subscribe(onDbChange);
+  api.onFreshness?.(() => refreshBanners());
   startRouter(() => renderRoute());
 }
 
