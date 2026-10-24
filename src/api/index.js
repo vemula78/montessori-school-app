@@ -458,9 +458,10 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     list: op(observationId => { const p = me(); const rows = photoRows(p, db(), observationId); return p.role === 'parent' && rows.length && !photoConsentFor(db(), rows[0].studentId) ? [] : rows; }),
     /** consent(studentId) → true when photos of this child may be taken (photoConsentFor); staff only. */
     consent: op(studentId => { const p = allow('admin', 'teacher'); mustSee(p, studentId); return photoConsentFor(db(), studentId); }),
-    /** consentStatus({programId} | {studentIds}) → {studentId: boolean} for the staff photo badges. */
+    /** consentStatus({programId} | {studentIds}) → {studentId: boolean} for the staff photo badges; a parent: own children by id. */
     consentStatus: op(({ programId, studentIds } = {}) => {
-      const p = allow('admin', 'teacher'); const d = db();
+      const p = allow('admin', 'teacher', 'parent'); const d = db();
+      if (p.role === 'parent' && (programId || !(Array.isArray(studentIds) && studentIds.length) || studentIds.some(id => !p.studentIds.includes(id)))) throw new ApiError('NOT_ALLOWED', 'Ask about your own children only');
       // as the server: a known programme the caller teaches, its active children only
       if (programId && !d.programs.some(x => x.id === programId)) throw new ApiError('NOT_FOUND', 'Program not found');
       if (programId && p.role === 'teacher' && !(p.programIds || []).includes(programId)) throw new ApiError('NOT_ALLOWED', 'Not your programme');

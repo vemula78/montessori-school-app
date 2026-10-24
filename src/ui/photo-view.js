@@ -9,17 +9,33 @@ export const photoImg = (id, alt = 'Photo of a classroom activity') =>
 
 const wired = new WeakSet(); // one enlarge handler per container, however often it is redrawn
 
+// Photos already downloaded in this session, kept in memory only (never on disk), so coming back to a screen does not
+// download them again on a parent's prepaid data. Emptied on sign-out; the oldest entries go first beyond the cap.
+const CACHE_MAX = 120;
+const cache = new Map();
+export function clearPhotoCache() { cache.clear(); }
+function fetchBlob(api, id) {
+  if (cache.has(id)) return Promise.resolve(cache.get(id));
+  return Promise.resolve().then(() => api.photos.blob(id)).then(blob => {
+    cache.set(id, blob);
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return blob;
+  });
+}
+
 /**
- * Load every img[data-photo] under root. Returns {revokeAll} for tests; cleanup is also registered on ctx.
+ * Load the img[data-photo] under root as they come into view (all at once where the browser cannot tell).
+ * Returns {revokeAll} for tests; cleanup is also registered on ctx.
  * @param {{api:any, cleanup:(f:()=>void)=>void}} ctx
  */
 export function loadPhotos(ctx, root) {
   const urls = [];
   let closed = false;
-  const revokeAll = () => { closed = true; for (const u of urls.splice(0)) URL.revokeObjectURL(u); };
+  let io = null;
+  const revokeAll = () => { closed = true; io?.disconnect(); for (const u of urls.splice(0)) URL.revokeObjectURL(u); };
   ctx.cleanup(revokeAll);
-  for (const img of root.querySelectorAll('img[data-photo]')) {
-    Promise.resolve().then(() => ctx.api.photos.blob(img.dataset.photo)).then(blob => {
+  const load = (img) => {
+    fetchBlob(ctx.api, img.dataset.photo).then(blob => {
       if (closed) return;
       const url = URL.createObjectURL(blob);
       urls.push(url);
@@ -30,7 +46,14 @@ export function loadPhotos(ctx, root) {
       img.alt = 'This photo could not be loaded';
       img.parentElement?.classList.add('photo-missing');
     });
-  }
+  };
+  const imgs = [...root.querySelectorAll('img[data-photo]')];
+  if (typeof IntersectionObserver === 'function') {
+    io = new IntersectionObserver((entries) => {
+      for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); load(e.target); }
+    }, { rootMargin: '200px' });
+    imgs.forEach((img) => io.observe(img));
+  } else imgs.forEach(load);
   if (!wired.has(root)) {
     wired.add(root);
     root.addEventListener('click', e => {

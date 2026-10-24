@@ -216,7 +216,10 @@ test('C2 teachers read no consent rows; photos.consentStatus answers per child f
   assert.equal(m['stu-04'], true);
   assert.ok(Object.values(m).every(v => typeof v === 'boolean'));
   assert.equal((await command(tpa.token, 'photos.consentStatus', { programId: 'prog-toddler' })).status, 403);
-  assert.equal((await command(parentBus.token, 'photos.consentStatus', { studentIds: ['stu-04'] })).status, 403);
+  // review 2026-10-19 #9: a parent may ask about their own child (yes/no), never another child or a programme
+  assert.equal(typeof ok(await command(parentBus.token, 'photos.consentStatus', { studentIds: ['stu-04'] }))['stu-04'], 'boolean');
+  assert.equal((await command(parentBus.token, 'photos.consentStatus', { studentIds: ['stu-01'] })).status, 403);
+  assert.equal((await command(parentBus.token, 'photos.consentStatus', { programId: 'prog-primary-a' })).status, 403);
   assert.equal(psql(`select count(*) from app.command_requests where name = 'photos.consentStatus'`), '0', 'readOnly: never stored');
 });
 

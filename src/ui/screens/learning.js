@@ -88,6 +88,17 @@ function obsCard(o, s, { staff, canShare, noPhoto }) {
       ${noPhoto.has(o.studentId) ? badge('No photo consent', 'warn') : ''}</div>` : ''}</div>`;
 }
 
+// One consent answer per programme, reused by the re-renders after Share / Edit / Add photo; asked again after
+// two minutes or for another programme (the server checks consent again on every photo anyway).
+let consentMemo = { key: '', at: 0, value: null };
+async function photoConsent(api, students) {
+  const key = students.map((s) => s.id).join(',');
+  if (consentMemo.key === key && Date.now() - consentMemo.at < 120000) return consentMemo.value;
+  const value = await api.photos.consentStatus({ studentIds: students.map((s) => s.id) });
+  consentMemo = { key, at: Date.now(), value };
+  return value;
+}
+
 // ---------------------------------------------------------------- staff: observations tab
 async function observationsTab(ctx, host, { programId, students }) {
   const { api, query } = ctx;
@@ -100,7 +111,7 @@ async function observationsTab(ctx, host, { programId, students }) {
   ]);
   const noPhoto = new Set();
   // one call for the whole list (the real app asks the server; teachers cannot read consent records themselves)
-  const consentOk = students.length ? await api.photos.consentStatus({ studentIds: students.map((s) => s.id) }) : {};
+  const consentOk = students.length ? await photoConsent(api, students) : {};
   for (const s of students) if (!consentOk[s.id]) noPhoto.add(s.id);
   const byStudent = new Map(students.map((s) => [s.id, s]));
   host.innerHTML = `<div class="row" style="margin-bottom:12px">
@@ -427,7 +438,10 @@ async function parentView(ctx) {
   const kids = await api.people.childrenOf(persona.guardianId);
   if (!kids.length) { ctx.el.innerHTML = `${pageHead('Learning')}${empty('No children linked to this account')}`; return; }
   const kid = kids.find((k) => k.id === query.student) || kids[0];
-  const [obs, reports] = await Promise.all([api.observations.list({ studentId: kid.id }), api.reports.list({ studentId: kid.id })]);
+  const [all, reports, consent] = await Promise.all([api.observations.list({ studentId: kid.id }), api.reports.list({ studentId: kid.id }),
+    Promise.resolve().then(() => api.photos.consentStatus({ studentIds: [kid.id] })).catch((e) => { console.error(e); return null; })]);
+  const hidden = consent && consent[kid.id] === false; // strict rule: until every guardian using the app has agreed
+  const obs = (query.all ? all : all.slice(0, 10)).map((o) => (hidden ? { ...o, photoIds: [] } : o)); // newest first; older on request
   ctx.el.innerHTML = `${pageHead('Learning', fullName(kid))}
     ${kids.length > 1 ? `<div class="row" style="margin-bottom:12px"><div class="seg" role="tablist">${kids.map((k) => `<button role="tab" aria-pressed="${k.id === kid.id}" data-kid="${esc(k.id)}">${esc(k.firstName)}</button>`).join('')}</div></div>` : ''}
     <div class="stack">
@@ -435,9 +449,12 @@ async function parentView(ctx) {
       ${reports.length ? `<ul class="list card-list">${reports.map((r) => `<li class="link"><a href="${esc(ctx.href('/print/report/' + r.id))}"><div class="row between"><div><div class="item-title">${esc(r.termName)}</div><small>${fdate(r.fromDate)} to ${fdate(r.toDate)}</small></div>${badge('Read and print', 'clay')}</div></a></li>`).join('')}</ul>`
         : empty('No termly report yet', 'Your child’s teacher and the principal publish a report at the end of each term.')}
       <h2>Shared by the teacher</h2>
-      ${obs.length ? obs.map((o) => obsCard(o, kid, { staff: false, canShare: false, noPhoto: new Set() })).join('') : empty('Nothing shared yet', 'The teacher chooses which observations and photos to share with you.')}</div>`;
+      ${hidden ? banner('info', `Photos of ${esc(kid.firstName)} are hidden until every parent or guardian who uses the app has agreed to photos (Settings &gt; My privacy choices).`) : ''}
+      ${obs.length ? obs.map((o) => obsCard(o, kid, { staff: false, canShare: false, noPhoto: new Set() })).join('') : empty('Nothing shared yet', 'The teacher chooses which observations and photos to share with you.')}
+      ${all.length > obs.length ? `<div><button class="btn" id="l-older">Show older (${all.length - obs.length})</button></div>` : ''}</div>`;
   loadPhotos(ctx, ctx.el);
   ctx.el.querySelectorAll('[data-kid]').forEach((b) => b.addEventListener('click', () => ctx.setQuery({ student: b.dataset.kid })));
+  ctx.el.querySelector('#l-older')?.addEventListener('click', () => ctx.setQuery({ student: kid.id, all: 1 }));
 }
 
 export async function render(ctx) {

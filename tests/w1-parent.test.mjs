@@ -256,3 +256,117 @@ test('#19 a conversation over several days shows the date (DD-MMM-YYYY) whenever
   const seps = [...html.matchAll(/class="bubble-day[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1]);
   assert.deepEqual(seps, [day(new Date(NOW.getTime() - 3 * 86400000)), day(NOW)]);
 });
+
+// ---- #5 Learning photos: only when in view, once per session; the latest ten observations first -------------------
+function photoRoot(ids) {
+  const imgs = ids.map((id) => ({ dataset: { photo: id }, src: '', alt: '', classList: { add() {} }, parentElement: null }));
+  return { imgs, querySelectorAll: () => imgs, addEventListener() {} };
+}
+function photoCtx() {
+  const fetched = [];
+  return { fetched, cleanups: [], api: { photos: { blob: async (id) => { fetched.push(id); return new Blob(['x']); } } }, cleanup(f) { this.cleanups.push(f); } };
+}
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+test('#5 a photo is downloaded only when it scrolls into view, and only once per session', async () => {
+  const { loadPhotos, clearPhotoCache } = await import('../src/ui/photo-view.js');
+  const seen = [];
+  globalThis.IntersectionObserver = class { constructor(cb) { this.cb = cb; seen.push(this); this.els = []; } observe(el) { this.els.push(el); } unobserve() {} disconnect() {} };
+  try {
+    const ctx = photoCtx();
+    const root = photoRoot(['w1-a', 'w1-b']);
+    loadPhotos(ctx, root);
+    await tick();
+    assert.deepEqual(ctx.fetched, [], 'nothing before it is visible');
+    const io = seen.at(-1);
+    io.cb([{ isIntersecting: true, target: root.imgs[0] }, { isIntersecting: false, target: root.imgs[1] }]);
+    await tick();
+    assert.deepEqual(ctx.fetched, ['w1-a']);
+    assert.match(root.imgs[0].src, /^blob:/);
+    ctx.cleanups.forEach((f) => f()); // leaving the screen
+    const back = photoCtx();
+    const root2 = photoRoot(['w1-a']);
+    loadPhotos(back, root2);
+    seen.at(-1).cb([{ isIntersecting: true, target: root2.imgs[0] }]);
+    await tick();
+    assert.deepEqual(back.fetched, [], 'coming back does not download it again');
+    assert.match(root2.imgs[0].src, /^blob:/);
+    clearPhotoCache();
+    const after = photoCtx();
+    const root3 = photoRoot(['w1-a']);
+    loadPhotos(after, root3);
+    seen.at(-1).cb([{ isIntersecting: true, target: root3.imgs[0] }]);
+    await tick();
+    assert.deepEqual(after.fetched, ['w1-a'], 'sign-out empties the in-memory cache');
+  } finally { delete globalThis.IntersectionObserver; }
+  // a browser without IntersectionObserver still shows every photo
+  const ctx = photoCtx();
+  loadPhotos(ctx, photoRoot(['w1-c', 'w1-d']));
+  await tick();
+  assert.deepEqual(ctx.fetched.sort(), ['w1-c', 'w1-d']);
+});
+
+test('#5 parent Learning shows the latest 10 shared observations, with "Show older" for the rest', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const kid = api.session.current().studentIds[0];
+  api.session.set(TEACHER);
+  for (let i = 0; i < 12; i++) {
+    const o = await api.observations.add({ studentId: kid, date: addDays(todayISO(), -i), area: 'language', text: `W1OBS-${i}` });
+    await api.observations.share(o.id);
+  }
+  api.session.set(PARENT);
+  const total = (await api.observations.list({ studentId: kid })).length;
+  const Learning = await import('../src/ui/screens/learning.js');
+  const html = await draw(api, PARENT, Learning, { student: kid });
+  assert.equal((html.match(/class="card stack obs-card"/g) || []).length, 10);
+  assert.match(html, /W1OBS-0\b/, 'newest first');
+  assert.match(html, new RegExp(`Show older \\(${total - 10}\\)`));
+  const all = await draw(api, PARENT, Learning, { student: kid, all: '1' });
+  assert.equal((all.match(/class="card stack obs-card"/g) || []).length, total);
+});
+
+// ---- #9 a parent is told why photos are hidden ---------------------------------------------------------------
+test('#9 a parent may ask whether photos of their OWN child are shown (yes/no), never another child or a programme', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const p = api.session.current();
+  const own = p.studentIds[0];
+  const r = await api.photos.consentStatus({ studentIds: [own] });
+  assert.equal(typeof r[own], 'boolean');
+  const other = api.getDb().students.find((s) => !p.studentIds.includes(s.id)).id;
+  await assert.rejects(() => api.photos.consentStatus({ studentIds: [other] }), (e) => e.code === 'NOT_ALLOWED');
+  await assert.rejects(() => api.photos.consentStatus({ programId: api.getDb().programs[0].id }), (e) => e.code === 'NOT_ALLOWED');
+  const { COMMANDS } = await import('../src/domain/commands.js');
+  const c = COMMANDS['photos.consentStatus'];
+  const db = api.getDb();
+  assert.doesNotThrow(() => c.authorize(p, db, [{ studentIds: [own] }]));
+  assert.throws(() => c.authorize(p, db, [{ studentIds: [own, other] }]), (e) => e.code === 'NOT_ALLOWED');
+  assert.throws(() => c.authorize(p, db, [{ programId: db.programs[0].id }]), (e) => e.code === 'NOT_ALLOWED');
+});
+
+test('#9 parent Learning explains hidden photos when not every guardian has agreed, and says nothing when they have', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const kid = api.session.current().studentIds[0];
+  const first = api.getDb().students.find((s) => s.id === kid).firstName;
+  const Learning = await import('../src/ui/screens/learning.js');
+  const ctx = mkCtx(api, PARENT, { student: kid });
+  ctx.api = { ...api, photos: { ...api.photos, consentStatus: async () => ({ [kid]: false }) } };
+  await Learning.render(ctx);
+  assert.match(ctx.el.innerHTML, new RegExp(`Photos of ${first} are hidden until every parent or guardian who uses the app has agreed to photos`));
+  const ok = mkCtx(api, PARENT, { student: kid });
+  ok.api = { ...api, photos: { ...api.photos, consentStatus: async () => ({ [kid]: true }) } };
+  await Learning.render(ok);
+  assert.doesNotMatch(ok.el.innerHTML, /are hidden until/);
+});
+
+test('#33 teacher Learning asks the server about photo consent once per programme, not on every re-render', async () => {
+  const api = await mkApi();
+  const Learning = await import('../src/ui/screens/learning.js');
+  let n = 0;
+  const wrap = (ctx) => { ctx.api = { ...api, photos: { ...api.photos, consentStatus: (q) => { n++; return api.photos.consentStatus(q); } } }; return ctx; };
+  await Learning.render(wrap(mkCtx(api, TEACHER, { tab: 'observations' })));
+  await Learning.render(wrap(mkCtx(api, TEACHER, { tab: 'observations' })));
+  assert.equal(n, 1, 'the re-render after Share / Edit / Add photo reuses the answer');
+});

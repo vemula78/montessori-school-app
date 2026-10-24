@@ -654,10 +654,17 @@ export const COMMANDS = {
   /**
    * consentStatus({programId} | {studentIds}) → {studentId: boolean} — may photos of these children be taken
    * (photoConsentFor, computed here over every guardian's consents). Staff never read the consent rows themselves.
+   * A parent may ask about their own children ({studentIds} only), so the app can say why photos are hidden.
    */
   'photos.consentStatus': {
     slice: 'learning', serverOnly: true, readOnly: true,
     authorize(p, db, [q = {}]) {
+      // a parent may ask only about their own children, by id: a yes/no per child, never whose consent is missing
+      if (p && p.role === 'parent') {
+        if (!q || q.programId || !Array.isArray(q.studentIds) || !q.studentIds.length) deny('Ask about your own children only');
+        for (const sid of q.studentIds) if (!(p.studentIds || []).includes(sid)) deny('Not your child');
+        return;
+      }
       staffLearning(p);
       if (q && q.programId) { if (!byId(db.programs, q.programId)) fail('NOT_FOUND', 'Program not found'); teachesProgram(p, q.programId); return; }
       if (!q || !Array.isArray(q.studentIds) || !q.studentIds.length) fail('VALIDATION', 'Give a programId or studentIds');

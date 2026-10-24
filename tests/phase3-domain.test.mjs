@@ -564,7 +564,10 @@ test('audit C2: photos.consentStatus answers {studentId: boolean} for staff of t
   assert.deepEqual(run(db, t, 'photos.consentStatus', { studentIds: ['stu-04'] }), { 'stu-04': true });
   assert.throws(() => run(db, t, 'photos.consentStatus', { programId: 'prog-toddler' }), { code: 'NOT_ALLOWED' });
   assert.throws(() => run(db, t, 'photos.consentStatus', { studentIds: ['stu-03'] }), { code: 'NOT_ALLOWED' });
-  assert.throws(() => run(db, parent(db, 'grd-02'), 'photos.consentStatus', { studentIds: ['stu-04'] }), { code: 'NOT_ALLOWED' });
+  // review 2026-10-19 #9: a parent may ask about their own child (yes/no), never another child or a programme
+  assert.deepEqual(run(db, parent(db, 'grd-02'), 'photos.consentStatus', { studentIds: ['stu-04'] }), { 'stu-04': true });
+  assert.throws(() => run(db, parent(db, 'grd-02'), 'photos.consentStatus', { studentIds: ['stu-01'] }), { code: 'NOT_ALLOWED' });
+  assert.throws(() => run(db, parent(db, 'grd-02'), 'photos.consentStatus', { programId: 'prog-primary-a' }), { code: 'NOT_ALLOWED' });
   assert.equal(Object.keys(run(db, admin(db), 'photos.consentStatus', { programId: 'prog-toddler' })).length > 0, true);
   assert.ok(COMMANDS['photos.consentStatus'].readOnly && COMMANDS['photos.consentStatus'].serverOnly);
 });

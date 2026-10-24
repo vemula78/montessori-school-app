@@ -12,6 +12,7 @@ import { renderTwoStep } from './two-step.js';
 import { renderConsent } from './consent.js';
 import * as push from './push.js';
 import { clearSlips } from './screens/invites-print.js';
+import { clearPhotoCache } from './photo-view.js';
 
 const REAL = isRealMode();
 
@@ -212,6 +213,7 @@ async function signOutNow() {
   if (runner.isRunning()) runner.stop('Trip recording stopped because you signed out.');
   await attempt(() => api.auth.signOut());
   clearSlips(); // issued invite codes are shown once and must not outlive the sign-in that issued them
+  clearPhotoCache(); // children's photos held in memory for this session
   gateOk = false; shell = null; shellFor = null; token += 1; runCleanups(); pushNudge = null;
   document.title = 'School app';
   location.hash = '';
