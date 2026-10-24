@@ -76,6 +76,7 @@ let cleanups = [];
 let changeFns = new Set();
 let quotaErr = null;
 let recovering = false;
+let pushNudge = null; // real app, parent: 'enable' | 'ios-install' when notifications were chosen but are not on for this phone
 
 onQuotaError((e) => { quotaErr = e; refreshBanners(); });
 
@@ -119,6 +120,9 @@ function refreshBanners() {
   }
   const notice = announcementBanner(api.getDb()?.school?.announcement, todayISO()); // plain text set by the principal (Administration)
   if (notice) parts.push(notice);
+  if (REAL && pushNudge) {
+    parts.push(banner('info', `<div class="row between"><span>${pushNudge === 'ios-install' ? 'To get notifications on this iPhone, add the app to your Home Screen first.' : 'You chose notifications, but they are not on for this phone yet.'}</span><span class="row"><a class="btn sm primary" href="#/settings" data-act="push-go">${pushNudge === 'ios-install' ? 'Show me how' : 'Turn on'}</a><button class="btn sm" data-act="push-later">Not now</button></span></div>`));
+  }
   if (reconcileFailing === -1) {
     parts.push(banner('bad', `<div class="row between"><span><strong>Money reconciliation could not be computed.</strong> The fee data may be malformed.</span><a class="btn sm" href="#/reports?tab=reconcile">Details</a></div>`));
   } else if (reconcileFailing) {
@@ -135,6 +139,8 @@ async function exportJsonNow() {
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-act="export"]');
   if (b && b.closest('.banners')) exportJsonNow();
+  const n = e.target.closest('[data-act="push-later"], [data-act="push-go"]');
+  if (n && n.closest('.banners')) { if (n.dataset.act === 'push-later') push.dismissNudge(); pushNudge = null; refreshBanners(); }
 });
 
 // ---- badges (unread / pending) -----------------------------------------------
@@ -206,7 +212,7 @@ async function signOutNow() {
   if (runner.isRunning()) runner.stop('Trip recording stopped because you signed out.');
   await attempt(() => api.auth.signOut());
   clearSlips(); // issued invite codes are shown once and must not outlive the sign-in that issued them
-  gateOk = false; shell = null; shellFor = null; token += 1; runCleanups();
+  gateOk = false; shell = null; shellFor = null; token += 1; runCleanups(); pushNudge = null;
   document.title = 'School app';
   location.hash = '';
   renderRoute();
@@ -244,7 +250,14 @@ async function gate() {
     if (my !== token) return false;
     if (!cs?.purposes?.app_account?.given) { renderConsent(root, { status: cs, children: (persona.studentIds || []).map((id) => api.getDb().students.find((s) => s.id === id)).filter(Boolean).map((s) => ({ id: s.id, firstName: s.firstName })), photoMonths: api.getDb().school?.retention?.photosMonthsAfterLeaving ?? null, onDone: again, onSignOut: signOutNow }); return false; }
     // a parent who already chose notifications keeps them working across browser clean-ups (no prompt, no new consent)
-    if (cs.purposes.push?.given) Promise.resolve().then(() => api.push.vapidPublicKey()).then((vapidKey) => push.keepAlive({ vapidKey, send: (j) => api.push.subscribe(j) })).catch(() => {});
+    // ... and one who chose them but never switched them on for this phone is reminded once per start-up, until "Not now"
+    if (cs.purposes.push?.given) {
+      Promise.resolve().then(() => api.push.vapidPublicKey()).then(async (vapidKey) => {
+        await push.keepAlive({ vapidKey, send: (j) => api.push.subscribe(j) });
+        pushNudge = vapidKey ? await push.nudge() : null;
+        refreshBanners();
+      }).catch(() => {});
+    }
   }
   gateOk = true;
   return true;

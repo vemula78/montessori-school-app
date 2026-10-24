@@ -2,6 +2,7 @@
 import { api } from '../api/index.js';
 import { esc, banner, errMessage } from './components.js';
 import { PURPOSES, PRIVACY_VERSION, noticeHtml, noticeHash } from './privacy.js';
+import * as push from './push.js';
 
 const frame = (inner) => `<div class="auth-wrap"><div class="auth-card stack">
   <div class="auth-logo" aria-hidden="true"><span class="logo"></span></div>${inner}</div></div>`;
@@ -54,7 +55,37 @@ export function renderConsent(root, { status, children = [], photoMonths = null,
     try {
       const textHash = await noticeHash();
       await api.consent.give({ purposes, ...(Object.keys(perChild).length ? { perChild } : {}), version: PRIVACY_VERSION, ...(textHash ? { textHash } : {}) });
-      onDone();
-    } catch (ex) { errEl.textContent = errMessage(ex); go.disabled = false; }
+    } catch (ex) { errEl.textContent = errMessage(ex); go.disabled = false; return; }
+    if (purposes.includes('push')) await renderPushStep(root, { onDone }); else onDone();
+  });
+}
+
+/**
+ * Consent to notifications only records the choice; this step switches them on for this phone. The permission prompt
+ * must come straight from a tap (iOS), so the school's public key is fetched before the button is shown.
+ * @param {HTMLElement} root
+ * @param {{onDone:()=>void}} o
+ */
+export async function renderPushStep(root, { onDone }) {
+  const s = push.support();
+  if (!s.ok && s.code !== 'ios-install') { onDone(); return; } // this browser cannot: Settings explains why
+  const vapidKey = s.ok ? await Promise.resolve().then(() => api.push.vapidPublicKey()).catch(() => null) : null;
+  if (s.ok && !vapidKey) { onDone(); return; } // not set up for this school yet: nothing to switch on
+  root.innerHTML = frame(`<h1>Notifications on this phone</h1>
+    ${s.ok ? `<p class="muted">You chose notifications. Allow them on this phone so bus alerts, receipts and important notices reach you.</p>
+      <div class="err" id="pn-err" role="alert"></div>
+      <button class="btn primary block" type="button" id="pn-on">Allow notifications on this phone</button>`
+    : `${banner('warn', esc(s.message))}<ol style="margin:0;padding-left:20px">${push.IOS_STEPS.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>`}
+    <button class="btn block ghost" type="button" id="pn-skip">${s.ok ? 'Not now' : 'Continue'}</button>
+    <small class="muted">You can turn notifications on or off later in Settings.</small>`);
+  root.querySelector('#pn-skip').addEventListener('click', () => { push.dismissNudge(); onDone(); }); // just answered: no banner straight after
+  if (!s.ok) return;
+  root.querySelector('#pn-on').addEventListener('click', async (e) => {
+    const b = e.target;
+    b.disabled = true;
+    try {
+      await push.enable({ vapidKey, giveConsent: async () => {}, send: (j) => api.push.subscribe(j) }); // consent is already on record
+    } catch (ex) { root.querySelector('#pn-err').textContent = errMessage(ex); b.disabled = false; return; }
+    onDone();
   });
 }

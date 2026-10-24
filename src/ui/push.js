@@ -7,6 +7,9 @@ const OPTOUT_KEY = 'school.push.optout';
 const optedOut = () => { try { return localStorage.getItem(OPTOUT_KEY) === '1'; } catch { return false; } };
 const setOptOut = (on) => { try { if (on) localStorage.setItem(OPTOUT_KEY, '1'); else localStorage.removeItem(OPTOUT_KEY); } catch { /* not persisted: worst case start-up re-checks */ } };
 
+// Remembers, on this device only, that the person said "Not now" to the start-up suggestion to turn notifications on.
+const NUDGE_KEY = 'school.push.nudge.dismissed';
+
 export const isIos = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 export const isStandalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -96,3 +99,17 @@ export async function keepAlive({ vapidKey, send }) {
     }
   } catch (e) { console.warn('push keep-alive failed', e); }
 }
+
+/**
+ * For a parent who consented to notifications: should start-up suggest switching them on for this device?
+ * 'enable' (no subscription here yet), 'ios-install' (iPhone in Safari: Add to Home Screen first), or null.
+ * Never after "Not now", after turning them off here, or when the site is blocked (Settings explains that).
+ */
+export async function nudge() {
+  try { if (optedOut() || localStorage.getItem(NUDGE_KEY) === '1') return null; } catch { return null; }
+  const s = await state();
+  if (!s.support.ok) return s.support.code === 'ios-install' ? 'ios-install' : null;
+  return s.permission === 'denied' || s.subscribed ? null : 'enable';
+}
+
+export function dismissNudge() { try { localStorage.setItem(NUDGE_KEY, '1'); } catch { /* shown again next start-up */ } }
