@@ -274,6 +274,9 @@ select { appearance: auto; }
 .chip { appearance: none; border: 1.5px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 999px; min-height: 38px; padding: 0 14px; font: inherit; font-weight: 800; font-size: .85rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .chip { text-decoration: none; }
 .chip[aria-pressed="true"], .chip.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+/* allergy / medical alert badge next to a child's name (#78): a full-size tap target that opens the details */
+.chip.health-flag { min-height: var(--tap); border-color: var(--berry); background: var(--berry-soft); color: var(--berry); vertical-align: middle; }
+.chip.health-flag.note { border-color: var(--field); background: var(--tint); color: var(--ink); }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.holiday { background: var(--berry); }
 .dot.event { background: var(--sky); }

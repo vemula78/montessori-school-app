@@ -1,6 +1,7 @@
 // Daily attendance for one programme. Non-working days are refused by the api (single source of truth).
 import { todayISO, addDays, isISODate } from '../../domain/dates.js';
 import { esc, empty, pageHead, fdate, ftime, fullName, options, attempt, indexBy, toast, notifyQuota, DASH } from '../components.js';
+import { loadAlerts, alertsUnavailable, healthBadge, wireHealthBadges } from '../health-alerts.js';
 
 const OPTS = [['present', 'P', 'p', 'Present'], ['absent', 'A', 'a', 'Absent'], ['late', 'L', 'l', 'Late'], ['leave', 'Lv', 'v', 'On leave']];
 const SNAPSHOT_DAYS = 60; // the real app loads attendance of the last 60 days (my_snapshot, migration 0003)
@@ -30,11 +31,12 @@ export async function render(ctx) {
   const earliest = api.mode === 'supabase' ? addDays(today, -SNAPSHOT_DAYS) : null;
   const tooOld = earliest !== null && date < earliest;
 
-  const [rows, working, leave, trips] = await Promise.all([
+  const [rows, working, leave, trips, alerts] = await Promise.all([
     api.attendance.forDate(date, programId),
     api.calendar.isWorkingDay(date, programId),
     api.care.leave({ programId, from: date }).catch(() => []),
     api.transport.trips({ date }).catch(() => []), // the children's morning bus boarding, where this user may see it
+    loadAlerts(api, programId),
   ]);
   // absences parents reported: shown above the register; an unmarked child on one is pre-ticked "On leave" (not saved)
   const reported = leave.filter((r) => r.status === 'active');
@@ -78,7 +80,7 @@ export async function render(ctx) {
     ${reported.length ? `<div class="card stack" style="margin-bottom:12px"><h2 style="margin:0">Absences reported by parents</h2><ul class="list">${reported.map((r) => `<li><div class="row between"><div><div class="item-title">${esc(fullName(stu.get(r.studentId)))}</div>
       <small>${fdate(r.fromDate)}${r.toDate !== r.fromDate ? ` to ${fdate(r.toDate)}` : ''}${r.reason ? ` &middot; ${esc(r.reason)}` : ''}</small></div>
       ${r.seenAt ? '<span class="badge ok">Seen</span>' : `<button class="btn sm" data-seen="${esc(r.id)}">Mark seen</button>`}</div></li>`).join('')}</ul></div>` : ''}
-    ${tooOld ? `<div class="banner warn"><strong>Older days are not loaded in the app.</strong> The register for ${fdate(date)} is in the attendance report and the data export; it cannot be changed here.</div>` : ''}
+    ${alertsUnavailable(alerts)}${tooOld ? `<div class="banner warn"><strong>Older days are not loaded in the app.</strong> The register for ${fdate(date)} is in the attendance report and the data export; it cannot be changed here.</div>` : ''}
     ${working ? '' : `<div class="banner warn"><strong>${esc(reason)}.</strong> This is not a working day, so attendance cannot be saved.
       <div class="row" style="margin-top:6px"><button class="btn sm" id="a-lastwork">Go to previous working day</button></div></div>`}
     ${rows.length ? `
@@ -91,7 +93,7 @@ export async function render(ctx) {
         // saved status first, then this device's unsaved mark, then the morning bus, then a parent-reported absence
         const pick = r.status || (OPTS.some(([v]) => v === draft[r.studentId]) ? draft[r.studentId] : null) || (bus ? 'present' : null) || (lv ? 'leave' : null);
         const busNote = bus ? `<br><small${r.status === 'absent' || r.status === 'leave' ? ' class="badge bad"' : ''}><strong>Came by bus</strong> ${ftime(bus)}${r.status === 'absent' || r.status === 'leave' ? ' but marked away: check where the child is' : ''}</small>` : '';
-        return `<div class="att-row"><div><div class="item-title">${esc(fullName(s))}</div><small>last 14 days: ${sc(sm, 'present')} present, ${sc(sm, 'absent')} absent</small>${busNote}${lv ? `<br><small><strong>Absence reported</strong>${lv.reason ? `: ${esc(lv.reason)}` : ''}${r.status ? '' : ' (pre-ticked; save to record)'}</small>` : ''}</div>
+        return `<div class="att-row"><div><div class="item-title">${esc(fullName(s))} ${healthBadge(alerts.map.get(r.studentId))}</div><small>last 14 days: ${sc(sm, 'present')} present, ${sc(sm, 'absent')} absent</small>${busNote}${lv ? `<br><small><strong>Absence reported</strong>${lv.reason ? `: ${esc(lv.reason)}` : ''}${r.status ? '' : ' (pre-ticked; save to record)'}</small>` : ''}</div>
           <div class="att-opts" role="radiogroup" aria-label="Attendance for ${esc(fullName(s))}">${OPTS.map(([val, short, cls, label]) => `<label title="${label}"><input type="radio" name="st-${esc(r.studentId)}" value="${val}"${pick === val ? ' checked' : ''}><span class="${cls}">${short}</span></label>`).join('')}</div></div>`;
       }).join('')}
     </div>
@@ -105,6 +107,7 @@ export async function render(ctx) {
   ctx.el.querySelector('#a-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#a-next').addEventListener('click', () => { if (date < today) go({ date: addDays(date, 1) }); });
   ctx.el.querySelector('#a-today')?.addEventListener('click', () => go({ date: today }));
+  wireHealthBadges(ctx.el, alerts.map);
   ctx.el.querySelector('#a-lastwork')?.addEventListener('click', async () => { const d = await prevWorking(); d ? go({ date: d }) : toast('No working day found in the last 30 days', 'bad'); });
   const checkedOf = (id) => ctx.el.querySelector(`input[name="st-${CSS.escape(id)}"]:checked`)?.value;
   // what is ticked now and differs from the saved register: kept as this device's draft until saved
