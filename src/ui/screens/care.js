@@ -2,6 +2,7 @@
 // The teacher reads the absences on the attendance register; the pick-up log is the teacher's record (Going home).
 import { todayISO, addDays } from '../../domain/dates.js';
 import { esc, empty, pageHead, fdate, ftime, fullName, badge, formModal, confirmDialog, attempt } from '../components.js';
+import { healthCardHtml, editHealth } from '../health-alerts.js';
 
 const relationOf = (g) => (g.relation ? g.relation[0].toUpperCase() + g.relation.slice(1) : 'Parent');
 
@@ -68,10 +69,11 @@ export async function render(ctx) {
   if (!kids.length) { ctx.el.innerHTML = `${pageHead('Absences & pick-up')}${empty('No children linked to this account')}`; return; }
   const kid = kids.find((k) => k.id === query.student) || kids[0];
   const today = todayISO();
-  const [leave, who, pickups] = await Promise.all([
+  const [leave, who, pickups, health] = await Promise.all([
     api.care.leave({ studentId: kid.id, from: addDays(today, -30) }),
     api.care.whoMayCollect(kid.id),
     api.care.pickups({ studentId: kid.id, from: addDays(today, -14) }),
+    api.health.get(kid.id).catch(() => null),
   ]);
   ctx.el.innerHTML = `${pageHead('Absences & pick-up', fullName(kid))}
     ${kids.length > 1 ? `<div class="seg" role="tablist" style="margin-bottom:12px">${kids.map((k) => `<button role="tab" aria-pressed="${k.id === kid.id}" data-kid="${esc(k.id)}">${esc(k.firstName)}</button>`).join('')}</div>` : ''}
@@ -82,10 +84,12 @@ export async function render(ctx) {
       <div class="card stack"><div class="row between"><h2 style="margin:0">Who may collect ${esc(kid.firstName)}</h2>${who.contacts.length < 6 ? '<button class="btn sm" id="c-add">Add a person</button>' : ''}</div>
         ${whoHtml(kid, who)}</div>
       <div class="card stack"><h2 style="margin:0">Recent pick-ups</h2>${pickupsHtml(pickups, who)}</div>
+      ${healthCardHtml(health, { canEdit: true, forParent: true })}
     </div>`;
   ctx.el.querySelectorAll('[data-kid]').forEach((b) => b.addEventListener('click', () => ctx.setQuery({ student: b.dataset.kid })));
   ctx.el.querySelector('#c-leave').addEventListener('click', async () => { if (await reportAbsence(ctx, kid)) ctx.rerender(); });
   ctx.el.querySelector('#c-add')?.addEventListener('click', async () => { if (await addPerson(ctx, kid)) ctx.rerender(); });
+  ctx.el.querySelector('#health-edit')?.addEventListener('click', async () => { if (await editHealth(ctx, health)) ctx.rerender(); });
   ctx.el.addEventListener('click', async (e) => {
     const w = e.target.closest('[data-withdraw]');
     if (w && await confirmDialog('Withdraw absence', 'Tell the teacher this absence is cancelled?', { okLabel: 'Withdraw' })

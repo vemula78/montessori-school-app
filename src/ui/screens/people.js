@@ -3,6 +3,7 @@
 // people.updateGuardian, people.addStudent): the rules live there, not here. Every interpolated value goes through esc().
 import { todayISO } from '../../domain/dates.js';
 import { esc, fdate, badge, banner, empty, pageHead, options, formModal, attempt, toast, DASH } from '../components.js';
+import { healthBadge, healthCardHtml, editHealth, wireHealthBadges } from '../health-alerts.js';
 
 const STATUS_FILTERS = [['active', 'Attending'], ['left', 'Left'], ['nodate', 'Left, no leaving date'], ['all', 'All']];
 const openOnly = (list, keepId) => list.filter((x) => x.active !== false || x.id === keepId);
@@ -73,6 +74,7 @@ async function child(ctx) {
         }).join('')}</ul>` : empty('No guardian recorded')}
         <small>A parent’s sign-in email is changed on Administration &gt; Accounts. Other children of the same parent: <a href="${esc(ctx.href('/people', { status: 'all', guardian: mine[0]?.id || '' }))}">show the family</a>.</small></div>
     </div>`;
+  await healthSection(ctx, s);
   const form = ctx.el.querySelector('#pp-form');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -111,6 +113,15 @@ async function child(ctx) {
     });
     if (ok) { toast('Details saved'); ctx.rerender(); }
   });
+}
+
+// ---------------------------------------------------------------- allergies and medical alerts (#78)
+async function healthSection(ctx, s) {
+  const h = await ctx.api.health.get(s.id).catch(() => null);
+  const flag = h && (h.allergies || h.medical || h.notes) ? healthBadge(h) : '';
+  ctx.el.insertAdjacentHTML('beforeend', `<div style="margin-top:14px">${flag ? `<div style="margin-bottom:8px">${flag}</div>` : ''}${healthCardHtml(h, { canEdit: s.status === 'active' })}</div>`);
+  if (h) wireHealthBadges(ctx.el, new Map([[s.id, h]]));
+  ctx.el.querySelector('#health-edit')?.addEventListener('click', async () => { if (await editHealth(ctx, h)) ctx.rerender(); });
 }
 
 // ---------------------------------------------------------------- one new child (the import's own checks, on the server too)

@@ -3,6 +3,7 @@
 // confirmed it; the principal sees it in the audit log. Today, one tap on a name records it (the last collector first).
 import { todayISO, addDays, isISODate, nowHHMM } from '../../domain/dates.js';
 import { esc, empty, pageHead, fdate, ftime, fullName, badge, options, formModal, attempt, toast } from '../components.js';
+import { loadAlerts, alertsUnavailable, healthBadge, wireHealthBadges } from '../health-alerts.js';
 
 const LATE_DAYS = 7; // as the domain allows (PICKUP_LATE_DAYS)
 const whenOf = (p) => (p.time ? esc(p.time) : ftime(p.at));
@@ -73,11 +74,12 @@ export async function render(ctx) {
   const earliest = addDays(today, -LATE_DAYS);
   const date = isISODate(query.date) && query.date <= today && query.date >= earliest ? query.date : today;
   const students = (await api.people.students({ programId })).filter((s) => s.status === 'active');
-  const [att, recent, leave, trips] = await Promise.all([
+  const [att, recent, leave, trips, alerts] = await Promise.all([
     api.attendance.forDate(date, programId).catch(() => null),
     api.care.pickups({ programId, from: addDays(date, -30) }), // newest first: who collected each child last time
     api.care.leave({ programId, from: date }),
     api.transport.trips({ date }).catch(() => []), // the day's drop trip: who boarded or was dropped (pre-fills the bus)
+    loadAlerts(api, programId),
   ]);
   const onBus = new Map(); // studentId → the child's latest standing mark on a drop trip of the day, when boarded or dropped
   for (const t of trips) if (t.direction === 'drop') for (const e of standingMarks(t)) onBus.set(e.studentId, e);
@@ -100,7 +102,7 @@ export async function render(ctx) {
       <button class="btn sm" id="g-next" aria-label="Next day"${date >= today ? ' disabled' : ''}>&rarr;</button>
       ${date !== today ? '<button class="btn sm" id="g-today">Today</button>' : ''}
     </div>
-    <p class="muted" style="margin:0 0 10px">${due ? `${esc(due)} child${due === 1 ? '' : 'ren'} still to record.` : 'Everyone who came is recorded.'} ${date === today ? 'Tap who collected the child; it is recorded with the time now.' : 'Tap a child to record who collected them.'}</p>
+    ${alertsUnavailable(alerts)}<p class="muted" style="margin:0 0 10px">${due ? `${esc(due)} child${due === 1 ? '' : 'ren'} still to record.` : 'Everyone who came is recorded.'} ${date === today ? 'Tap who collected the child; it is recorded with the time now.' : 'Tap a child to record who collected them.'}</p>
     <div class="stack">${students.length ? students.map((s) => {
       const st = status.get(s.id);
       const p = byKid.get(s.id);
@@ -115,7 +117,7 @@ export async function render(ctx) {
       // the drop trip's boarded/dropped mark pre-fills the bus (highlighted; recorded only when the teacher taps it)
       const bus = onBus.get(s.id);
       const taps = date === today && quick.length ? `<div class="row">${quick.map(([k, label]) => `<button class="chip${bus && k === 'bus:' ? ' on' : ''}" data-quick="${esc(s.id)}" data-by="${esc(k)}">${esc(label)}</button>`).join('')}<button class="btn sm" data-rec="${esc(s.id)}">Someone else</button></div>` : '';
-      return `<div class="card stack"><div class="row between"><div class="item-title">${esc(fullName(s))}</div>${head}</div>
+      return `<div class="card stack"><div class="row between"><div class="item-title">${esc(fullName(s))} ${healthBadge(alerts.map.get(s.id))}</div>${head}</div>
         ${bus && !p ? `<small><strong>On the drop bus</strong>: ${bus.type === 'dropped' ? 'dropped' : 'boarded'} at ${ftime(bus.ts)}.${taps ? ' Tap "On the bus" to record it.' : ''}</small>` : ''}
         ${p ?`<div class="row between"><span>Collected by <strong>${esc(collectedName(p, w))}</strong> at ${whenOf(p)}${p.note ? `<br><small>${esc(p.note)}</small>` : ''}</span><button class="btn sm" data-rec="${esc(s.id)}">Change</button></div>`
           : away(s.id) ? '<small class="muted">Not in school today.</small>'
@@ -128,6 +130,7 @@ export async function render(ctx) {
   ctx.el.querySelector('#g-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#g-next').addEventListener('click', () => go({ date: addDays(date, 1) }));
   ctx.el.querySelector('#g-today')?.addEventListener('click', () => go({ date: today }));
+  wireHealthBadges(ctx.el, alerts.map);
   ctx.el.addEventListener('click', async (e) => {
     const q = e.target.closest('[data-quick]');
     if (q) {

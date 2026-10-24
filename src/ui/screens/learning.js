@@ -246,7 +246,7 @@ async function progressTab(ctx, host, { programId, students }) {
 
 /**
  * One presentation given to a small group: tick the children, then each gets their next step (or the chosen status).
- * Saved child by child with the same record as one child's (the server loads one child's records per save).
+ * Saved in one write (progress.recordMany): every ticked child is recorded, or none is and the form says why.
  */
 async function groupLessonForm(ctx, students, state) {
   const today = todayISO();
@@ -267,20 +267,21 @@ async function groupLessonForm(ctx, students, state) {
       const ids = [].concat(v.studentIds || []);
       if (!v.presentationId) throw new Error('Choose the presentation');
       if (!ids.length) throw new Error('Tick at least one child');
-      result = { done: 0, skipped: 0, failed: [] };
+      const entries = [];
+      let skipped = 0;
       for (const id of ids) {
         const cur = state.find((x) => x.studentId === id && x.presentationId === v.presentationId);
         const status = v.status === 'next' ? (cur ? STATUS_KEYS[rank(cur.status) + 1] : 'introduced') : v.status;
-        if (!status) { result.skipped++; continue; }
-        try { await ctx.api.progress.record({ studentId: id, presentationId: v.presentationId, status, date: v.date, note: '', correction: false, reason: null }); result.done++; } catch (e) {
-          notifyQuota(e);
-          result.failed.push(`${students.find((s) => s.id === id)?.firstName || id}: ${errMessage(e)}`);
-        }
+        if (status) entries.push({ studentId: id, presentationId: v.presentationId, status, date: v.date, note: '', correction: false, reason: null }); else skipped++;
       }
-      if (!result.done && result.failed.length) throw new Error(`Nothing was recorded. ${result.failed.join('; ')}`);
+      if (!entries.length) throw new Error('Every ticked child has already mastered this presentation');
+      try {
+        const r = await ctx.api.progress.recordMany({ entries });
+        result = { done: r.recorded, skipped };
+      } catch (e) { notifyQuota(e); throw new Error(`Nothing was recorded. ${errMessage(e)}`); }
     },
   });
-  if (ok && result) ctx.toast(`Recorded for ${result.done} child${result.done === 1 ? '' : 'ren'}${result.skipped ? `, ${result.skipped} already mastered` : ''}${result.failed.length ? `. Not recorded: ${result.failed.join('; ')}` : ''}`, result.failed.length ? 'bad' : '');
+  if (ok && result) ctx.toast(`Recorded for ${result.done} child${result.done === 1 ? '' : 'ren'}${result.skipped ? `, ${result.skipped} already mastered` : ''}`);
   return ok;
 }
 
