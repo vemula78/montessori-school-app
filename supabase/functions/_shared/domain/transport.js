@@ -2,7 +2,8 @@
 // Thresholds (metres): nearing ≤ 400, arrived ≤ 60, departed > 120 after arrival; each needs two
 // consecutive qualifying fixes. Fixes with accuracy > 100 m are stored but never drive events.
 // Stops get events only in the order the bus visits them (stopsForDirection): the stop it is at and the next
-// EVENT_WINDOW stops after the furthest stop it has reached. A stop it only neared re-arms once it is far away again.
+// EVENT_WINDOW stops with riders after the furthest stop it has reached (stops nobody boards at are passed over
+// without using up the window). A stop it only neared re-arms once it is far away again.
 
 import { fail, newId } from './ids.js';
 import { tsToMs, secondsSince, formatTime, diffDays, isHHMM } from './dates.js';
@@ -62,12 +63,12 @@ export function resetHysteresis(tracker) {
 /**
  * Feed one fix into the per-stop hysteresis state machine (idle → nearing → arrived → departed; nearing → idle when
  * the bus is more than REARM_M away again). Only stops in visiting order are eligible: the one the bus is at (to
- * depart) and the next EVENT_WINDOW after the furthest stop reached, so a road that passes a later stop early never
- * fires it. Arriving at the next stop while still "arrived" at the previous one (stops a few metres apart) departs the
+ * depart) and the stops after the furthest stop reached up to the EVENT_WINDOW-th one with riders (riderStops: ids
+ * of stops with a child on the route; null counts every stop), so a road that passes a later stop early never fires it. Arriving at the next stop while still "arrived" at the previous one (stops a few metres apart) departs the
  * previous stop first, and needs the bus nearer the new stop than the old one.
  * Mutates tracker; returns new stop events.
  */
-export function deriveStopEvents(route, tracker, fix, direction = 'pickup') {
+export function deriveStopEvents(route, tracker, fix, direction = 'pickup', riderStops = null) {
   if (!(fix.accuracy <= MAX_ACCURACY_M)) { resetHysteresis(tracker); return []; }
   const out = [];
   const order = stopsForDirection(route, direction);
@@ -84,8 +85,10 @@ export function deriveStopEvents(route, tracker, fix, direction = 'pickup') {
   let reached = -1;
   order.forEach((s, i) => { if (['arrived', 'departed'].includes(tracker[s.id].phase)) reached = i; });
   const ev = (stop, type) => out.push({ stopId: stop.id, type, ts: fix.ts });
-  for (let i = Math.max(reached, 0); i < order.length && i <= reached + EVENT_WINDOW; i++) {
+  let counted = 0;
+  for (let i = Math.max(reached, 0); i < order.length && counted < EVENT_WINDOW; i++) {
     const stop = order[i], st = tracker[stop.id];
+    if (i > reached && (!riderStops || riderStops.has(stop.id))) counted += 1;
     if (st.phase === 'idle' && st.near >= 2) { st.phase = 'nearing'; ev(stop, 'nearing'); }
     else if (st.phase === 'nearing' && st.far >= 2) st.phase = 'idle';
     if (st.phase === 'nearing' && st.at >= 2) {
@@ -228,7 +231,8 @@ export function recordPosition(db, tripId, { lat, lng, accuracy, ts }, ctx = nul
   if (lastTs && ms <= tsToMs(lastTs)) return reject('not newer than the last fix');
   const fix = { lat, lng, accuracy, ts: new Date(ms).toISOString() };
   trip.lastFixTs = fix.ts;
-  const newEvents = deriveStopEvents(route, trip.tracker, fix, trip.direction);
+  const riderStops = new Set(db.students.filter(s => s.status === 'active' && s.routeId === route.id).map(s => s.stopId));
+  const newEvents = deriveStopEvents(route, trip.tracker, fix, trip.direction, riderStops);
   trip.stopEvents.push(...newEvents);
   downsamplePush(trip.positions, fix);
   return { trip, newEvents };

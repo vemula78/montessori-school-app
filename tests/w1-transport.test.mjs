@@ -80,6 +80,16 @@ test('#61 two stops 80 m apart: the bus leaves the first before it arrives at th
   assert.deepEqual(evs(t2).filter(x => x.endsWith('arrived')), ['A:arrived'], 'parked 40 m from each: arrived at the first stop only');
 });
 
+test('#61 stops with no rider on the route do not use up the window: skipping two of them does not silence the rest of the trip', () => {
+  const db = loopFixture();
+  db.students = db.students.filter(s => s.id !== 'K2'); // riders at S1 and S5 only
+  const r = db.routes[0];
+  const trip = T.startTrip(db, { routeId: 'R1', direction: 'pickup' }, ctx());
+  const at = id => r.stops.find(s => s.id === id);
+  for (const f of drive([{ lat: 12.966, lng: 77.750 }, at('S1'), at('S4'), at('S5')])) T.recordPosition(db, trip.id, f);
+  assert.deepEqual(evs(trip), ['S1:nearing', 'S1:arrived', 'S1:departed', 'S4:nearing', 'S4:arrived', 'S4:departed', 'S5:nearing', 'S5:arrived']);
+});
+
 test('#61 a stop that was only neared re-arms when the bus turns away, so the real approach alerts again', () => {
   const db = loopFixture();
   const r = db.routes[0];
