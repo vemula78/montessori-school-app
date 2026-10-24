@@ -11,6 +11,7 @@
     "sync-domain": "node scripts/sync-domain.mjs",
     "check-domain": "node scripts/sync-domain.mjs --check && node scripts/permissions-sql.mjs --check",
     "permissions-sql": "node scripts/permissions-sql.mjs",
+    "modulepreload": "node scripts/modulepreload.mjs",
     "seed-sql": "node scripts/seed-sql.mjs",
     "test:db": "supabase db reset && supabase test db",
     "test:supabase": "node --test --test-concurrency=1 \"tests-supabase/*.test.mjs\"",

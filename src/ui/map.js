@@ -1,15 +1,57 @@
 // Leaflet wrapper (vendored Leaflet 1.9.4, global L). OSM raster tiles are the only network requests.
 // Tiles failing (offline) leaves a grey map; route, stops and bus marker still draw.
+// Leaflet (script and stylesheet, ~150 KB, same origin) is loaded on the first map, not by the entry pages, so
+// start-up never waits for it; a map asked for before it arrives shows "Loading the map" and draws when it does.
 import { esc } from './components.js';
 
 const OSM = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 export const hasLeaflet = () => typeof window !== 'undefined' && !!window.L;
+
+let leafletPromise = null;
+/** Loads the vendored Leaflet once; a failed load (offline) is tried again by the next map. */
+export function loadLeaflet() {
+  if (hasLeaflet()) return Promise.resolve(window.L);
+  if (!leafletPromise) {
+    const add = (tag, props) => new Promise((resolve, reject) => {
+      const n = document.createElement(tag);
+      Object.assign(n, props, { onload: resolve, onerror: reject });
+      document.head.appendChild(n);
+    });
+    leafletPromise = Promise.all([
+      add('link', { rel: 'stylesheet', href: new URL('../../vendor/leaflet/leaflet.css', import.meta.url).href }),
+      add('script', { src: new URL('../../vendor/leaflet/leaflet.js', import.meta.url).href }),
+    ]).then(() => { if (!hasLeaflet()) throw new Error('Leaflet did not load'); return window.L; })
+      .catch((e) => { leafletPromise = null; throw e; });
+  }
+  return leafletPromise;
+}
+
+// The handle a screen gets at once: calls made before Leaflet arrives are replayed (the latest of each kind).
+function whenLoaded(el, build, failText, methods) {
+  if (hasLeaflet()) return build();
+  el.innerHTML = '<div class="map-msg">Loading the map&hellip;</div>';
+  let real = null;
+  let gone = false;
+  const pending = new Map();
+  loadLeaflet().then(() => {
+    if (gone) return;
+    real = build();
+    for (const [k, args] of pending) real[k](...args);
+  }).catch(() => { if (!gone) el.innerHTML = `<div class="map-msg">${esc(failText)}</div>`; });
+  const h = { destroy: () => { gone = true; if (real) real.destroy(); } };
+  for (const k of methods) h[k] = (...args) => { if (real) real[k](...args); else pending.set(k, args); };
+  return h;
+}
 
 const sortedStops = (route) => [...route.stops].sort((a, b) => a.seq - b.seq);
 const routePoints = (route) => (route.path && route.path.length ? route.path : sortedStops(route)).map((p) => [p.lat, p.lng]);
 
 // route: Route. opts: {myStopId, height}. Returns {setBus(lat,lng), setBuses([{id,lat,lng,label}]), refit(), destroy()}.
 export function createRouteMap(el, route, opts = {}) {
+  return whenLoaded(el, () => buildRouteMap(el, route, opts), 'The map library could not be loaded. The route and stops are listed below instead.', ['setBus', 'setBuses', 'refit']);
+}
+
+function buildRouteMap(el, route, opts) {
   const noop = { setBus() {}, setBuses() {}, refit() {}, destroy() {} };
   if (!hasLeaflet()) {
     el.innerHTML = '<div class="map-msg">The map library could not be loaded. The route and stops are listed below instead.</div>';
@@ -79,6 +121,10 @@ export function createRouteMap(el, route, opts = {}) {
 const FLEET_COLORS = ['#2F6585', '#355C2E', '#86592B', '#A8442C'];
 // All routes on one map. Returns {setBuses([{id,lat,lng,label}]), destroy()}.
 export function createFleetMap(el, routes) {
+  return whenLoaded(el, () => buildFleetMap(el, routes), 'The map library could not be loaded.', ['setBuses']);
+}
+
+function buildFleetMap(el, routes) {
   if (!hasLeaflet()) {
     el.innerHTML = '<div class="map-msg">The map library could not be loaded.</div>';
     return { setBuses() {}, destroy() {} };

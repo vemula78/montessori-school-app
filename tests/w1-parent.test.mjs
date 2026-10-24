@@ -527,11 +527,12 @@ test('#18 error toasts and form errors show the message without the internal cod
   const FD = globalThis.FormData;
   document.createElement = () => { const d = fake(); d.showModal = () => {}; d.close = () => {}; made.push(d); return d; };
   globalThis.FormData = class { entries() { return []; } };
+  console.error = () => {};
   try {
     C.formModal({ title: 'T', fieldsHtml: '', onSubmit: async () => { throw Object.assign(new Error('Choose a date'), { code: 'VALIDATION' }); } });
     await made[0].querySelector('form').handlers.submit[0]({ preventDefault() {} });
     assert.equal(made[0].querySelector('[data-err]').textContent, 'Choose a date');
-  } finally { document.createElement = orig; globalThis.FormData = FD; }
+  } finally { document.createElement = orig; globalThis.FormData = FD; console.error = errs; }
 });
 
 test('#18 payment modes and concession types are shown as words; a health note without a temperature has no "temperature —"', async () => {
@@ -622,6 +623,138 @@ test('#4 real app: a day of diary read receipts is sent together and costs one s
   await api.diary.markReadMany(['d1', 'd2', 'd3']);
   assert.deepEqual(calls, ['diary.markRead', 'diary.markRead', 'diary.markRead']);
   assert.equal(snaps - before, 1);
+});
+
+// ---- #13 Leaflet only on map screens -----------------------------------------------------------------------------
+test('#13 neither entry page loads Leaflet; the first map loads the vendored script and stylesheet once, same origin', async () => {
+  for (const f of ['index.html', 'app/index.html']) assert.doesNotMatch(readFileSync(f, 'utf8'), /leaflet/i, f);
+  const added = [];
+  const head = document.head;
+  const orig = document.createElement;
+  document.head = { appendChild: (n) => added.push(n) };
+  document.createElement = (tag) => ({ tag });
+  const { loadLeaflet } = await import('../src/ui/map.js');
+  try {
+    const p1 = loadLeaflet();
+    const p2 = loadLeaflet();
+    assert.deepEqual(added.map((n) => n.tag), ['link', 'script'], 'injected once');
+    assert.match(added[0].href, /\/vendor\/leaflet\/leaflet\.css$/);
+    assert.match(added[1].src, /\/vendor\/leaflet\/leaflet\.js$/);
+    assert.ok(added.every((n) => (n.href || n.src).startsWith('file:') || !/^https?:\/\/(?!localhost)/.test(n.href || n.src)), 'never another site');
+    globalThis.window = { L: {} };
+    added.forEach((n) => n.onload());
+    assert.equal(await p1, globalThis.window.L);
+    assert.equal(await p2, globalThis.window.L);
+  } finally { document.createElement = orig; document.head = head; delete globalThis.window; }
+});
+
+test('#13 a route map asked for before Leaflet has loaded shows "Loading the map", then draws and replays the bus position', async () => {
+  const added = [];
+  const head = document.head;
+  const orig = document.createElement;
+  document.head = { appendChild: (n) => added.push(n) };
+  document.createElement = (tag) => ({ tag });
+  const map = await import('../src/ui/map.js?w1-lazy');
+  const markers = [];
+  const L = {
+    map: () => ({ fitBounds() {}, setView() {}, invalidateSize() {}, getBounds: () => ({ contains: () => true }), remove() {} }),
+    tileLayer: () => ({ addTo() {} }),
+    polyline: () => { const l = { addTo: () => l, getBounds: () => ({ isValid: () => true }), bindTooltip: () => l }; return l; },
+    marker: (ll) => { const m = { ll, addTo: () => m, bindTooltip: () => m, setLatLng(x) { m.ll = x; } }; markers.push(m); return m; },
+    divIcon: () => ({}), latLngBounds: () => ({}),
+  };
+  try {
+    const el = fake();
+    const route = { stops: [{ id: 's1', seq: 1, name: 'Gate', lat: 12.9, lng: 77.6 }] };
+    const h = map.createRouteMap(el, route, {});
+    assert.match(el.innerHTML, /Loading the map/);
+    h.setBus(12.95, 77.65, 'BUS');
+    globalThis.window = { L };
+    added.forEach((n) => n.onload());
+    await tick();
+    assert.ok(markers.some((m) => m.ll[0] === 12.95 && m.ll[1] === 77.65), 'the bus position given while loading is drawn');
+    const el2 = fake();
+    delete globalThis.window;
+    const h2 = map.createRouteMap(el2, route, {});
+    added.splice(0);
+    await tick();
+    added.forEach((n) => n.onerror?.(new Error('offline')));
+    await tick();
+    assert.match(el2.innerHTML, /could not be loaded/);
+    h2.destroy();
+  } finally { document.createElement = orig; document.head = head; delete globalThis.window; }
+});
+
+// ---- #14 modulepreload tags follow the real import graph --------------------------------------------------------
+test('#14 both entry pages preload their start-up modules, and the list matches the import graph (node scripts/modulepreload.mjs)', async () => {
+  const { block, PAGES } = await import('../scripts/modulepreload.mjs');
+  for (const page of Object.keys(PAGES)) {
+    const html = readFileSync(page, 'utf8');
+    assert.ok(html.includes(block(page)), `${page} is out of date: run node scripts/modulepreload.mjs`);
+  }
+  const real = block('app/index.html');
+  for (const m of ['../src/ui/app.js', '../src/api/remote.js', '../vendor/supabase/supabase-js.esm.js', '../src/ui/screens/home.js']) assert.ok(real.includes(`href="${m}"`), m);
+  const demo = block('index.html');
+  assert.ok(demo.includes('href="./src/seed/seed-data.js"'));
+  assert.doesNotMatch(demo, /supabase|remote\.js|config/i, 'the demo never mentions the real app');
+  assert.ok((real.match(/modulepreload/g) || []).length > 40);
+});
+
+// ---- #89 the real app's own code works offline; data never goes into the worker ---------------------------------
+async function loadSw({ fetchImpl, keys = [] }) {
+  const vm = await import('node:vm');
+  const handlers = {};
+  const store = new Map();
+  const deleted = [];
+  const cache = { put: async (req, res) => { store.set(req.url, res); }, match: async (req) => store.get(typeof req === 'string' ? req : req.url) };
+  const caches = { open: async () => cache, keys: async () => keys, delete: async (k) => { deleted.push(k); return true; } };
+  const self = { addEventListener: (t, f) => { handlers[t] = f; }, location: { origin: 'https://s.example.com' }, registration: { scope: 'https://s.example.com/app/' }, clients: { claim: async () => {} }, skipWaiting() {} };
+  vm.runInNewContext(readFileSync('app/sw.js', 'utf8'), { self, caches, fetch: fetchImpl, URL, Promise, console, setTimeout: (f, _ms, ...a) => setTimeout(f, 0, ...a) });
+  return { handlers, store, deleted };
+}
+const swEvent = (url, { method = 'GET', mode = 'cors' } = {}) => ({ request: { url, method, mode }, responded: null, waits: [], respondWith(p) { this.responded = p; }, waitUntil(p) { this.waits.push(p); } });
+const resp = (body) => ({ ok: true, type: 'basic', body, clone() { return this; } });
+
+test('#89 service worker: this site\'s code is network-first with a stored copy for when the network fails', async () => {
+  let online = true;
+  const sw = await loadSw({ fetchImpl: async (req) => { if (!online) throw new TypeError('Failed to fetch'); return resp(`net:${req.url}`); } });
+  const js = 'https://s.example.com/src/ui/app.js';
+  let ev = swEvent(js);
+  sw.handlers.fetch(ev);
+  assert.equal((await ev.responded).body, `net:${js}`);
+  await Promise.all(ev.waits);
+  assert.ok(sw.store.has(js), 'stored for later');
+  online = false;
+  ev = swEvent(js);
+  sw.handlers.fetch(ev);
+  assert.equal((await ev.responded).body, `net:${js}`, 'offline: the stored copy');
+  ev = swEvent('https://s.example.com/app/', { mode: 'navigate' });
+  online = true;
+  sw.handlers.fetch(ev);
+  assert.ok(await ev.responded, 'the page itself too');
+});
+
+test('#89 service worker: never touches the school database, functions, storage, map tiles, payments, POSTs or query URLs', async () => {
+  const sw = await loadSw({ fetchImpl: async () => resp('x') });
+  for (const [url, o] of [['https://abc.supabase.co/rest/v1/rpc/my_snapshot', {}], ['https://abc.supabase.co/functions/v1/command', { method: 'POST' }],
+    ['https://abc.supabase.co/storage/v1/object/sign/child-photos/x.jpg', {}], ['https://tile.openstreetmap.org/1/1/1.png', {}],
+    ['https://checkout.razorpay.com/v1/checkout.js', {}], ['https://s.example.com/src/ui/app.js', { method: 'POST' }], ['https://s.example.com/src/ui/app.js?x=1', {}]]) {
+    const ev = swEvent(url, o);
+    sw.handlers.fetch(ev);
+    assert.equal(ev.responded, null, url);
+  }
+  assert.equal(sw.store.size, 0);
+});
+
+test('#89 service worker: a new VERSION drops older stored copies on activate; the real app registers the worker at start-up', async () => {
+  const src = readFileSync('app/sw.js', 'utf8');
+  const current = `school-app-shell-${src.match(/const VERSION = '([^']+)'/)[1]}`;
+  const sw = await loadSw({ fetchImpl: async () => resp('x'), keys: ['school-app-shell-old', current, 'something-else'] });
+  const ev = { waits: [], waitUntil(p) { this.waits.push(p); } };
+  sw.handlers.activate(ev);
+  await Promise.all(ev.waits);
+  assert.deepEqual(sw.deleted, ['school-app-shell-old']);
+  assert.match(readFileSync('app/boot.js', 'utf8'), /serviceWorker\.register\(/);
 });
 
 // ---- #98 smaller photos ----------------------------------------------------------------------------------------

@@ -5,7 +5,8 @@
 //   2. Grep the published tree (index.html, README.md, app.css, src/, data/, assets/, app/, docs/) and
 //      supabase/ for real-school names, Aadhaar-like 12-digit numbers and mobile-shaped 10-digit numbers
 //      that are not the fake pattern; grep the published tree for network calls (fetch( / XMLHttpRequest /
-//      sendBeacon) — allowed only in the real-app api: src/api/remote*.js and src/api/supabase/**.
+//      sendBeacon) — allowed only in the real-app api: src/api/remote*.js and src/api/supabase/**, and in the real
+//      app's service worker app/sw.js, which only re-fetches the page's own same-origin files (never another site).
 //   3. Secrets in every file git would publish (tracked + untracked-not-ignored): JWT-shaped tokens,
 //      Supabase secret keys, a Razorpay key id followed by a secret, private keys, service-role key
 //      assignments; and no .env file other than the .env.example templates is tracked.
@@ -24,8 +25,8 @@ const EXCLUDE = new Set(['school-app-feature-list.md', 'PLAN.md', 'PLAN-REVIEW-L
 const PUBLISHED = ['index.html', 'README.md', 'app.css', 'src', 'data', 'assets', 'app', 'docs'];
 const ROOTS = [...PUBLISHED, 'supabase'];
 const TEXT_EXT = new Set(['.html', '.js', '.mjs', '.css', '.csv', '.svg', '.json', '.md', '.txt', '.sql', '.ts', '.toml', '.webmanifest']);
-// the real-app api may call the network; nothing else that is published may
-const NETWORK_ALLOWED = rel => /^src\/api\/remote[^/]*\.js$/.test(rel) || rel.startsWith('src/api/supabase/');
+// the real-app api may call the network, and the service worker may re-fetch the app's own files; nothing else published may
+const NETWORK_ALLOWED = rel => /^src\/api\/remote[^/]*\.js$/.test(rel) || rel.startsWith('src/api/supabase/') || rel === 'app/sw.js';
 const PHONE_RE = /^\+91-90000-00\d{3}$/;
 
 const hits = [];
@@ -158,7 +159,7 @@ console.log(`  emails checked      ${emails}`);
 console.log(`  dobs checked        ${dobs}`);
 console.log(`  files grepped       ${files.length} (${lines} lines) in ${ROOTS.join(', ')}`);
 console.log(`  secrets/names       ${secretFiles} files git would publish (${gitFiles.length} paths)`);
-console.log(`  network calls       allowed only in src/api/remote*.js, src/api/supabase/**`);
+console.log(`  network calls       allowed only in src/api/remote*.js, src/api/supabase/**, app/sw.js (own files)`);
 console.log(`  excluded            ${[...EXCLUDE].join(', ')}`);
 if (hits.length) {
   console.log(`\nFAIL — ${hits.length} hit(s):`);

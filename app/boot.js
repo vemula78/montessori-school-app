@@ -58,6 +58,11 @@ if (list.length) {
   } else {
     document.getElementById('ribbon-host').innerHTML = '<div class="ribbon no-print" role="note">Test mode &mdash; no real money moves</div>';
   }
+  // the worker keeps a copy of the app's own code (never school data) so it opens on patchy data; push uses it too
+  if ('serviceWorker' in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register(new URL('sw.js', document.baseURI), { scope: new URL('./', document.baseURI).href, updateViaCache: 'none' })
+      .catch((e) => console.warn('service worker not registered', e));
+  }
   try {
     await import('../src/ui/app.js');
   } catch (e) {

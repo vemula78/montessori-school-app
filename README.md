@@ -295,7 +295,14 @@ Local sign-ins (OTP arrives in Mailpit, http://127.0.0.1:54324): `principal@`, `
 `driver1@`, `parent-siblings@`, `parent-bus@example.com`. `npm run e2e` also prints two unredeemed invite codes.
 The mock gateway listens on port 54399; Docker reaches it at `http://host.lima.internal:54399` (Colima; use
 `host.docker.internal` otherwise) via `RAZORPAY_API_BASE`. After editing `src/seed/seed-data.js` run
-`npm run seed-sql`; after editing `src/domain/` run `npm run sync-domain`.
+`npm run seed-sql`; after editing `src/domain/` run `npm run sync-domain`. After adding, removing or renaming an
+import on the start-up path run `npm run modulepreload` (it rewrites the `<link rel="modulepreload">` lists in both
+entry pages from the import graph; a test fails while they are out of date).
+
+Start-up on slow phones: Leaflet is loaded by `src/ui/map.js` on the first map, not by the entry pages. The real
+app registers `app/sw.js` at start-up; it keeps a network-first copy of the app's own files (never school data, which
+comes from other origins the worker does not touch) so the app still opens on patchy data. Bump `VERSION` in
+`app/sw.js` to drop every stored copy.
 
 For `app/` against the local stack, put the local URL and anon key in `app/config.local.js` (gitignored; loaded on
 localhost only).
