@@ -266,7 +266,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
       const e = String(address || '').trim().toLowerCase();
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw new ApiError('VALIDATION', 'Enter a valid email address');
       const { error } = await sb.auth.signInWithOtp({ email: e, options: { shouldCreateUser: true } });
-      if (error) throw new ApiError(error.status === 429 ? 'RATE_LIMITED' : 'VALIDATION', error.status === 429 ? 'Too many codes requested; wait a minute and try again' : error.message);
+      if (error) throw new ApiError(error.status === 429 ? 'RATE_LIMITED' : 'VALIDATION', error.status === 429 ? 'Too many sign-in codes have been sent. Try again in an hour, or ask the school office.' : error.message);
     }),
     verifyOtp: op(async (address, code) => {
       const { error } = await sb.auth.verifyOtp({ email: String(address || '').trim().toLowerCase(), token: String(code || '').trim(), type: 'email' });

@@ -45,6 +45,7 @@ export async function render(ctx) {
         <li>Open <strong>${esc(url)}</strong> on your phone.</li>
         <li>Sign in with your email address (we send a code).</li>
         <li>Type this invite code and your child&rsquo;s date of birth.</li>
+        <li>Install the app: on Android tap <strong>Install app</strong> when the app offers it (or Chrome menu &#8942; &gt; Install app); on iPhone, in Safari tap Share &gt; <strong>Add to Home Screen</strong>.</li>
       </ol>
       <p class="slip-warn">Do not share this code. The school will never ask you for it by phone or message.</p>
     </article>`).join('')}</div>`;

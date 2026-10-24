@@ -777,6 +777,8 @@ export const COMMANDS = {
   'admin.changeSignInEmail': { slice: 'account', serverOnly: true, functionOnly: 'admin-accounts', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => AD.changeSignInEmail(db, a || {}, ctx) },
   /** System (admin-accounts function): the audit row of an auth-server-only action, attributed to the principal (by). */
   'admin.noteAccountAction': { slice: 'account', serverOnly: true, functionOnly: 'admin-accounts', authorize: p => allow(p, 'system'), run: (db, [a], ctx) => AD.noteAccountAction(db, a || {}, ctx) },
+  /** System (cron-daily, full run): noteNightlyRun({ok, failedSteps}) → one audit row the principal's home reads (slice: any small one; it writes audit only). */
+  'admin.noteNightlyRun': { slice: 'rights', serverOnly: true, authorize: p => allow(p, 'system'), run: (db, [a], ctx) => AD.noteNightlyRun(db, a || {}, ctx) },
 
   // ---- account: consent, invites (server only: these tables do not exist in the demo document)
   'consent.give': {

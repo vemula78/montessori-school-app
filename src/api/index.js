@@ -36,7 +36,7 @@ import { listReports, getReport } from '../domain/reports.js';
 import { photoView } from '../domain/photos.js';
 import { retentionPlan } from '../domain/retention.js';
 import { createDemoPhotos } from './demo-photos.js';
-import { twoStepRequired, listDataRequests, whoCanSee, PRIVILEGED_ROLES } from '../domain/admin.js';
+import { twoStepRequired, listDataRequests, whoCanSee, PRIVILEGED_ROLES, nightlyJobStatus } from '../domain/admin.js';
 import { PERMISSIONS } from '../domain/permissions.js';
 import { totp, verifyTotp, randomSecret, otpauthUri, secondsLeft } from './totp.js';
 
@@ -362,6 +362,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     whoCanSee: op(async studentId => { allow('admin'); return whoCanSee(db(), studentId, { appUsers: appUsers ? await appUsers() : null, requireConsent }); }),
     /** permissions() → {actors:[{key,label}], capabilities:[{key,label,allow:{actor:boolean}}]}: the matrix the tests hold equal to the real rules. */
     permissions: op(() => { allow('admin'); return PERMISSIONS; }),
+    /** nightlyJob() → {state:'none'|'ok'|'failed'|'stale', at, summary}: the last nightly run as cron-daily recorded it in the audit log (the demo has none). */
+    nightlyJob: op(async () => { allow('admin'); return nightlyJobStatus(await audit.list({ entity: 'nightlyJob', limit: 1 }), +clock()); }),
   };
 
 

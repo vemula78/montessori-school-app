@@ -7,7 +7,7 @@
 
 import { fail, newId } from './ids.js';
 import { byId, fullName } from './people.js';
-import { isISODate, compareISO } from './dates.js';
+import { isISODate, compareISO, tsToMs } from './dates.js';
 import { appendAudit } from './audit.js';
 // commands.js imports this module too; these are used only inside functions, so the cycle is safe
 import { buildPersonas, sees, consentScopedPersona, CONSENT_VERSION } from './commands.js';
@@ -234,6 +234,30 @@ export function noteAccountAction(db, { userId = null, action, outcome, detail =
   const row = appendAudit(db, { ...ctx, actor: { role: 'admin', id: by } },
     { entity: 'appUser', entityId: userId || '-', action, summary: `${action} ${outcome}${d ? `: ${d}` : ''}` });
   return { id: row.id, action, outcome };
+}
+
+// ---------------------------------------------------------------- the nightly job's result (no table of its own)
+
+/** A run older than this means the job stopped reporting (wrong secret, missing Vault value, paused project). */
+export const NIGHTLY_STALE_MS = 26 * 3600_000;
+
+/** System (cron-daily, full daily run): one audit row per run, entity 'nightlyJob', keyed by the IST date. */
+export function noteNightlyRun(db, { ok, failedSteps = [] } = {}, ctx) {
+  if (typeof ok !== 'boolean') fail('VALIDATION', 'ok must be true or false');
+  const steps = (Array.isArray(failedSteps) ? failedSteps : []).map(s => String(s).replace(/\W/g, '').slice(0, 40)).filter(Boolean).slice(0, 20);
+  if (!ok && !steps.length) fail('VALIDATION', 'A failed run names its failed steps');
+  const row = appendAudit(db, ctx, { entity: 'nightlyJob', entityId: ctx.today, action: ok ? 'ok' : 'failed',
+    summary: ok ? 'Nightly job ran: every step passed' : `Nightly job failed: ${steps.join(', ')}` });
+  return { id: row.id, ok, failedSteps: steps };
+}
+
+/** rows: audit rows (any order) → {state:'none'|'ok'|'failed'|'stale', at, summary} from the newest nightlyJob row. */
+export function nightlyJobStatus(rows, nowMs) {
+  const last = (rows || []).filter(r => r && r.entity === 'nightlyJob').sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))[0];
+  if (!last) return { state: 'none', at: null, summary: null };
+  const at = tsToMs(last.ts);
+  if (at === null || nowMs - at > NIGHTLY_STALE_MS) return { state: 'stale', at: last.ts, summary: last.summary };
+  return { state: last.action === 'failed' ? 'failed' : 'ok', at: last.ts, summary: last.summary };
 }
 
 // ---------------------------------------------------------------- who can see a child

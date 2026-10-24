@@ -1,6 +1,7 @@
 // Role-specific landing page. A failed read is shown as "unavailable" (a dash), never as an empty or healthy result.
 import { todayISO } from '../../domain/dates.js';
-import { esc, icon, money, fdate, badge, empty, fullName, indexBy, errMessage, DASH } from '../components.js';
+import { esc, icon, money, fdate, fdatetime, badge, empty, fullName, indexBy, errMessage, DASH } from '../components.js';
+import { mountInstall } from '../install.js';
 
 const tile = (href, ic, label, sub = '') => `<a class="card link" href="${esc(href)}"><div class="row">${icon(ic)}<div class="grow"><div class="item-title">${esc(label)}</div>${sub ? `<small>${esc(sub)}</small>` : ''}</div></div></a>`;
 const TYPE_LABEL = { holiday: 'Holiday', event: 'Event', ptm: 'PTM', halfDay: 'Half day', workingSaturday: 'Working Saturday', birthday: 'Birthday' };
@@ -76,6 +77,7 @@ async function parentHome(ctx) {
   return `
     <div class="page-head"><div><h1>Hello${g ? ', ' + esc(g.firstName) : ''}</h1><div class="sub">${fdate(today)}</div></div></div>
     ${pending.length ? `<div class="banner warn"><div class="row between"><span><strong>${esc(pending.length)} notice${pending.length === 1 ? ' needs' : 's need'} your acknowledgement.</strong></span><a class="btn sm" href="#/notices">Open notices</a></div></div>` : ''}
+    <div id="home-install"></div>
     <div class="stack">${cards.join('') || empty('No children linked to this account')}</div>
     <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}
     <h2 style="margin-top:20px">Quick links</h2>
@@ -147,7 +149,17 @@ async function adminHome(ctx) {
   const awaitingNotices = new Set(awaiting.map((r) => r.noticeId)).size;
   const unreadMsgs = db.messages.filter((m) => m.senderRole === 'parent' && !m.readAt).length;
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  // the nightly job (real app): its last result is an audit row; a failure, or silence for 26 hours, needs a person
+  let nightly = null;
+  if (api.mode !== 'demo') { try { nightly = await api.oversight.nightlyJob(); } catch { nightly = { state: 'unavailable' }; } }
+  const NIGHTLY = {
+    failed: (n) => `${n.summary} (${fdatetime(n.at)}). Tell the developer: fee reminders or privacy clean-up may not have run.`,
+    stale: (n) => `The nightly job has not reported since ${fdatetime(n.at)}. Tell the developer.`,
+    none: () => 'No nightly job result recorded yet. If the app has been live for more than a day, tell the developer.',
+    unavailable: () => 'The nightly job status could not be loaded.',
+  };
   const todo = [
+    nightly && NIGHTLY[nightly.state] && ['#/audit', 'shield', NIGHTLY[nightly.state](nightly)],
     unmarkedProgs.length && ['#/attendance', 'check', `Attendance not complete today: ${unmarkedProgs.join(', ')}`],
     unreadMsgs && ['#/messages', 'chat', `${plural(unreadMsgs, 'parent message', 'parent messages')} not yet read by staff`],
     awaitingNotices && ['#/notices', 'bell', `${plural(awaitingNotices, 'notice', 'notices')} awaiting acknowledgement (${plural(awaiting.length, 'parent', 'parents')})`],
@@ -212,4 +224,5 @@ export async function render(ctx) {
   const by = { parent: parentHome, teacher: teacherHome, admin: adminHome, accountant: accountantHome, driver: driverHome };
   const fn = by[ctx.persona.role];
   ctx.el.innerHTML = fn ? await fn(ctx) : empty('Nothing here yet');
+  if (ctx.persona.role === 'parent') mountInstall(ctx.el.querySelector('#home-install'), { dismissible: true, cleanup: ctx.cleanup });
 }

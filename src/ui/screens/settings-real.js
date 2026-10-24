@@ -4,6 +4,7 @@ import { todayISO } from '../../domain/dates.js';
 import { esc, money, fdate, badge, banner, pageHead, downloadText, confirmDialog, attempt, toast, errMessage, fullName, DASH } from '../components.js';
 import { PURPOSES, PRIVACY_VERSION, noticeHash } from '../privacy.js';
 import * as push from '../push.js';
+import { mountInstall } from '../install.js';
 
 // The server records consent as a set that must include the required account purpose, so adding one optional
 // purpose re-sends everything already agreed to plus the new one.
@@ -32,6 +33,7 @@ export async function render(ctx) {
         </dl>
         <div class="row"><a class="btn" href="#/account">Password, two-step sign-in and sessions</a><button class="btn" id="st-out">Sign out</button></div></div>
 
+      <div id="st-install"></div>
       <div class="card stack" id="st-push"><h2>Notifications on this device</h2><div id="st-push-body"></div></div>
 
       ${isParent ? `<div class="card stack"><h2>My privacy choices</h2>
@@ -52,6 +54,8 @@ export async function render(ctx) {
 
   // ---- sign out
   ctx.el.querySelector('#st-out').addEventListener('click', () => document.getElementById('signout')?.click());
+
+  mountInstall(ctx.el.querySelector('#st-install'), { cleanup: ctx.cleanup });
 
   // ---- notifications
   const pushHost = ctx.el.querySelector('#st-push-body');

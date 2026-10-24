@@ -2,6 +2,7 @@
 // holds a usable configuration; otherwise a plain "not configured" page is shown. This entry page never
 // falls back to the demo: demo and real app are separate entry points by design.
 import { esc } from '../src/ui/components.js';
+import '../src/ui/install.js'; // listens for Android's install offer before the app code loads (it fires once per load)
 
 const cfg = window.__APP_CONFIG__ || {};
 const root = document.getElementById('app');

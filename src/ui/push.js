@@ -7,8 +7,8 @@ const OPTOUT_KEY = 'school.push.optout';
 const optedOut = () => { try { return localStorage.getItem(OPTOUT_KEY) === '1'; } catch { return false; } };
 const setOptOut = (on) => { try { if (on) localStorage.setItem(OPTOUT_KEY, '1'); else localStorage.removeItem(OPTOUT_KEY); } catch { /* not persisted: worst case start-up re-checks */ } };
 
-const isIos = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const isStandalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+export const isIos = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+export const isStandalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
 
 /** What this browser can do, and the plain-language reason when it cannot. */
 export function support() {

@@ -42,7 +42,7 @@ export function createRemoteAdmin({ sb, call, ApiError, op, me, snap, refresh, n
     requestPasswordReset: op(async address => {
       const email = cleanEmail(address);
       const { error } = await sb.auth.resetPasswordForEmail(email);
-      if (rateLimited(error)) throw new ApiError('RATE_LIMITED', 'Too many codes requested; wait a minute and try again');
+      if (rateLimited(error)) throw new ApiError('RATE_LIMITED', 'Too many sign-in codes have been sent. Try again in an hour, or ask the school office.');
     }),
     /** verifyRecoveryCode(email, code) — signs in with the emailed code (then choose a new password with setPassword). */
     verifyRecoveryCode: op(async (address, code) => {

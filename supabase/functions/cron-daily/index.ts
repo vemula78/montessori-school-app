@@ -17,9 +17,15 @@
 //  11. photosCleanup: delete the objects of 'deleting' rows (→ deleted/expired), reject uploads abandoned for 2 hours,
 //      delete objects of closed rows at once and objects without a row (or with a pending one) after 2 hours
 //  12. signInEventsPruned: sign-in activity older than 90 days is deleted (data minimisation)
-// Every step runs; the answer is HTTP 500 {ok:false, failedSteps, report} if any step threw, or if a privacy step (photo
-// consent sweep, retention, photo cleanup, erasure clean-up) reports errors[] / failed > 0. A failed push in the reminders
-// step is routine (phones go offline) and is retried by the next run, so it is counted in the report, not failed.
+// Every step runs; the answer is HTTP 500 {ok:false, failedSteps, report} if any step threw, if a privacy step (photo
+// consent sweep, retention, photo cleanup, erasure clean-up) reports errors[] / failed > 0, or if gateway events reached
+// the retry cap in the last 7 days (failedStepsOf, _shared/cron.js). A failed push in the reminders step is routine
+// (phones go offline) and is retried by the next run, so it is counted in the report, not failed. Reminders claimed
+// while the VAPID keys are missing stay 'failed' (retried once push works), never 'sent' without a push.
+// The full daily run (no steps in the body) leaves its result where the principal sees it: one audit row
+// (admin.noteNightlyRun; the principal's home lists a failed run, or none for 26 hours), and, if the function secret
+// HEALTHCHECK_URL is set, a ping to that dead-man check (`/fail` when the run failed) so someone is emailed even when
+// the job never runs. The ping carries the failed step names only.
 
 import { CORS, errorResponse, json, coded } from '../_shared/http.ts';
 import { rest, restAll, restCount, rpc } from '../_shared/db.ts';
@@ -35,14 +41,27 @@ import { cleanupDeleting, sweepPhotos } from '../_shared/photos.ts';
 import { remindersDue, lateFeesDueList } from '../_shared/domain/reminders.js';
 import { dateInZone, IST_OFFSET_MIN } from '../_shared/domain/dates.js';
 import { byId } from '../_shared/domain/people.js';
+import { failedStepsOf, reminderStatus, healthcheckUrl } from '../_shared/cron.js';
 
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
+const HEALTHCHECK_URL = Deno.env.get('HEALTHCHECK_URL') ?? '';
 const TRIP_MAX_MS = 3 * 3600_000, STALE_MS = 20 * 60_000, POSITIONS_DAYS = 30, SIGN_IN_DAYS = 90, MAX_EVENT_ATTEMPTS = 10, STRANDED_MS = 10 * 60_000;
 const ALL_STEPS = ['reminders', 'gatewayRetries', 'trips', 'positionsPruned', 'invites', 'requestLogsPruned', 'erasureCleanup', 'photosConsentSweep', 'retention', 'photosCleanup', 'signInEventsPruned'];
 
 async function step<T>(report: Record<string, unknown>, only: Set<string>, name: string, fn: () => Promise<T>) {
   if (!only.has(name)) return;
   try { report[name] = await fn(); } catch (e: any) { report[name] = { error: String(e?.message || e).slice(0, 300) }; console.error(`cron-daily ${name}:`, e?.message); }
+}
+
+/** The dead-man check (optional): never fails the run; the step names are the only data sent. */
+async function ping(ok: boolean, failedSteps: string[]) {
+  const url = healthcheckUrl(HEALTHCHECK_URL, ok);
+  if (!url) return HEALTHCHECK_URL ? 'HEALTHCHECK_URL is not an https address' : null;
+  try {
+    const res = await fetch(url, { method: 'POST', body: failedSteps.join(','), redirect: 'manual', signal: AbortSignal.timeout(10000) });
+    await res.body?.cancel();
+    return res.status;
+  } catch (e: any) { return `error: ${String(e?.message || e).slice(0, 200)}`; }
 }
 
 Deno.serve(async (req) => {
@@ -76,9 +95,9 @@ Deno.serve(async (req) => {
       try {
         push = await deliver(messages);
         // sent = every subscribed device took it (or nobody has push for this child: the in-app list is the reminder);
-        // any transient failure → failed, retried next run
-        outcome = toSend.map((r: any, i: number) => ({ invoiceId: r.invoiceId, kind: r.kind, claimToken: tokenOf(r), status: push.perMessage[i].failed ? 'failed' : 'sent',
-          pushSent: push.perMessage[i].sent, error: push.perMessage[i].failed ? `${push.perMessage[i].failed} device(s) failed` : null }));
+        // any transient failure, or no push keys yet → failed, retried next run
+        outcome = toSend.map((r: any, i: number) => ({ invoiceId: r.invoiceId, kind: r.kind, claimToken: tokenOf(r),
+          ...reminderStatus(push.perMessage[i], push.skipped), pushSent: push.perMessage[i].sent }));
       } catch (e: any) {
         outcome = toSend.map((r: any) => ({ invoiceId: r.invoiceId, kind: r.kind, claimToken: tokenOf(r), status: 'failed', pushSent: 0, error: String(e?.message || e).slice(0, 300) }));
       }
@@ -95,6 +114,9 @@ Deno.serve(async (req) => {
       const rows = await restAll(`gateway_events?attempts=lt.${MAX_EVENT_ATTEMPTS}&or=(result.in.(error,pending),and(result.eq.received,received_at.lt.${encodeURIComponent(`"${strandedBefore}"`)}))&select=*&order=received_at,event_id`);
       const out: Record<string, number> = { candidates: rows.length, stranded: rows.filter((r: any) => r.result === 'received').length };
       for (const row of rows) { const r = await settleEvent(row); out[r.result] = (out[r.result] || 0) + 1; }
+      // events that reached the cap are never retried again: a payment or refund a person must settle by hand
+      const weekAgo = new Date(nowMs - 7 * 86400_000).toISOString();
+      out.gaveUp = (await restAll(`gateway_events?attempts=gte.${MAX_EVENT_ATTEMPTS}&result=in.(error,pending,received)&received_at=gt.${encodeURIComponent(`"${weekAgo}"`)}&select=event_id&order=event_id`)).length;
       return out;
     });
 
@@ -171,10 +193,12 @@ Deno.serve(async (req) => {
 
     // every step ran; any failure makes the whole run a failure the scheduler can see (audit C6)
     // a step failed if it threw, or if it reports errors or a failure count without throwing (audit R3)
-    const PRIVACY_STEPS = new Set(['photosConsentSweep', 'retention', 'photosCleanup', 'erasureCleanup']);
-    const failedOf = (k: string, r: any) => r && (r.error !== undefined
-      || (PRIVACY_STEPS.has(k) && ((Array.isArray(r.errors) && r.errors.length > 0) || Number(r.failed) > 0)));
-    const failedSteps = ALL_STEPS.filter(k => only.has(k) && failedOf(k, report[k]));
+    const failedSteps: string[] = failedStepsOf(report, ALL_STEPS.filter(k => only.has(k)));
+    if (asked === null) {
+      try { await runCommand('admin.noteNightlyRun', [{ ok: !failedSteps.length, failedSteps }], system('cron-daily')); report.recorded = true; }
+      catch (e: any) { report.recorded = { error: String(e?.message || e).slice(0, 300) }; failedSteps.push('recordResult'); console.error('cron-daily recordResult:', e?.message); }
+      report.healthcheck = await ping(!failedSteps.length, failedSteps);
+    }
     if (failedSteps.length) return json({ ok: false, failedSteps, report }, 500);
     return json({ ok: true, report });
   } catch (e) {
