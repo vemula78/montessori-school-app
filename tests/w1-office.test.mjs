@@ -166,6 +166,31 @@ async function draw(api, who, mod, query = {}, params = {}) {
 let last = null;
 const Structures = await import('../src/ui/screens/fees-structures.js');
 const Home = await import('../src/ui/screens/home.js');
+const Payment = await import('../src/ui/screens/fees-payment.js');
+
+/** Every dialog opened while `fn` runs is answered: true presses its last button (OK), false cancels it. Returns the dialogs' HTML. */
+async function answeringDialogs(answer, fn) {
+  const prev = document.createElement;
+  const seen = [];
+  document.createElement = () => {
+    const d = fake();
+    d.close = () => {};
+    d.showModal = () => {
+      seen.push(d.innerHTML);
+      if (answer) d.handlers.click[0]({ target: { closest: () => ({ hasAttribute: () => false, dataset: { act: '1' } }) } });
+      else d.handlers.cancel[0]({ preventDefault() {} });
+    };
+    return d;
+  };
+  try { await fn(); } finally { document.createElement = prev; }
+  return seen;
+}
+/** Submits the ledger's Record payment form as typed (the box "keep any excess as credit" left as rendered: unticked). */
+async function submitPayment(ctx, { amount, paidOn = todayISO(), allowCredit = false }) {
+  const form = { amount: { value: amount }, mode: { value: 'cash' }, reference: { value: '' }, paidOn: { value: paidOn }, allowCredit: { checked: allowCredit },
+    guardianId: { value: '' }, querySelectorAll: () => [], querySelector: () => ({ disabled: false }) };
+  for (const h of ctx.el.querySelector('#fp-form').handlers.submit) await h({ preventDefault() {}, target: form });
+}
 
 test('#41 screens: the principal gets the year and late-fee controls, the accountant does not; the home pages warn before the year ends', async () => {
   const api = await mkApi();
@@ -194,6 +219,40 @@ test('#55 #45 accountant home: a Needs attention list (late fees to apply) and "
   assert.ok(!html.includes('reconciliation check'), 'the seed reconciles');
   const t = todayISO();
   assert.ok(html.includes(`href="${href('/reports', { tab: 'collection', from: t, to: t }).replace(/&/g, '&amp;')}"`), 'collected today links to the day book');
+});
+
+test('#46 a mistyped amount is not silently kept as credit: the box starts unticked and an excess must be confirmed', async () => {
+  const api = await mkApi();
+  api.session.set(ACCOUNTANT_P);
+  const sid = (await api.fees.invoices({})).find((i) => i.status !== 'cancelled' && i.balancePaise > 0).studentId;
+  const due = (await api.fees.invoices({ studentId: sid })).filter((i) => i.status !== 'cancelled' && i.balancePaise > 0).reduce((s, i) => s + i.balancePaise, 0);
+  const html = await draw(api, ACCOUNTANT_P, Payment, {}, { studentId: sid });
+  assert.match(html, /<input type="checkbox" name="allowCredit">/, 'unticked by default');
+  assert.match(html, /id="fp-left"/, 'a live "allocated / left over" line under Apply to');
+  const ctx = last;
+  const count = async () => (await api.fees.payments({ studentId: sid })).length;
+  const n0 = await count();
+  const typo = String((due + 4500000) / 100); // Rs 45,000 more than is due
+  const cancelled = await answeringDialogs(false, () => submitPayment(ctx, { amount: typo }));
+  assert.equal(cancelled.length, 1, 'one confirmation');
+  assert.match(cancelled[0], /₹45,000\.00/, 'it names the excess');
+  assert.equal(await count(), n0, 'cancelled: no receipt');
+  const ok = await answeringDialogs(true, () => submitPayment(ctx, { amount: typo }));
+  assert.equal(ok.length, 1);
+  const pays = await api.fees.payments({ studentId: sid });
+  assert.equal(pays.length, n0 + 1, 'confirmed: one receipt');
+  assert.equal(pays[0].creditPaise, 4500000, 'the confirmed excess is kept as credit');
+});
+
+test('#46 an amount within what is due records at once, with no dialog', async () => {
+  const api = await mkApi();
+  api.session.set(ACCOUNTANT_P);
+  const sid = (await api.fees.invoices({})).find((i) => i.status !== 'cancelled' && i.balancePaise > 0).studentId;
+  await draw(api, ACCOUNTANT_P, Payment, {}, { studentId: sid });
+  const n0 = (await api.fees.payments({ studentId: sid })).length;
+  const seen = await answeringDialogs(false, () => submitPayment(last, { amount: '100' }));
+  assert.equal(seen.length, 0);
+  assert.equal((await api.fees.payments({ studentId: sid })).length, n0 + 1);
 });
 
 test('#42 a programme without a structure offers Create; the editor can add instalments and heads (blank rows dropped)', async () => {

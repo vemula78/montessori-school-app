@@ -78,7 +78,8 @@ export async function render(ctx) {
       ${open.length ? `<fieldset style="border:1px solid var(--line);border-radius:12px;padding:10px 12px"><legend style="font-weight:800;font-size:.82rem">Apply to (optional)</legend>
         <small>Leave blank to allocate automatically to the oldest due invoice first. Or enter amounts to choose.</small>
         ${open.map((i) => `<label class="row between" style="margin-top:6px"><span>${esc(i.number)} ${esc(i.installmentName)} <small>balance ${money(i.balancePaise)}</small></span><input data-alloc="${esc(i.id)}" data-bal="${i.balancePaise}" inputmode="decimal" style="width:130px" placeholder="auto" value="${i.id === preInv ? esc(formatPaise(i.balancePaise, { symbol: false }).replace(/,/g, '')) : ''}" aria-label="Amount to apply to ${esc(i.number)}"></label>`).join('')}</fieldset>` : '<div class="banner">No open invoices. Any amount recorded now becomes credit.</div>'}
-      <label class="check"><input type="checkbox" name="allowCredit" checked> Keep any excess as credit (otherwise an overpayment is refused)</label>
+      <div id="fp-left" class="muted" aria-live="polite"></div>
+      <label class="check"><input type="checkbox" name="allowCredit"> Keep any excess as credit without asking (otherwise you are asked to confirm it)</label>
       <div class="row"><button class="btn primary" type="submit">Record payment</button>
         ${credit > 0 && open.length ? `<button class="btn" type="button" id="fp-credit">Apply credit ${money(credit)}</button>` : ''}</div>
     </form>` : ''}` : ''}
@@ -110,14 +111,35 @@ export async function render(ctx) {
     busy = true;
     const btn = f.querySelector('button[type=submit]');
     if (btn) btn.disabled = true;
+    // a mistyped amount (50000 for 5000) would otherwise become a valid receipt with the difference as credit
+    const due = allocations.length ? allocations.reduce((s, a) => s + a.amountPaise, 0) : outstanding;
+    let allowCredit = f.allowCredit.checked;
+    if (amount > due && !allowCredit) {
+      allowCredit = await confirmDialog('More than is due', `${money(amount)} is more than the ${money(due)} due${allocations.length ? ' on the invoices you chose' : ''}. Keep ${money(amount - due)} as credit on account? Cancel to correct the amount.`, { okLabel: `Keep ${money(amount - due)} as credit` });
+      if (!allowCredit) { busy = false; if (btn) btn.disabled = false; return; }
+    }
     const res = await attempt(() => api.fees.recordPayment({
       studentId: student.id, amountPaise: amount, mode: f.mode.value, reference: f.reference.value.trim() || null, paidOn: f.paidOn.value,
-      allocations: allocations.length ? allocations : undefined, allowCredit: f.allowCredit.checked, guardianId: f.guardianId.value || null,
+      allocations: allocations.length ? allocations : undefined, allowCredit, guardianId: f.guardianId.value || null,
     })).finally(() => { busy = false; if (btn) btn.disabled = false; });
     if (res.ok) {
       const pay = res.value;
       await ctx.rerender();
       flash(`<div class="banner ok"><div class="row between"><span><strong>Recorded ${esc(pay.receiptNumber)}</strong> - ${money(pay.amountPaise)}${pay.creditPaise ? `, of which ${money(pay.creditPaise)} kept as credit` : ''}.</span><a class="btn sm" href="#/print/receipt/${esc(pay.id)}">View / print receipt</a></div></div>`);
+    }
+  });
+  // live "applied / left over" line, so a typo shows before anything is recorded
+  ctx.el.querySelector('#fp-form')?.addEventListener('input', () => {
+    const f = ctx.el.querySelector('#fp-form');
+    const out = ctx.el.querySelector('#fp-left');
+    const amount = rupeesToPaise(f.amount.value);
+    const typed = [...f.querySelectorAll('[data-alloc]')].filter((i) => i.value.trim());
+    if (amount === null || amount <= 0) { out.textContent = ''; return; }
+    if (typed.length) {
+      const applied = typed.reduce((s, i) => s + (rupeesToPaise(i.value) || 0), 0);
+      out.textContent = `Applied ${money(applied)} of ${money(amount)}: ${applied > amount ? `${money(applied - amount)} more than received` : applied < amount ? `${money(amount - applied)} left over` : 'nothing left over'}.`;
+    } else {
+      out.textContent = `Goes to the oldest dues first (${money(outstanding)} due)${amount > outstanding ? `: ${money(amount - outstanding)} more than is due` : ''}.`;
     }
   });
   ctx.el.querySelector('#fp-credit')?.addEventListener('click', async () => {
