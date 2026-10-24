@@ -28,7 +28,7 @@ export function guardianExport(db, guardianId, { full = false, photoOk = () => f
     exportedFor: guardianId,
     note: 'Personal data held by the school app for this guardian and their children. Fee records are retained as the law requires.',
     guardian: { id: g.id, firstName: g.firstName, lastName: g.lastName, relation: g.relation, phone: g.phone, email: g.email },
-    children: kids.map(k => ({ id: k.id, firstName: k.firstName, lastName: k.lastName, dob: k.dob, admissionNo: k.admissionNo, programId: k.programId, status: k.status, routeId: k.routeId, stopId: k.stopId, healthNotes: k.healthNotes ?? null })),
+    children: kids.map(k => ({ id: k.id, firstName: k.firstName, lastName: k.lastName, dob: k.dob, admissionNo: k.admissionNo, programId: k.programId, status: k.status, routeId: k.routeId, stopId: k.stopId, healthNotes: k.healthNotes ?? null, healthAlerts: k.healthAlerts ?? null, level: k.level ?? null })),
     invoices: db.invoices.filter(mine).map(i => ({ ...i, ...invoiceAmounts(db, i) })),
     payments: db.payments.filter(mine),
     refunds: db.refunds.filter(r => ids.has(byId(db.payments, r.paymentId)?.studentId)),

@@ -351,3 +351,84 @@ test('the evaluations parent scope follows consent like every parent read (serve
   assert.deepEqual(p.studentIds, []);
   assert.throws(() => EV.getEvaluation(db, p, `evl-${AY_PREV}-stu-01`), code('NOT_ALLOWED'));
 });
+
+// ================================================================ B. other wave-2 features
+
+test('#78 health: a parent or the principal sets allergies and medical alerts (audited, field names only); teachers read the badge list; driver and accountant never', async () => {
+  const api = await mkApi();
+  api.session.set('persona-grd-02');
+  const h = await api.health.set({ studentId: 'stu-04', allergies: 'Fake: egg', medical: '' });
+  assert.deepEqual([h.allergies, h.medical, h.updatedByRole], ['Fake: egg', '', 'parent']);
+  await assert.rejects(api.health.set({ studentId: 'stu-01', allergies: 'x' }), code('NOT_ALLOWED'), 'another family\'s child');
+  assert.equal((await api.health.get('stu-04')).allergies, 'Fake: egg');
+  const a = api.getDb().auditLog.at(-1);
+  assert.equal(a.summary, 'allergies changed by a parent');
+  assert.ok(!JSON.stringify(api.getDb().auditLog).includes('Fake: egg'), 'the text is never in the audit log');
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.health.set({ studentId: 'stu-04', allergies: 'x' }), code('NOT_ALLOWED'));
+  const list = await api.health.alerts('prog-primary-a');
+  assert.deepEqual(list.map(x => x.studentId).sort(), ['stu-04', 'stu-17'], 'Ira (new) and Tara (seed)');
+  await assert.rejects(api.health.alerts('prog-toddler'), code('NOT_ALLOWED'));
+  api.session.set('persona-stf-principal');
+  assert.ok((await api.health.alerts()).some(x => x.studentId === 'stu-10'), 'Diya (seed) for the principal');
+  const cleared = await api.health.set({ studentId: 'stu-04', allergies: '', notes: 'Fake note' });
+  assert.deepEqual([cleared.allergies, cleared.notes], ['', 'Fake note']);
+  assert.equal(api.getDb().students.find(s => s.id === 'stu-04').healthAlerts, null, 'no alerts left: null');
+  for (const who of ['persona-stf-driver-1', 'persona-stf-accountant']) {
+    api.session.set(who);
+    const kids = await api.people.students({});
+    assert.ok(kids.every(s => s.healthAlerts === null), `${who}: no alerts`);
+  }
+});
+
+test('#8 #68 the driver: dates of reported absences on their route (never the reason), the pick-up people, and who received a child at a drop', async () => {
+  const api = await mkApi();
+  const db0 = api.getDb();
+  const neelLeave = db0.leaveRequests.find(r => r.studentId === 'stu-01');
+  api.session.set('persona-stf-driver-1');
+  const abs = await api.transport.absences('route-1', neelLeave.fromDate);
+  assert.deepEqual(abs, [{ studentId: 'stu-01', fromDate: neelLeave.fromDate, toDate: neelLeave.toDate }]);
+  assert.ok(!JSON.stringify(abs).includes('Family function'), 'no reason');
+  await assert.rejects(api.transport.absences('route-2'), code('NOT_ALLOWED'));
+  const rec = await api.transport.receivers('route-1');
+  assert.deepEqual(rec['stu-01'].map(c => c.name), ['Sarla Notrealsen']);
+  assert.ok(!('stu-09' in rec), 'only this route\'s children');
+  const trip = await api.transport.startTrip({ routeId: 'route-1', direction: 'drop', simulated: true });
+  const grandma = rec['stu-01'][0];
+  const e1 = await api.transport.markChild(trip.id, { studentId: 'stu-01', type: 'dropped', receivedBy: { kind: 'contact', id: grandma.id } });
+  assert.deepEqual(e1.receivedBy, { kind: 'contact', contactId: grandma.id });
+  const e2 = await api.transport.markChild(trip.id, { studentId: 'stu-03', type: 'dropped', receivedBy: { kind: 'other', name: 'Fake Neighbour Demoson' } });
+  assert.deepEqual(e2.receivedBy, { kind: 'other', name: 'Fake Neighbour Demoson' });
+  await assert.rejects(api.transport.markChild(trip.id, { studentId: 'stu-03', type: 'dropped', receivedBy: { kind: 'contact', id: grandma.id } }), /not on this child's pick-up list/);
+  await assert.rejects(api.transport.markChild(trip.id, { studentId: 'stu-13', type: 'boarded', receivedBy: { kind: 'guardian' } }), /Only a drop/);
+  const e3 = await api.transport.markChild(trip.id, { studentId: 'stu-13', type: 'dropped' });
+  assert.equal(e3.receivedBy, undefined, 'optional (an older driver screen sends none)');
+});
+
+test('#21 diary.removeMany and #29 progress.recordMany: all or none', async () => {
+  const api = await mkApi();
+  api.session.set('persona-stf-teacher-pa');
+  const kids = ['stu-01', 'stu-04', 'stu-06'];
+  const r = await api.diary.addMany({ programId: 'prog-primary-a', date: TODAY, studentIds: kids, type: 'activity', data: { text: 'Fake: songs' } });
+  const ids = r.entries.map(e => e.id);
+  api.session.set('persona-stf-principal');
+  const other = await api.diary.add({ studentId: 'stu-01', date: TODAY, type: 'activity', data: { text: 'Fake: principal wrote this' } });
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.diary.removeMany([...ids, other.id]), code('NOT_ALLOWED'), "another person's entry");
+  assert.equal(api.getDb().diaryEntries.filter(e => ids.includes(e.id)).length, 3, 'nothing removed');
+  assert.deepEqual((await api.diary.removeMany(ids)).removed, 3);
+  assert.equal(api.getDb().diaryEntries.filter(e => ids.includes(e.id)).length, 0);
+  api.session.set('persona-stf-teacher-pb');
+  await assert.rejects(api.diary.removeMany([other.id]), code('NOT_ALLOWED'));
+  api.session.set('persona-stf-teacher-pa');
+  const pres = api.getDb().presentations.find(p => p.active && p.area === 'math' && !api.getDb().progressEvents.some(e => e.presentationId === p.id));
+  const entries = ['stu-06', 'stu-09'].map(studentId => ({ studentId, presentationId: pres.id, status: 'introduced', date: TODAY }));
+  const before = api.getDb().progressEvents.length;
+  await assert.rejects(api.progress.recordMany({ entries: [...entries, { studentId: 'stu-06', presentationId: pres.id, status: 'introduced', date: TODAY }] }), /already introduced/);
+  assert.equal(api.getDb().progressEvents.length, before, 'nothing recorded');
+  assert.equal((await api.progress.recordMany({ entries })).recorded, 2);
+  assert.equal(api.getDb().progressEvents.length, before + 2);
+  await assert.rejects(api.progress.recordMany({ entries: [{ studentId: 'stu-02', presentationId: pres.id, status: 'introduced', date: TODAY }] }), code('NOT_ALLOWED'));
+  assert.equal(COMMANDS['diary.removeMany'].load([ids]).diaryEntryIds.length, 3);
+  assert.deepEqual(COMMANDS['progress.recordMany'].load([{ entries }]).learningStudentIds, ['stu-06', 'stu-09']);
+});

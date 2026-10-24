@@ -42,6 +42,7 @@ import * as EV from '../domain/evaluations.js';
 import { signatureList, currentSignature, SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, SIGNATURE_MAX_EDGE } from '../domain/signatures.js';
 import { schoolDetails, officeHoursStatus } from '../domain/school.js';
 import { sniffMime, pngSize, fileProblem } from '../domain/files.js';
+import { healthAlerts, healthView } from '../domain/health.js';
 import { totp, verifyTotp, randomSecret, otpauthUri, secondsLeft } from './totp.js';
 
 export { buildPersonas };
@@ -100,6 +101,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
   const studentView = (d, s, p) => {
     const v = { ...s, name: fullName(s), programName: byId(d.programs, s.programId)?.name ?? '—' };
     if (p.role === 'driver') v.healthNotes = null; // not needed for boarding
+    if (p.role === 'driver' || p.role === 'accountant') v.healthAlerts = null; // as RLS: the principal, the child's teachers and parents only
     return v;
   };
   const visibleGuardianIds = (d, p) => {
@@ -159,6 +161,20 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     setDetails: cmd('admin.setSchoolDetails'),
     /** officeHours() → {set, open, hours, nextOpen:{day, time, inDays}|null} at this moment (school time). */
     officeHours: op(() => { me(); return officeHoursStatus(db().school, nowISO(clock())); }),
+  };
+  /** Allergies and medical alerts (#78): the principal, the child's teachers and parents read; the principal and parents set. */
+  const health = {
+    /** alerts(programId?) → [{studentId, name, allergies, medical, notes, updatedAt, updatedByRole}] for children with any (the badge list); principal all, teacher own programme. */
+    alerts: op(programId => {
+      const p = allow('admin', 'teacher');
+      if (programId) teachesProgram(p, programId); else if (p.role === 'teacher') throw new ApiError('VALIDATION', 'Choose a programme');
+      const d = db();
+      return healthAlerts(d, p.role === 'admin' ? d.students.map(x => x.id) : p.studentIds, programId || null);
+    }),
+    /** get(studentId) → {studentId, name, allergies, medical, notes, updatedAt, updatedByRole}. */
+    get: op(studentId => { const p = allow('admin', 'teacher', 'parent'); mustSee(p, studentId); return healthView(byId(db().students, studentId)); }),
+    /** set({studentId, allergies?, medical?, notes?}) — the principal or a parent of the child; '' clears; audited (field names only). */
+    set: cmd('health.set'),
   };
   /** The annual Progress Report (reads follow RLS: staff of the child; parents published reports of their own children). */
   const evaluations = {
@@ -302,6 +318,27 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
       return T.parentView(db(), studentId, nowISO(now), todayISO(now));
     }),
     simulationPlan: op((routeId, o = {}) => { const p = allow('admin', 'driver'); return simulationPlan(mustRoute(p, db(), routeId), o); }),
+    /**
+     * absences(routeId, date = today) → [{studentId, fromDate, toDate}]: absences parents reported for children on the route that
+     * cover the date (the driver's stop list). Dates only, never the reason. Principal and the route's driver/attendant.
+     */
+    absences: op((routeId, date) => {
+      const p = allow('admin', 'driver'); const d = db(); mustRoute(p, d, routeId);
+      const on = date || today();
+      const kids = new Set(d.students.filter(s => s.routeId === routeId && s.status === 'active').map(s => s.id));
+      return (d.leaveRequests || []).filter(r => kids.has(r.studentId) && r.status === 'active' && r.fromDate <= on && on <= r.toDate)
+        .map(r => ({ studentId: r.studentId, fromDate: r.fromDate, toDate: r.toDate }));
+    }),
+    /**
+     * receivers(routeId) → {studentId: [{id, name, relation, phone}]}: the people each child's family listed as allowed to collect
+     * them (active), for "who received the child" on a drop. Principal and the route's driver/attendant.
+     */
+    receivers: op(routeId => {
+      const p = allow('admin', 'driver'); const d = db(); mustRoute(p, d, routeId);
+      const kids = d.students.filter(s => s.routeId === routeId && s.status === 'active').map(s => s.id);
+      return Object.fromEntries(kids.map(id => [id, (d.pickupContacts || []).filter(c => c.studentId === id && c.status === 'active')
+        .map(c => ({ id: c.id, name: c.name, relation: c.relation, phone: c.phone }))]));
+    }),
   };
 
   function seeInvoice(p, d, id) {
@@ -410,6 +447,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     correct: cmd('diary.correct'),
     remove: cmd('diary.remove'),
     markRead: cmd('diary.markRead'),
+    /** removeMany(entryIds) → {removed, ids}: several entries at once (a whole-class entry), all or none. */
+    removeMany: cmd('diary.removeMany'),
     /** markReadMany(ids): a parent's read receipts for one day, sent after the page is painted (the real app reloads once). */
     markReadMany: op(async (ids) => { for (const id of ids) await cmd('diary.markRead')(id); }),
   };
@@ -485,6 +524,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     /** history(studentId, presentationId) → every event, oldest first. */
     history: op((studentId, presentationId) => progressHistory(db(), me(), studentId, presentationId)),
     record: cmd('progress.record'),
+    /** recordMany({entries:[{studentId, presentationId, status, date, note?, correction?, reason?}]}) → {recorded, events}: all or none. */
+    recordMany: cmd('progress.recordMany'),
   };
   const reports = {
     list: op((q = {}) => listReports(db(), me(), q)),
@@ -578,7 +619,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
   };
 
   return { people, setup, notices, threads, calendar, transport, fees, attendance, diary, care, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight,
-    school, evaluations, signatures, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
+    school, evaluations, signatures, health, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
 }
 
 /**
@@ -1125,7 +1166,7 @@ export function createApi(opts = {}) {
     refresh: op(() => undefined),
     session, people, setup: surface.setup, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     curriculum, observations, progress, reports, photos, rights: surface.rights, oversight: surface.oversight,
-    auth, consent, push, import: imports, reminders, school: surface.school, evaluations, signatures,
+    auth, consent, push, import: imports, reminders, school: surface.school, evaluations, signatures, health: surface.health,
     /** test hook */
     _storage: () => storage,
   };

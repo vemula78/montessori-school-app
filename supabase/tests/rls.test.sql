@@ -15,10 +15,12 @@
 -- Migration 0010 (annual Progress Report) from "v5 evaluations" below: evaluations read like termly reports, signatures the
 -- principal and their owner only, the private signatures bucket, persist (one current signature per person, never deleted;
 -- retention deletes evaluations), the evalAttendance hint of load_slice, the v5 snapshot.
+-- Migration 0011 (wave 2) from "wave 2" below: health alerts kept out of the student document, the driver's absence dates and
+-- pick-up people, teachers' trips without positions, a closed staff record closing the sign-in, the multi-row load hints.
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(240);
+select plan(260);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -109,7 +111,7 @@ select tests.as_user('00000000-0000-4000-8000-000000000002');
 select ok((select bool_and(program_id = 'prog-primary-a') from public.students) and (select count(*) from public.students) > 0, 'teacher_program_scope_students_threads_no_fees: students');
 select ok((select bool_and(program_id = 'prog-primary-a') from public.threads) and (select count(*) from public.threads) > 0, 'teacher_program_scope_students_threads_no_fees: threads');
 select is((select count(*)::int from public.invoices) + (select count(*)::int from public.payments) + (select count(*)::int from public.refunds), 0, 'teacher_program_scope_students_threads_no_fees: no fees');
-select is((select count(*)::int from public.trips), 0, 'teacher sees no trips');
+select is((select count(*)::int from public.trip_positions), 0, 'teacher sees no bus positions (wave 2: trips and their children''s marks, never positions)');
 reset role;
 create temp table expected_teacher_guardians as
   select array_agg(distinct sg.guardian_id order by sg.guardian_id) ids from public.student_guardians sg join public.students s on s.id = sg.student_id where s.program_id = 'prog-primary-a';
@@ -553,7 +555,7 @@ select tests.as_user('00000000-0000-4000-8000-000000000003'); -- accountant
 select is((select count(*)::int from public.leave_requests) + (select count(*)::int from public.pickup_contacts) + (select count(*)::int from public.pickups), 0, 'care_accountant_reads_none');
 reset role;
 select tests.as_user('00000000-0000-4000-8000-000000000004'); -- driver
-select is((select count(*)::int from public.leave_requests) + (select count(*)::int from public.pickup_contacts) + (select count(*)::int from public.pickups), 0, 'care_driver_reads_none');
+select is((select count(*)::int from public.leave_requests) + (select count(*)::int from public.pickups), 0, 'care_driver_reads_no_absence_reasons_and_no_pickup_log (wave 2: dates via leave_days, pick-up people of the route)');
 select throws_ok($$insert into public.leave_requests (id, doc) values ('lv-x', '{"id":"lv-x","studentId":"stu-01","fromDate":"2026-10-20","toDate":"2026-10-20","status":"active"}')$$, '42501', null, 'care_no_client_writes');
 reset role;
 select is(jsonb_array_length((public.load_slice('{leaveRequests,pickupContacts,pickups}'::text[], '{}'::jsonb))->'db'->'pickupContacts') >= 1, true, 'care_load_slice_returns_the_collections');
@@ -610,6 +612,48 @@ select is((select count(*)::int from public.evaluations where id = 'evl-AY2025-2
 select is((select count(*)::int from pg_policy pol join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public' and (coalesce(pg_get_expr(pol.polqual, pol.polrelid), '') || ' ' || coalesce(pg_get_expr(pol.polwithcheck, pol.polrelid), ''))
     ~ '(?<!SELECT )\m(app|auth)\.[a-z_]+\('), 0, 'v5_rls_helpers_once_per_statement');
+
+-- ---------------------------------------------------------------- wave 2 (0011)
+select lives_ok($$select public.persist('pgtap-w2', 0, jsonb_build_object('upserts', jsonb_build_object('students', jsonb_build_array(
+  (select doc from public.students where id = 'stu-04') || '{"guardianIds":["grd-02"],"healthAlerts":{"allergies":"Fake: egg","medical":""}}'::jsonb))))$$, 'w2_persist_student_with_health_alerts');
+select ok((select h.alerts->>'allergies' = 'Fake: egg' from public.student_health h where h.student_id = 'stu-04') and not (select doc ? 'healthAlerts' from public.students where id = 'stu-04'),
+  'w2_health_alerts_live_in_student_health_never_in_the_student_doc');
+select is((public.load_slice('{students}'::text[], '{}'::jsonb)->'db'->'students') @> '[{"id":"stu-04","healthAlerts":{"allergies":"Fake: egg"}}]'::jsonb, true, 'w2_load_slice_students_carry_health_alerts');
+select tests.as_user('00000000-0000-4000-8000-000000000002'); -- teacher, Primary A
+select is((select alerts->>'allergies' from public.student_health where student_id = 'stu-04'), 'Fake: egg', 'w2_teacher_reads_own_programme_alerts');
+select ok(exists (select 1 from public.trip_child_events) and (select bool_and(s.program_id = 'prog-primary-a') from public.trip_child_events e join public.students s on s.id = e.student_id),
+  'w2_teacher_reads_marks_of_own_programme_children_only');
+select ok(exists (select 1 from public.trips), 'w2_teacher_reads_the_trips_of_their_children''s_routes');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000006'); -- grd-02
+select is(public.my_snapshot()->'students' @> '[{"id":"stu-04","healthAlerts":{"allergies":"Fake: egg"}}]'::jsonb, true, 'w2_parent_snapshot_carries_own_child_alerts');
+select is((select count(*)::int from public.leave_days), 0, 'w2_parent_reads_no_leave_days');
+reset role;
+select lives_ok($$select public.persist('pgtap-w2-care', 0, '{"upserts":{"leaveRequests":[{"id":"lv-w2-1","studentId":"stu-01","guardianId":"grd-01","fromDate":"2099-02-01","toDate":"2099-02-01","reason":"Fake private reason","status":"active"},
+  {"id":"lv-w2-2","studentId":"stu-02","guardianId":"grd-01","fromDate":"2099-02-01","toDate":"2099-02-01","reason":"Fake","status":"active"}]}}'::jsonb)$$, 'w2_leave_requests_written');
+select is((select array_agg(id order by id) from public.leave_days where id like 'lv-w2-%'), array['lv-w2-1', 'lv-w2-2'], 'w2_leave_days_kept_by_trigger');
+select tests.as_user('00000000-0000-4000-8000-000000000004'); -- driver, route 1 (stu-01 rides it, stu-02 does not)
+select is((select array_agg(id order by id) from public.leave_days where id like 'lv-w2-%'), array['lv-w2-1'], 'w2_driver_reads_absence_dates_of_own_route_children');
+select ok(public.my_snapshot()->'leaveRequests' @> '[{"id":"lv-w2-1","reason":null}]'::jsonb and position('Fake private reason' in public.my_snapshot()::text) = 0, 'w2_driver_snapshot_absences_without_reasons');
+select ok(exists (select 1 from public.pickup_contacts) and (select bool_and(s.route_id = 'route-1') from public.pickup_contacts c join public.students s on s.id = c.student_id),
+  'w2_driver_reads_pickup_people_of_own_route_children_only');
+reset role;
+select is(jsonb_array_length(public.load_slice('{diaryEntries}'::text[], jsonb_build_object('diaryEntryIds', (select jsonb_agg(id) from (select id from public.diary_entries order by id limit 3) x)))->'db'->'diaryEntries'), 3,
+  'w2_load_slice_several_diary_entries');
+select is((select count(distinct x->>'studentId')::int from jsonb_array_elements(public.load_slice('{observations}'::text[], '{"learningStudentIds":["stu-01","stu-04"]}'::jsonb)->'db'->'observations') x
+  where x->>'studentId' in ('stu-01', 'stu-04')), (select count(distinct student_id)::int from public.observations where student_id in ('stu-01', 'stu-04')), 'w2_load_slice_several_learners');
+-- closing the teacher's staff record closes their sign-in at once; reopening restores it
+select lives_ok($$select public.persist('pgtap-w2-setup', 0, jsonb_build_object('upserts', jsonb_build_object('staff', jsonb_build_array(
+  (select doc from public.staff where id = 'stf-teacher-pa') || '{"active":false}'::jsonb))))$$, 'w2_staff_closed');
+select tests.as_user('00000000-0000-4000-8000-000000000002');
+select ok(app.my_role() is null and (select count(*) from public.students) = 0, 'w2_closed_staff_reads_nothing');
+select is(public.my_snapshot()->>'status', 'revoked', 'w2_closed_staff_snapshot_revoked');
+reset role;
+select lives_ok($$select public.persist('pgtap-w2-setup', 1, jsonb_build_object('upserts', jsonb_build_object('staff', jsonb_build_array(
+  (select doc from public.staff where id = 'stf-teacher-pa') - 'active'))))$$, 'w2_staff_reopened');
+select tests.as_user('00000000-0000-4000-8000-000000000002');
+select is(app.my_role(), 'teacher', 'w2_reopened_staff_reads_again');
+reset role;
 
 select * from finish();
 rollback;

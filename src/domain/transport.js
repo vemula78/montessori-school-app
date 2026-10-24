@@ -263,7 +263,28 @@ export function recordPositions(db, tripId, fixes, ctx = null) {
 }
 
 /** type 'corrected' undoes the child's latest standing mark (a wrong tap); the parent is told it was a mistake. */
-export function markChild(db, tripId, { studentId, stopId, type }, ctx) {
+/**
+ * receivedBy (a 'dropped' mark only, optional): who took the child at the stop — {kind:'contact', id} (someone on the
+ * family's pick-up list), {kind:'guardian'} (a parent), or {kind:'other', name} (someone else, named). Stored on the event.
+ */
+export function cleanReceiver(db, studentId, r) {
+  if (r === undefined || r === null) return null;
+  if (typeof r !== 'object') fail('VALIDATION', 'Say who received the child');
+  if (r.kind === 'guardian') return { kind: 'guardian' };
+  if (r.kind === 'contact') {
+    const c = (db.pickupContacts || []).find(x => x.id === r.id && x.studentId === studentId && x.status === 'active');
+    if (!c) fail('VALIDATION', "That person is not on this child's pick-up list");
+    return { kind: 'contact', contactId: c.id };
+  }
+  if (r.kind === 'other') {
+    const name = String(r.name ?? '').trim().replace(/\s+/g, ' ');
+    if (name.length < 2 || name.length > 80) fail('VALIDATION', 'Write the name of the person who received the child');
+    return { kind: 'other', name };
+  }
+  return fail('VALIDATION', `Unknown receiver: ${r.kind}`);
+}
+
+export function markChild(db, tripId, { studentId, stopId, type, receivedBy }, ctx) {
   const trip = mustGet(db, 'trips', tripId, 'Trip');
   if (trip.status !== 'active') fail('VALIDATION', 'Trip has ended');
   if (!['boarded', 'dropped', 'absent', 'corrected'].includes(type)) fail('VALIDATION', `Unknown child event: ${type}`);
@@ -279,7 +300,9 @@ export function markChild(db, tripId, { studentId, stopId, type }, ctx) {
   const route = mustGet(db, 'routes', trip.routeId, 'Route');
   const stop = stopId || s.stopId;
   if (!route.stops.some(x => x.id === stop)) fail('VALIDATION', 'Stop is not on this route');
-  const ev = { studentId, stopId: stop, type, ts: ctx.now, by: ctx.actor.id };
+  if (receivedBy !== undefined && receivedBy !== null && type !== 'dropped') fail('VALIDATION', 'Only a drop records who received the child');
+  const rec = type === 'dropped' ? cleanReceiver(db, studentId, receivedBy) : null;
+  const ev = { studentId, stopId: stop, type, ts: ctx.now, by: ctx.actor.id, ...(rec ? { receivedBy: rec } : {}) };
   trip.childEvents.push(ev);
   return ev;
 }

@@ -36,6 +36,9 @@ export const FIXTURE = {
   // schema v4 (care): one row of each for stu-04 (Primary A, grd-02), whatever day the seed was generated on
   care: {
     leaveRequests: [{ id: 'lv-matrix-1', studentId: 'stu-04', guardianId: 'grd-02', fromDate: '2026-10-05', toDate: '2026-10-05', reason: '', status: 'active',
+      createdAt: '2026-10-01T05:00:00.000Z', seenBy: null, seenAt: null, withdrawnAt: null },
+    // a route-1 child's absence still to come (wave 2: the driver reads its dates)
+    { id: 'lv-matrix-2', studentId: 'stu-01', guardianId: 'grd-01', fromDate: '2099-01-05', toDate: '2099-01-05', reason: 'Fake matrix reason', status: 'active',
       createdAt: '2026-10-01T05:00:00.000Z', seenBy: null, seenAt: null, withdrawnAt: null }],
     pickupContacts: [{ id: 'pkc-matrix-1', studentId: 'stu-04', name: 'Matrix Demoson', relation: 'Uncle', phone: '+91-90000-00399', status: 'active',
       addedBy: 'grd-02', addedByRole: 'parent', addedAt: '2026-10-01T05:00:00.000Z', removedBy: null, removedAt: null }],
@@ -105,10 +108,14 @@ export const PERMISSIONS = {
       js: { kind: 'read', name: 'otherDataRequests' }, sql: "select count(*) from public.data_requests where guardian_id <> coalesce(app.my_guardian_id(), '')" },
     { key: 'absences_reported', label: 'Absences parents reported', allow: row(Y, N, Y, N, N, Y, N),
       js: { kind: 'read', name: 'leaveRequests' }, sql: 'select count(*) from public.leave_requests' },
-    { key: 'pickup_people', label: 'People allowed to collect a child (names and phone numbers)', allow: row(Y, N, Y, N, N, Y, N),
+    { key: 'pickup_people', label: 'People allowed to collect a child (names and phone numbers)', allow: row(Y, N, Y, N, Y, Y, N),
       js: { kind: 'read', name: 'pickupContacts' }, sql: 'select count(*) from public.pickup_contacts' },
     { key: 'pickup_log', label: 'Who collected each child', allow: row(Y, N, Y, N, N, Y, N),
       js: { kind: 'read', name: 'pickups' }, sql: 'select count(*) from public.pickups' },
+    { key: 'route_absences', label: 'Dates of absences reported for children on the route (no reasons)', allow: row(Y, N, N, N, Y, N, N),
+      js: { kind: 'read', name: 'routeAbsences' }, sql: 'select count(*) from public.leave_days' },
+    { key: 'bus_child_events', label: "Children's boarding and drop-off marks", allow: row(Y, N, Y, Y, Y, Y, N),
+      js: { kind: 'read', name: 'busChildEvents' }, sql: 'select count(*) from public.trip_child_events' },
     { key: 'progress_reports_unpublished', label: 'Annual progress reports not yet published', allow: row(Y, N, Y, N, N, N, N),
       js: { kind: 'read', name: 'unpublishedEvaluations' }, sql: "select count(*) from public.evaluations where status <> 'published'" },
     { key: 'progress_reports_published', label: 'Published annual progress reports', allow: row(Y, N, Y, N, N, Y, N),
@@ -148,6 +155,8 @@ export const PERMISSIONS = {
       js: { kind: 'command', name: 'signatures.uploadCheck', args: [{ owner: { kind: 'staff', staffId: 'stf-teacher-pa' } }] }, sql: null },
     { key: 'school_settings', label: 'Set the school details (report footer, privacy contact, office hours, UPI)', allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'command', name: 'admin.setSchoolDetails', args: [{ directorName: 'Matrix Exampleton' }] }, sql: null },
+    { key: 'set_health', label: "Set a child's allergies and medical alerts (stu-04)", allow: row(Y, N, N, N, N, Y, N),
+      js: { kind: 'command', name: 'health.set', args: [{ studentId: 'stu-04', allergies: 'Fake: none known' }] }, sql: null },
     { key: 'export_family', label: "Download a family's data (grd-02)", allow: row(Y, N, N, N, N, Y, N),
       js: { kind: 'command', name: 'admin.dataExport', args: ['grd-02'] }, sql: null },
   ],
@@ -156,11 +165,12 @@ export const PERMISSIONS = {
 // ---------------------------------------------------------------- JS evaluation (the registry and the read rules)
 
 const anyOf = (list, pred) => (list || []).some(pred);
+const onMyRoute = (db, p, sid) => { const s = byId(db.students, sid); return Boolean(s && s.routeId && (p.routeIds || []).includes(s.routeId)); };
 const learner = (p, sid) => p.role === 'admin' || ((p.role === 'teacher' || p.role === 'parent') && p.studentIds.includes(sid));
-/** Read rules as RLS states them (migrations 0001–0010), over the persona's scope. */
+/** Read rules as RLS states them (migrations 0001–0011), over the persona's scope. */
 const READS = {
   children: (db, p) => STAFF_SEES_ALL.includes(p.role) || p.studentIds.length > 0,
-  healthNotes: (db, p) => ['admin', 'teacher', 'parent'].includes(p.role) && anyOf(db.students, s => s.healthNotes && (p.role === 'admin' || p.studentIds.includes(s.id))),
+  healthNotes: (db, p) => ['admin', 'teacher', 'parent'].includes(p.role) && anyOf(db.students, s => (s.healthNotes || s.healthAlerts) && (p.role === 'admin' || p.studentIds.includes(s.id))),
   otherGuardians: (db, p) => STAFF_SEES_ALL.includes(p.role) ? db.guardians.length > 0
     : p.role === 'teacher' && anyOf(db.students, s => p.studentIds.includes(s.id) && (s.guardianIds || []).length > 0),
   staffPhones: (db, p) => p.role === 'admin' && anyOf(db.staff, s => s.id !== p.staffId && s.phone),
@@ -177,7 +187,13 @@ const READS = {
   otherDataRequests: (db, p) => p.role === 'admin' && db.dataRequests.length > 0,
   // schema v4 (0009): read like the diary
   leaveRequests: (db, p) => anyOf(db.leaveRequests, r => learner(p, r.studentId)),
-  pickupContacts: (db, p) => anyOf(db.pickupContacts, r => learner(p, r.studentId)),
+  // wave 2 (0011): the driver reads the pick-up people of children on their own routes (who may receive a child at a stop)
+  pickupContacts: (db, p) => anyOf(db.pickupContacts, r => learner(p, r.studentId) || (p.role === 'driver' && onMyRoute(db, p, r.studentId))),
+  routeAbsences: (db, p, extra) => anyOf(db.leaveRequests, r => p.role === 'admin' || (p.role === 'driver' && r.status === 'active' && r.toDate >= extra.today && onMyRoute(db, p, r.studentId))),
+  busChildEvents: (db, p) => anyOf(db.trips, t => anyOf(t.childEvents, e => STAFF_SEES_ALL.includes(p.role)
+    || (p.role === 'driver' && (p.routeIds || []).includes(t.routeId))
+    || (p.role === 'teacher' && p.studentIds.includes(e.studentId))
+    || (p.role === 'parent' && p.studentIds.includes(e.studentId) && anyOf(db.consents, c => c.guardianId === p.guardianId && c.studentId === e.studentId && c.purpose === 'bus_live' && c.version === CONSENT_VERSION && !c.withdrawnAt)))),
   pickups: (db, p) => anyOf(db.pickups, r => learner(p, r.studentId)),
   // schema v5 (0010): evaluations read like termly reports; signature rows the principal, and a staff member their own
   unpublishedEvaluations: (db, p) => p.role !== 'parent' && anyOf(db.evaluations, e => e.status !== 'published' && learner(p, e.studentId)),
@@ -210,7 +226,7 @@ export function evaluateJs(db, actorKey, capKey, { now, today, policyRequired = 
     p = consentScopedPersona(db, p, db.consents);
     if (!p.studentIds.length) return false; // the server refuses every such call; RLS shows no child data
   }
-  if (cap.js.kind === 'read') return READS[cap.js.name](db, p, { signInEvents });
+  if (cap.js.kind === 'read') return READS[cap.js.name](db, p, { signInEvents, today });
   try {
     COMMANDS[cap.js.name].authorize(p, db, fill(cap.js.args, today), { ...ctxFor(p, now, today), userId: a.userId });
     return true;

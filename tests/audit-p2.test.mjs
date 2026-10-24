@@ -364,7 +364,7 @@ test('admin.invites reports the redeeming user\'s current status (redeemedUserSt
 
 // ---------------------------------------------------------------- revision guards across slices (#13)
 test('#13 a write to a collection another slice also writes guards that slice too', () => {
-  assert.deepEqual(guardSlices('ledger', ['guardians', 'students']), ['account', 'erasure']);
+  assert.deepEqual(guardSlices('ledger', ['guardians', 'students']), ['account', 'erasure', 'health']); // wave 2: health.set writes students too
   assert.deepEqual(guardSlices('account', ['guardians', 'invites']), ['erasure', 'ledger']);
   assert.ok(guardSlices('ledger', ['staff']).includes('account'), 'staff role changes move app_users (account)');
   assert.deepEqual(guardSlices('ledger', ['payments', 'invoices']), []);

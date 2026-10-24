@@ -192,6 +192,9 @@ export function buildSeed(now = new Date()) {
     s.levelAy = AY;
   }
   db.students.find((s) => s.id === stu.Kabir).healthNotes = 'Mild dust allergy (demo data)';
+  // allergies and medical alerts (wave 2), as the school or a parent would record them
+  db.students.find((s) => s.id === stu.Diya).healthAlerts = { allergies: 'Peanuts and tree nuts (demo data)', medical: 'Carries an antihistamine syrup in her bag (demo data)', updatedAt: isoAt('2026-06-02', 18, 0), updatedBy: grd.Diya, updatedByRole: 'parent' };
+  db.students.find((s) => s.id === stu.Tara).healthAlerts = { allergies: '', medical: 'Mild asthma: inhaler with the class teacher (demo data)', updatedAt: isoAt('2026-06-03', 10, 0), updatedBy: ID.principal, updatedByRole: 'admin' };
   db.students.find((s) => s.id === stu.Anika).healthNotes = 'Uses a spectacle prescription (demo data)';
 
   // consents the families gave in the demo: the app account and photos for every child, except one deliberate gap

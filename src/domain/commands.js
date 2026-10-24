@@ -6,7 +6,7 @@
 // Entry shape:
 //   slice      which revision-guarded slice the command writes ('ledger'|'messaging'|'calendar'|'transport'|
 //              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'|'care'|'setup'|
-//              'evaluations'|'signatures'); the server
+//              'evaluations'|'signatures'|'health'); the server
 //              loads that slice's collections.
 //   authorize(p, db, args)   throws DomainError NOT_ALLOWED / NOT_FOUND; p = persona (see personaFor)
 //   run(db, args, ctx, p)    mutates db and returns the api result (same shape in both modes)
@@ -50,6 +50,7 @@ import * as SU from './setup.js';
 import * as EV from './evaluations.js';
 import * as SG from './signatures.js';
 import * as SC from './school.js';
+import * as HL from './health.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
@@ -404,6 +405,21 @@ export const COMMANDS = {
     authorize: (p, db, [entryId]) => { allow(p, 'admin', 'teacher'); mustSee(p, db, diaryEntryOf(db, entryId).studentId); },
     run: (db, [entryId], ctx) => D.removeDiaryEntry(db, entryId, ctx),
   },
+  /** removeMany(entryIds) — several entries (a whole-class entry) in one write, all or none, each by the rule of remove. */
+  'diary.removeMany': {
+    slice: 'classroom', load: ([ids]) => ({ diaryEntryIds: Array.isArray(ids) ? ids.map(String).slice(0, 200) : [] }),
+    authorize(p, db, [ids]) {
+      allow(p, 'admin', 'teacher');
+      if (!Array.isArray(ids) || !ids.length) fail('VALIDATION', 'Choose the entries to remove');
+      if (ids.length > 200) fail('VALIDATION', 'At most 200 entries at once');
+      for (const id of ids) mustSee(p, db, diaryEntryOf(db, id).studentId);
+    },
+    run(db, [ids], ctx) {
+      const unique = [...new Set(ids.map(String))];
+      for (const id of unique) D.removeDiaryEntry(db, id, ctx); // any refusal throws: nothing is saved
+      return { removed: unique.length, ids: unique };
+    },
+  },
   'diary.markRead': {
     slice: 'classroom', load: ([entryId]) => ({ diaryEntryId: entryId }),
     authorize(p, db, [entryId]) {
@@ -445,6 +461,14 @@ export const COMMANDS = {
     slice: 'care',
     authorize: (p, db, [a]) => { allow(p, 'admin', 'teacher'); mustSee(p, db, a && a.studentId); },
     run: (db, [a], ctx) => CA.recordPickup(db, a || {}, ctx),
+  },
+
+  // ---- health (slice 'health'; src/domain/health.js): allergies and medical alerts, set by the principal or a parent
+  /** set({studentId, allergies?, medical?, notes?}) → {studentId, name, allergies, medical, notes, updatedAt, updatedByRole}. */
+  'health.set': {
+    slice: 'health',
+    authorize: (p, db, [a = {}]) => { allow(p, 'admin', 'parent'); mustSee(p, db, a?.studentId); },
+    run: (db, [a], ctx) => HL.setHealth(db, a || {}, ctx),
   },
 
   // ---- gateway settlement report (CSV from the gateway dashboard)
@@ -729,6 +753,20 @@ export const COMMANDS = {
     run: (db, [i], ctx) => PG.recordProgress(db, i || {}, ctx),
   },
 
+  /** recordMany({entries:[{studentId, presentationId, status, date, note?, correction?, reason?}]}) — a group lesson, all or none. */
+  'progress.recordMany': {
+    slice: 'learning', load: ([a = {}]) => ({ learningStudentIds: Array.isArray(a?.entries) ? [...new Set(a.entries.map(e => String(e?.studentId ?? '')))].slice(0, 60) : [] }),
+    authorize(p, db, [a = {}]) {
+      staffLearning(p);
+      if (!a || !Array.isArray(a.entries) || !a.entries.length) fail('VALIDATION', 'Choose at least one child');
+      if (a.entries.length > 60) fail('VALIDATION', 'At most 60 records at once');
+      for (const e of a.entries) O.mustSeeLearner(p, db, e?.studentId);
+    },
+    run(db, [a], ctx) {
+      const events = a.entries.map(e => PG.recordProgress(db, e || {}, ctx)); // any refusal throws: nothing is saved
+      return { recorded: events.length, events };
+    },
+  },
   /** generate({studentId, academicYearId, termName, fromDate, toDate}) — refused while that term's report is published. */
   'reports.generate': {
     slice: 'learning', load: ([i = {}]) => ({ learningStudentId: String(i?.studentId ?? '') }),
@@ -1226,7 +1264,8 @@ export const SLICES = {
     writes: ['school', 'counters', 'academicYears', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests'] },
   messaging: { reads: [...BASE, 'notices', 'noticeReceipts', 'threads', 'messages'], writes: ['notices', 'noticeReceipts', 'threads', 'messages'] },
   calendar: { reads: [...BASE, 'calendarEvents'], writes: ['calendarEvents'] },
-  transport: { reads: [...BASE, 'calendarEvents', 'trips'], writes: ['trips'] },
+  // pickupContacts: a drop records who received the child (someone on the family's list)
+  transport: { reads: [...BASE, 'calendarEvents', 'trips', 'pickupContacts'], writes: ['trips'] },
   classroom: { reads: [...BASE, 'calendarEvents', 'attendance', 'diaryEntries'], writes: ['attendance', 'diaryEntries'] },
   people: { reads: [...BASE, 'invoices', 'importBatches'], writes: ['importBatches', 'importRows'] },
   // staff: admin.changeSignInEmail writes the staff member's sign-in email (staff_contacts)
@@ -1251,6 +1290,8 @@ export const SLICES = {
   // schema v5: the annual Progress Report (evaluations are small: loaded whole; attendance by the evalAttendance hint)
   evaluations: { reads: [...BASE, 'calendarEvents', 'attendance', 'evaluations', 'signatures'], writes: ['evaluations'] },
   signatures: { reads: [...BASE, 'signatures'], writes: ['signatures'] },
+  // allergies and medical alerts (students: student_health in SQL)
+  health: { reads: [...BASE], writes: ['students'] },
 };
 /** Server-only collections (not part of the Db document; consents joined it in schema v2). */
 export const SERVER_COLLECTIONS = ['invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'];

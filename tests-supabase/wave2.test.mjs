@@ -126,3 +126,72 @@ test('levels and school settings through the command function: the principal onl
   assert.equal(started.started + started.skippedExisting + started.skippedNoLevel, started.children);
   assert.equal(Number(psql(`select count(*) from evaluations where academic_year_id = '${AY}' and student_id in (select id from students where program_id = 'prog-primary-a' and status = 'active')`)), started.children - started.skippedNoLevel);
 });
+
+// ================================================================ B. other wave-2 features
+
+test('#78 health: a parent sets allergies for their own child; it reaches student_health and the teacher, never the student document or the driver', async () => {
+  const driver = await signIn('driver1@example.com');
+  refused(await command(parentSib.token, 'health.set', { studentId: 'stu-04', allergies: 'x' }), 403, 'NOT_ALLOWED', 'another family');
+  refused(await command(tpa.token, 'health.set', { studentId: 'stu-04', allergies: 'x' }), 403, 'NOT_ALLOWED', 'a teacher');
+  const h = ok(await command(parentBus.token, 'health.set', { studentId: 'stu-04', allergies: 'Fake: sesame', medical: 'Fake: none' }), 'health.set');
+  assert.equal(h.updatedByRole, 'parent');
+  assert.equal(psql(`select alerts->>'allergies' from student_health where student_id = 'stu-04'`), 'Fake: sesame');
+  assert.equal(psql(`select doc ? 'healthAlerts' from students where id = 'stu-04'`), 'f');
+  assert.equal((await snapshot(tpa)).students.find(s => s.id === 'stu-04').healthAlerts.allergies, 'Fake: sesame');
+  const asDriver = (await restAs(driver.token, 'student_health?select=student_id')).data;
+  assert.deepEqual(asDriver, [], 'the driver reads no health row');
+  assert.match(psql(`select doc->>'summary' from audit_log where entity = 'student' and doc->>'action' = 'health' order by ts desc limit 1`), /^allergies, medical alerts changed by a parent$/);
+});
+
+test('#8 #68 the driver: absence dates without reasons, the route children\'s pick-up people, and who received a child at a drop', async () => {
+  const driver = await signIn('driver1@example.com');
+  const day = new Date(Date.now() + 330 * 60000 + 20 * 86400000).toISOString().slice(0, 10);
+  const lv = ok(await command(parentSib.token, 'leave.request', { studentId: 'stu-01', fromDate: day, toDate: day, reason: 'Fake: a private reason' }), 'leave.request');
+  const snap = await snapshot(driver);
+  const mine = snap.leaveRequests.find(r => r.id === lv.id);
+  assert.deepEqual([mine.studentId, mine.fromDate, mine.reason], ['stu-01', day, null]);
+  assert.ok(!JSON.stringify(snap).includes('a private reason'), 'no reason anywhere in the driver\'s snapshot');
+  const contacts = snap.pickupContacts;
+  assert.ok(contacts.length > 0 && contacts.every(c => snap.students.some(s => s.id === c.studentId && s.routeId === 'route-1')), 'route-1 children\'s people only');
+  const active = JSON.parse(psql(`select coalesce(json_agg(id), '[]') from trips where route_id = 'route-1' and status = 'active'`));
+  for (const t of active) await command(driver.token, 'transport.endTrip', t);
+  const trip = ok(await command(driver.token, 'transport.startTrip', { routeId: 'route-1', direction: 'pickup', simulated: true }), 'startTrip');
+  const neelPerson = contacts.find(c => c.studentId === 'stu-01');
+  const ev = ok(await command(driver.token, 'transport.markChild', trip.id, { studentId: 'stu-01', type: 'dropped', receivedBy: { kind: 'contact', id: neelPerson.id } }), 'markChild');
+  assert.deepEqual(ev.receivedBy, { kind: 'contact', contactId: neelPerson.id });
+  refused(await command(driver.token, 'transport.markChild', trip.id, { studentId: 'stu-03', type: 'dropped', receivedBy: { kind: 'contact', id: neelPerson.id } }), 422, 'VALIDATION', "someone on another child's list");
+  assert.equal(psql(`select doc->'receivedBy'->>'contactId' from trip_child_events where trip_id = '${trip.id}' and student_id = 'stu-01'`), neelPerson.id);
+  ok(await command(driver.token, 'transport.endTrip', trip.id), 'endTrip');
+  ok(await command(parentSib.token, 'leave.withdraw', lv.id), 'withdraw');
+});
+
+test('#21 #29 several diary entries removed and several children\'s progress recorded in one write each, all or none', async () => {
+  const today = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  const kids = ['stu-01', 'stu-04', 'stu-06'];
+  const added = ok(await command(tpa.token, 'diary.addMany', { programId: 'prog-primary-a', date: today, studentIds: kids, type: 'activity', data: { text: 'Fake: whole class' } }), 'addMany');
+  const ids = added.entries.map(e => e.id);
+  const byAdmin = ok(await command(admin.token, 'diary.add', { studentId: 'stu-01', date: today, type: 'activity', data: { text: 'Fake: by the principal' } }), 'diary.add');
+  refused(await command(tpa.token, 'diary.removeMany', [...ids, byAdmin.id]), 403, 'NOT_ALLOWED', "one entry is someone else's");
+  assert.equal(psql(`select count(*) from diary_entries where id in (${ids.map(i => `'${i}'`).join(',')})`), '3', 'nothing removed');
+  assert.equal(ok(await command(tpa.token, 'diary.removeMany', ids), 'removeMany').removed, 3);
+  assert.equal(psql(`select count(*) from diary_entries where id in (${ids.map(i => `'${i}'`).join(',')})`), '0');
+  const pres = psql(`select id from presentations p where (doc->>'active')::boolean and not exists (select 1 from progress_events e where e.presentation_id = p.id) order by id limit 1`);
+  const entries = ['stu-06', 'stu-09'].map(studentId => ({ studentId, presentationId: pres, status: 'introduced', date: today }));
+  refused(await command(tpa.token, 'progress.recordMany', { entries: [...entries, { studentId: 'stu-02', presentationId: pres, status: 'introduced', date: today }] }), 403, 'NOT_ALLOWED', 'a child of another programme');
+  assert.equal(psql(`select count(*) from progress_events where presentation_id = '${pres}'`), '0', 'nothing recorded');
+  assert.equal(ok(await command(tpa.token, 'progress.recordMany', { entries }), 'recordMany').recorded, 2);
+  assert.equal(psql(`select count(*) from progress_events where presentation_id = '${pres}'`), '2');
+});
+
+test('closing a staff record closes the sign-in at once (snapshot revoked, commands refused); reopening restores it', async () => {
+  psql(`update staff_contacts set email = 'teacher-pb@example.com' where staff_id = 'stf-teacher-pb'`);
+  const tpb = await signIn('teacher-pb@example.com');
+  assert.equal((await snapshot(tpb)).status, 'active');
+  ok(await command(admin.token, 'setup.setStaffActive', { staffId: 'stf-teacher-pb', active: false }), 'close');
+  assert.equal((await snapshot(tpb)).status, 'revoked');
+  assert.equal((await restAs(tpb.token, 'students?select=id')).data.length, 0, 'RLS: nothing');
+  refused(await command(tpb.token, 'diary.add', { studentId: 'stu-02', date: '2026-10-01', type: 'activity', data: { text: 'x' } }), 403, 'NOT_ALLOWED', 'a command');
+  ok(await command(admin.token, 'setup.setStaffActive', { staffId: 'stf-teacher-pb', active: true }), 'reopen');
+  ok(await command(admin.token, 'setup.saveStaff', { id: 'stf-teacher-pb', programIds: ['prog-primary-b'] }), 'classes back');
+  assert.equal((await snapshot(tpb)).status, 'active');
+});

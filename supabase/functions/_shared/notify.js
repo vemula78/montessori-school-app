@@ -65,8 +65,12 @@ export function pushMessages(name, before, after, result) {
     const route = trip ? byId(after.routes, trip.routeId) : (s && byId(after.routes, s.routeId));
     const stop = route && route.stops.find(x => x.id === result.stopId);
     if (s && CHILD_TEXT[result.type]) {
+      // a drop names who took the child: a parent, the relation of someone on the family's list, or "someone else"
+      const r = result.receivedBy;
+      const contact = r && r.kind === 'contact' ? (after.pickupContacts || []).find(c => c.id === r.contactId) : null;
+      const handed = !r ? '' : r.kind === 'guardian' ? ', handed to a parent' : contact ? `, handed to ${contact.relation.toLowerCase()} (on your list)` : r.kind === 'other' ? ', handed to someone not on your list' : '';
       out.push({ guardianIds: guardiansOf(after, [s.id]), studentIds: [s.id], purposes: ['push', 'bus_live'],
-        payload: { title: 'School bus', body: `${s.firstName} ${CHILD_TEXT[result.type]} ${stop ? stop.name : 'the stop'}`, url: '#/bus', tag: `child-${s.id}-${result.type}-${result.ts}` } });
+        payload: { title: 'School bus', body: `${s.firstName} ${CHILD_TEXT[result.type]} ${stop ? stop.name : 'the stop'}${handed}`, url: '#/bus', tag: `child-${s.id}-${result.type}-${result.ts}` } });
     }
     // an undone mark (a wrong tap): same tag as the wrong message, so the phone replaces it
     if (s && result.type === 'corrected' && CHILD_TEXT[result.corrects]) {
