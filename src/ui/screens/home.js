@@ -100,8 +100,21 @@ async function teacherHome(ctx) {
     const marked = list ? list.filter((r) => r.status).length : null;
     const absent = list ? list.filter((r) => r.status === 'absent' || r.status === 'leave' || (!r.status && onLeave.has(r.studentId))).length : null; // a reported absence counts before the register is taken
     const head = working === false ? badge('Not a working day', 'mute') : list ? badge(`${marked}/${list.length} marked`, marked === list.length && list.length ? 'ok' : 'warn') : badge('Register unavailable', 'bad');
+    // the end-of-day check: children still to go home (the Going home rule) and children in class with no lunch entry
+    let toGo = null, noLunch = null;
+    if (list && working !== false) {
+      try {
+        const picked = new Set((await api.care.pickups({ programId: pid, date: today })).map((p) => p.studentId));
+        toGo = list.filter((r) => !(r.status === 'absent' || r.status === 'leave' || (!r.status && onLeave.has(r.studentId))) && !picked.has(r.studentId)).length;
+      } catch { /* unavailable: a dash */ }
+      try {
+        const lunch = new Set((await api.diary.forProgramDate(pid, today)).filter((e) => e.type === 'meal' && e.data?.meal === 'lunch').map((e) => e.studentId));
+        noLunch = list.filter((r) => (r.status === 'present' || r.status === 'late') && !lunch.has(r.studentId)).length;
+      } catch { /* unavailable: a dash */ }
+    }
+    const link = (label, value, hash) => `<a class="kpi" href="${esc(hash)}" style="text-decoration:none;color:inherit"><div class="v">${esc(value ?? DASH)}</div><div class="l">${esc(label)}</div></a>`;
     rows.push(`<div class="card stack"><div class="row between"><h3>${esc(progs.get(pid)?.name || pid)}</h3>${head}</div>
-      <div class="grid cols-3">${kpi('children', list ? list.length : DASH)}${kpi('absent today', absent ?? DASH, absent ? 'bad' : '')}${kpi('unmarked', list ? list.length - marked : DASH)}</div>
+      <div class="grid cols-3">${kpi('children', list ? list.length : DASH)}${kpi('absent today', absent ?? DASH, absent ? 'bad' : '')}${kpi('unmarked', list ? list.length - marked : DASH)}${link('to go home', toGo, `#/pickup?program=${pid}`)}${link('no lunch entry', noLunch, `#/diary?program=${pid}&missing=lunch`)}</div>
       <div class="row"><a class="btn primary sm" href="#/attendance?program=${esc(pid)}">Attendance</a><a class="btn sm" href="#/diary?program=${esc(pid)}">Daily diary</a><a class="btn sm" href="#/learning?program=${esc(pid)}">Observations</a><a class="btn sm" href="#/pickup?program=${esc(pid)}">Going home</a></div></div>`);
   }
   const myThreads = db.threads.filter((t) => (persona.programIds || []).includes(t.programId));

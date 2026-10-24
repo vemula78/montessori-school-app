@@ -32,7 +32,7 @@ async function composeModal(ctx) {
     <fieldset class="field" style="border:0;padding:0;margin:0 0 12px"><legend class="lbl" style="font-size:.82rem;font-weight:800;margin-bottom:4px">Send to</legend>
       ${persona.role === 'admin' ? '<label class="check"><input type="radio" name="scope" value="school"> Whole school</label>' : ''}
       <label class="check"><input type="radio" name="scope" value="program" ${persona.role === 'teacher' ? 'checked' : ''}> Programme(s)</label>
-      <div id="n-progs" style="margin-left:30px">${progs.map((p) => `<label class="check sm"><input type="checkbox" name="programIds" value="${esc(p.id)}"> ${esc(p.name)}</label>`).join('')}</div>
+      <div id="n-progs" style="margin-left:30px">${progs.map((p) => `<label class="check sm"><input type="checkbox" name="programIds" value="${esc(p.id)}"${persona.role === 'teacher' && progs.length === 1 ? ' checked' : ''}> ${esc(p.name)}</label>`).join('')}</div>
       <label class="check"><input type="radio" name="scope" value="students"> Specific children</label>
       <div id="n-studs" style="margin-left:30px;max-height:150px;overflow:auto">${students.map((s) => `<label class="check sm"><input type="checkbox" name="studentIds" value="${esc(s.id)}"> ${esc(fullName(s))}</label>`).join('')}</div>
     </fieldset>

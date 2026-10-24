@@ -494,3 +494,29 @@ test('#30 reports: "Start reports for this class" makes one draft per child for 
   await new Promise((r) => setTimeout(r, 5));
   assert.match(toasts.join(' '), new RegExp(`Created ${kids.length - 1} reports, 1 skipped`));
 });
+
+// ---------------------------------------------------------------- #36 notices, #38 teacher home
+test("#36 a teacher's new notice has their one programme ticked already", async () => {
+  const Notices = await import('../src/ui/screens/notices.js');
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER);
+  await Notices.render(ctx);
+  const d = await modalFrom(() => ctx.el.querySelector('#n-new').handlers.click[0]());
+  assert.equal(ctx.persona.programIds.length, 1);
+  assert.match(d.innerHTML, new RegExp(`name="programIds" value="${ctx.persona.programIds[0]}" checked`));
+});
+
+test('#38 teacher home: "to go home" and "no lunch entry" per programme, each linking to the screen that clears it', async () => {
+  const Home = await import('../src/ui/screens/home.js');
+  const api = await mkApi();
+  api.session.set(TEACHER);
+  const pid = api.session.current().programIds[0];
+  const html = await draw(api, TEACHER, Home);
+  assert.match(html, new RegExp(`href="#/pickup\\?program=${pid}"[^>]*><div class="v">[^<]+</div><div class="l">to go home</div>`));
+  assert.match(html, new RegExp(`href="#/diary\\?program=${pid}&amp;missing=lunch"[^>]*><div class="v">[^<]+</div><div class="l">no lunch entry</div>`));
+  if (!(await api.calendar.isWorkingDay(todayISO(), pid))) return; // a weekend run: both show a dash
+  const list = await api.attendance.forDate(todayISO(), pid);
+  const lunch = new Set((await api.diary.forProgramDate(pid, todayISO())).filter((e) => e.type === 'meal' && e.data.meal === 'lunch').map((e) => e.studentId));
+  const n = list.filter((r) => (r.status === 'present' || r.status === 'late') && !lunch.has(r.studentId)).length;
+  assert.match(html, new RegExp(`<div class="v">${n}</div><div class="l">no lunch entry`));
+});
