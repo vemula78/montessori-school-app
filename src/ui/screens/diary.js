@@ -1,12 +1,20 @@
 // Daily diary: teachers add meals / sleep / health / activity; parents read their own child's day.
 // Observations moved to Learning (staff-only until shared). Old diary entries of type 'observation' are still shown.
 import { todayISO, addDays, isISODate, nowHHMM, tsToMs } from '../../domain/dates.js';
-import { esc, notifyQuota, empty, pageHead, fdate, ftime, fullName, options, formModal, openModal, attempt, toast, DASH } from '../components.js';
+import { esc, notifyQuota, empty, pageHead, fdate, ftime, fdatetime, fullName, options, formModal, openModal, attempt, toast, badge, DASH } from '../components.js';
+import { loadAlerts, alertsUnavailable, healthBadge, wireHealthBadges } from '../health-alerts.js';
 
 const AREAS = { practicalLife: 'Practical life', sensorial: 'Sensorial', language: 'Language', math: 'Mathematics', culture: 'Culture' };
 const ATE = { all: 'Ate everything', some: 'Ate some', none: 'Did not eat' };
-const TYPES = { observation: 'Observation', meal: 'Meal', sleep: 'Sleep', health: 'Health', activity: 'Activity' };
+const TYPES = { observation: 'Observation', meal: 'Meal', sleep: 'Sleep', health: 'Health', activity: 'Activity', toilet: 'Toilet', needs: 'Please send' };
 const ADD_TYPES = { meal: 'Meal', sleep: 'Sleep', health: 'Health', activity: 'Activity' }; // the diary is parent-visible by design: observations are written in Learning
+// toileting is offered for toddlers only; "please send" for every child (#83)
+const addTypes = (toddler) => Object.entries({ ...ADD_TYPES, ...(toddler ? { toilet: 'Toilet / nappy' } : {}), needs: 'Please send (ask the family)' })
+  .map(([value, label]) => ({ value, label }));
+const isToddler = (s, programName = '') => s.level === 'toddlers' || (!s.level && /toddler/i.test(programName));
+const TOILET = { wet: 'Wet nappy', dry: 'Dry nappy', bowel: 'Bowel movement', toilet: 'Used the toilet' };
+const NEED_ITEMS = { spareClothes: 'spare clothes', nappies: 'nappies', wipes: 'wipes', other: 'something else' };
+const needsText = (d) => [...(d.items || []).filter((i) => i !== 'other').map((i) => NEED_ITEMS[i] || i), ...(d.note ? [d.note] : [])].join(', ') || DASH;
 const SNAPSHOT_DAYS = 30; // the real app loads diary entries of the last 30 days (my_snapshot, migration 0003)
 const CHANGE_WINDOW_MS = 24 * 3600_000; // as the domain allows (DIARY_CHANGE_WINDOW_MS)
 const NEEDS = [['lunch', 'Lunch'], ['sleep', 'Nap'], ['snack', 'Snack']];
@@ -20,10 +28,18 @@ function entryHtml(e, actions = '') {
     case 'meal': body = `<strong>${esc(d.meal === 'snack' ? 'Snack' : d.meal === 'lunch' ? 'Lunch' : d.meal || 'Meal')}</strong>: ${esc(ATE[d.ate] || d.ate || DASH)}${d.note ? ` &mdash; ${esc(d.note)}` : ''}`; break;
     case 'sleep': body = `<strong>Nap</strong> ${esc(d.from || DASH)} to ${esc(d.to || DASH)}`; break;
     case 'health': body = `<strong>Health</strong> &mdash; ${[d.temperatureC == null ? '' : `temperature ${esc(d.temperatureC)} °C`, d.note ? esc(d.note) : ''].filter(Boolean).join(', ') || DASH}`; break;
+    case 'toilet': body = `<strong>${esc(TOILET[d.kind] || d.kind || 'Toilet')}</strong> at ${esc(d.time || DASH)}${d.note ? ` &mdash; ${esc(d.note)}` : ''}`; break;
+    case 'needs': body = `<strong>Please send to school:</strong> ${esc(needsText(d))}`; break;
     default: body = `<strong>Activity</strong> &mdash; ${esc(d.text || DASH)}`;
   }
   return `<div class="diary-entry ${esc(e.type)}">${body}<div><small>${esc(TYPES[e.type] || e.type)} &middot; ${ftime(e.createdAt)}${e.correctedAt ? ' &middot; corrected' : ''}</small></div>${actions}</div>`;
 }
+
+/** Staff see whether the family has answered a "please send" request. */
+const needsStatus = (e) => `<div>${e.ackAt ? badge(`Family will send it (${fdatetime(e.ackAt)})`, 'ok') : badge('Family has not answered yet', 'warn')}</div>`;
+/** The parent's answer to a "please send" request: one tap, once. */
+const needsAnswer = (e) => (e.type !== 'needs' ? '' : e.ackAt ? `<div>${badge(`You said you will send it (${fdatetime(e.ackAt)})`, 'ok')}</div>`
+  : `<div class="row" style="margin-top:6px"><button class="btn sm primary" data-ack="${esc(e.id)}">I will send it</button></div>`);
 
 // d: the values to start from (an entry being corrected; the last nap times); a meal starts on lunch from 11:00
 function typeFields(type, d = {}) {
@@ -34,6 +50,13 @@ function typeFields(type, d = {}) {
     case 'sleep': return `<div class="grid cols-2"><label class="field"><span class="lbl">From</span><input type="time" name="from" value="${esc(d.from || '')}" required></label><label class="field"><span class="lbl">To</span><input type="time" name="to" value="${esc(d.to || '')}" required></label></div>`;
     case 'health': return `<label class="field"><span class="lbl">Temperature °C (leave blank if not taken)</span><input type="number" name="temperatureC" step="0.1" min="30" max="45" value="${esc(d.temperatureC ?? '')}"></label>
       <label class="field"><span class="lbl">Note</span><textarea name="note" required>${esc(d.note || '')}</textarea></label>`;
+    case 'toilet': return `<div class="grid cols-2"><label class="field"><span class="lbl">Time</span><input type="time" name="time" value="${esc(d.time || nowHHMM())}" required></label>
+      <label class="field"><span class="lbl">What</span><select name="kind">${options(Object.entries(TOILET).map(([value, label]) => ({ value, label })), d.kind || 'wet')}</select></label></div>
+      <label class="field"><span class="lbl">Note (optional)</span><input name="note" maxlength="200" value="${esc(d.note || '')}"></label>`;
+    case 'needs': return `<fieldset class="field" style="border:0;padding:0;margin:0 0 12px"><legend class="lbl" style="font-size:.82rem;font-weight:800">Ask the family to send</legend>
+      ${Object.entries(NEED_ITEMS).map(([k, l]) => `<label class="check sm"><input type="checkbox" name="items" value="${esc(k)}"${(d.items || []).includes(k) ? ' checked' : ''}> ${esc(l[0].toUpperCase() + l.slice(1))}</label>`).join('')}</fieldset>
+      <label class="field"><span class="lbl">Note (needed for "something else")</span><input name="note" maxlength="200" value="${esc(d.note || '')}" placeholder="For example: a warm sweater"></label>
+      <small>The family is told in the app and taps "I will send it".</small>`;
     default: return `<label class="field"><span class="lbl">Activity</span><textarea name="text" required>${esc(d.text || '')}</textarea></label>`;
   }
 }
@@ -42,6 +65,8 @@ function buildData(type, v) {
   if (type === 'meal') return { meal: v.meal, ate: v.ate, note: (v.note || '').trim() };
   if (type === 'sleep') return { from: v.from, to: v.to };
   if (type === 'health') return { temperatureC: v.temperatureC === '' || v.temperatureC == null ? null : Number(v.temperatureC), note: (v.note || '').trim() };
+  if (type === 'toilet') return { time: v.time, kind: v.kind, note: (v.note || '').trim() };
+  if (type === 'needs') return { items: [].concat(v.items || []), note: (v.note || '').trim() };
   return { text: (v.text || '').trim() };
 }
 
@@ -67,10 +92,10 @@ function wireLastWork(ctx, date, programId, go) {
   });
 }
 
-async function addEntry(ctx, student, date) {
+async function addEntry(ctx, student, date, toddler) {
   return formModal({
     title: `Add diary entry - ${student.firstName}`, submitLabel: 'Save entry',
-    fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(Object.entries(ADD_TYPES).map(([value, label]) => ({ value, label })), 'meal')}</select></label><div id="d-fields">${typeFields('meal')}</div>`,
+    fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(addTypes(toddler), 'meal')}</select></label><div id="d-fields">${typeFields('meal')}</div>`,
     onOpen: (d) => {
       const sel = d.querySelector('#d-type');
       sel.addEventListener('change', () => { d.querySelector('#d-fields').innerHTML = typeFields(sel.value); });
@@ -98,16 +123,17 @@ async function removeEntry(ctx, e, student, entries) {
     actions: [{ label: 'Cancel', value: null }, ...(twins.length ? [{ label: `Only ${student.firstName}`, value: 'one' }, { label: `All ${twins.length + 1} children`, kind: 'danger', value: 'all' }] : [{ label: 'Remove', kind: 'danger', value: 'one' }])],
   });
   if (!choice) return false;
-  let done = 0;
-  for (const id of choice === 'all' ? [e.id, ...twins.map((x) => x.id)] : [e.id]) { if (!(await attempt(() => ctx.api.diary.remove(id))).ok) break; done++; }
-  if (done) toast(`Removed ${done} entr${done === 1 ? 'y' : 'ies'}`);
-  return done > 0;
+  // for all of them in one write: either every entry goes or none does
+  const ids = choice === 'all' ? [e.id, ...twins.map((x) => x.id)] : [e.id];
+  const r = await attempt(() => (ids.length > 1 ? ctx.api.diary.removeMany(ids) : ctx.api.diary.remove(e.id)));
+  if (r.ok) toast(`Removed ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'}`);
+  return r.ok;
 }
 
 // The same entry for the whole class (lunch, nap, a circle activity); children absent or on leave start unticked, and so
 // do children whose parent reported an absence, while the register has nothing for them.
 const AWAY = { leave: 'on leave', absent: 'absent', reported: 'reported absent' };
-async function addForClass(ctx, programId, students, date) {
+async function addForClass(ctx, programId, students, date, toddler) {
   // the nap times of the last whole-class nap this week, so the usual nap needs no typing
   let nap = {};
   for (let d = date, i = 0; i < 7 && !nap.from; i++, d = addDays(d, -1)) {
@@ -125,7 +151,7 @@ async function addForClass(ctx, programId, students, date) {
   const kids = students.map((s) => `<div class="row between"><label class="check sm"><input type="checkbox" name="studentIds" value="${esc(s.id)}"${away.has(s.id) ? '' : ' checked'}> ${esc(fullName(s))}${away.has(s.id) ? ` <small class="muted">(${AWAY[away.get(s.id)]})</small>` : ''}</label>${ateOne(s)}</div>`).join('');
   return formModal({
     title: 'Diary entry for the whole class', submitLabel: 'Save for ticked children',
-    fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(Object.entries(ADD_TYPES).map(([value, label]) => ({ value, label })), 'meal')}</select></label><div id="d-fields">${typeFields('meal')}</div>
+    fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type" id="d-type">${options(addTypes(toddler), 'meal')}</select></label><div id="d-fields">${typeFields('meal')}</div>
       <fieldset class="field" style="border:0;padding:0;margin:0 0 12px"><legend class="lbl" style="font-size:.82rem;font-weight:800">Children</legend>
         <small>Untick a child to leave them out. For a meal, choose a different amount next to a child who ate differently.</small>${kids}</fieldset>`,
     onOpen: (d) => {
@@ -157,6 +183,9 @@ async function staffView(ctx) {
   const students = (await api.people.students({ programId })).filter((s) => s.status === 'active');
   const entries = await api.diary.forProgramDate(programId, date);
   const dayOff = await dayOffNote(ctx, date, programId);
+  const alerts = await loadAlerts(api, programId);
+  const progName = progs.find((p) => p.id === programId).name;
+  const toddler = new Set(students.filter((s) => isToddler(s, progName)).map((s) => s.id));
   // who still needs a lunch, nap or snack entry: the children marked present or late
   const att = await api.attendance.forDate(date, programId).catch(() => null);
   const here = new Set((att || []).filter((r) => r.status === 'present' || r.status === 'late').map((r) => r.studentId));
@@ -168,7 +197,7 @@ async function staffView(ctx) {
     return `<button class="chip${missing === k ? ' on' : ''}" data-missing="${esc(k)}" aria-pressed="${missing === k}" title="Show the children without this entry">${esc(l)} ${esc(n)}/${esc(here.size)}</button>`;
   }).join('')}${missing ? '<button class="chip" data-missing="">Show everyone</button>' : ''}</div>` : '';
   const canChange = (e) => e.type !== 'observation' && (persona.role === 'admin' || (e.createdBy === persona.staffId && Date.now() - tsToMs(e.createdAt) <= CHANGE_WINDOW_MS));
-  const actions = (e) => (canChange(e) ? `<div class="row" style="margin-top:6px"><button class="btn sm" data-fix="${esc(e.id)}">Correct</button><button class="btn sm" data-rm="${esc(e.id)}">Remove</button></div>` : '');
+  const actions = (e) => `${e.type === 'needs' ? needsStatus(e) : ''}${canChange(e) ? `<div class="row" style="margin-top:6px"><button class="btn sm" data-fix="${esc(e.id)}">Correct</button><button class="btn sm" data-rm="${esc(e.id)}">Remove</button></div>` : ''}`;
   ctx.el.innerHTML = `${pageHead('Daily diary', progs.find((p) => p.id === programId).name)}
     <p class="muted" style="margin:0 0 10px">Meals, naps, health and activities. Observations and photos are in <a href="#/learning">Learning</a> and stay staff-only until you share them.</p>
     <div class="row" style="margin-bottom:12px">
@@ -176,10 +205,10 @@ async function staffView(ctx) {
       <button class="btn sm" id="d-prev" aria-label="Previous day"${earliest && date <= earliest ? ' disabled' : ''}>&larr;</button><input type="date" id="d-date" value="${esc(date)}" max="${esc(today)}"${earliest ? ` min="${esc(earliest)}"` : ''} style="width:auto" aria-label="Date"><button class="btn sm" id="d-next" aria-label="Next day"${date >= today ? ' disabled' : ''}>&rarr;</button>
       <span class="muted">${fdate(date)}</span>${students.length ? '<button class="btn sm primary" id="d-class">Whole class</button>' : ''}</div>
     ${earliest && date < earliest ? `<div class="banner warn"><strong>Older days are not loaded in the app.</strong> Entries of ${fdate(date)} are kept and are in the data export.</div>` : ''}
-    ${dayOff}${summary}
+    ${dayOff}${alertsUnavailable(alerts)}${summary}
     <div class="stack">${students.length ? (shown.length ? shown.map((s) => {
       const mine = entries.filter((e) => e.studentId === s.id);
-      return `<div class="card stack"><div class="row between"><div class="item-title">${esc(fullName(s))}</div><button class="btn sm primary" data-add="${esc(s.id)}">Add entry</button></div>
+      return `<div class="card stack"><div class="row between"><div class="item-title">${esc(fullName(s))} ${healthBadge(alerts.map.get(s.id))}</div><button class="btn sm primary" data-add="${esc(s.id)}">Add entry</button></div>
         ${mine.length ? mine.map((e) => entryHtml(e, actions(e))).join('') : '<small class="muted">No entries for this day.</small>'}</div>`;
     }).join('') : empty('Everyone in class has this entry')) : empty('No children in this programme')}</div>`;
   const go = (patch) => ctx.setQuery({ program: programId, date, ...patch });
@@ -188,7 +217,8 @@ async function staffView(ctx) {
   ctx.el.querySelector('#d-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#d-next').addEventListener('click', () => { if (date < today) go({ date: addDays(date, 1) }); });
   wireLastWork(ctx, date, programId, go);
-  ctx.el.querySelector('#d-class')?.addEventListener('click', async () => { if (await addForClass(ctx, programId, students, date)) ctx.rerender(); });
+  wireHealthBadges(ctx.el, alerts.map);
+  ctx.el.querySelector('#d-class')?.addEventListener('click', async () => { if (await addForClass(ctx, programId, students, date, toddler.size > 0)) ctx.rerender(); });
   ctx.el.addEventListener('click', async (e) => {
     const m = e.target.closest('[data-missing]');
     if (m) { go({ missing: m.dataset.missing }); return; }
@@ -202,7 +232,7 @@ async function staffView(ctx) {
     const b = e.target.closest('[data-add]');
     if (!b) return;
     const s = students.find((x) => x.id === b.dataset.add);
-    if (await addEntry(ctx, s, date)) ctx.rerender();
+    if (await addEntry(ctx, s, date, toddler.has(s.id))) ctx.rerender();
   });
 }
 
@@ -220,13 +250,19 @@ async function parentView(ctx) {
     <div class="row" style="margin-bottom:12px">
       <button class="btn sm" id="d-prev" aria-label="Previous day">&larr;</button><input type="date" id="d-date" value="${esc(date)}" style="width:auto" aria-label="Date"><button class="btn sm" id="d-next" aria-label="Next day">&rarr;</button>
       <span class="muted">${fdate(date)}</span></div>
-    ${dayOff || `<div class="stack">${entries.length ? entries.map(entryHtml).join('') : empty('No diary entries for this day', 'Entries appear here as the teacher adds them.')}</div>`}`;
+    ${dayOff || `<div class="stack">${entries.length ? entries.map((e) => entryHtml(e, needsAnswer(e))).join('') : empty('No diary entries for this day', 'Entries appear here as the teacher adds them.')}</div>`}`;
   const go = (patch) => ctx.setQuery({ student: kid.id, date, ...patch });
   ctx.el.querySelectorAll('[data-kid]').forEach((b) => b.addEventListener('click', () => go({ student: b.dataset.kid })));
   ctx.el.querySelector('#d-date').addEventListener('change', (e) => e.target.value && go({ date: e.target.value }));
   ctx.el.querySelector('#d-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#d-next').addEventListener('click', () => go({ date: addDays(date, 1) }));
   wireLastWork(ctx, date, kid.programId, go);
+  ctx.el.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-ack]');
+    if (!b) return;
+    b.disabled = true; // a double tap answers once
+    if ((await attempt(() => api.diary.acknowledge(b.dataset.ack), 'The teacher can see you will send it')).ok) ctx.rerender(); else b.disabled = false;
+  });
   // read receipts after the day is on screen, all in one call; not critical, but a full store must still raise the warning
   const unread = entries.filter((e) => !e.parentReadAt).map((e) => e.id);
   if (unread.length) api.diary.markReadMany(unread).catch((err) => { notifyQuota(err); console.error(err); });

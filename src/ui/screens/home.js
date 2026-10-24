@@ -52,6 +52,8 @@ async function parentHome(ctx) {
   const notices = indexBy(db.notices);
   const pending = receipts.filter((r) => notices.get(r.noticeId)?.requiresAck && !r.ackAt);
   const evs = await upcomingEvents(ctx);
+  // "please send" requests from the diary (#83) of the last week that the family has not answered; answered in the diary
+  const send = (db.diaryEntries || []).filter((e) => e.type === 'needs' && !e.ackAt && e.date >= addDays(today, -7) && kids.some((k) => k.id === e.studentId && k.status === 'active'));
 
   const cards = [];
   for (const k of kids) {
@@ -96,6 +98,7 @@ async function parentHome(ctx) {
   return `
     <div class="page-head"><div><h1>Hello${g ? ', ' + esc(g.firstName) : ''}</h1><div class="sub">${fdate(today)}</div></div></div>
     ${pending.length ? `<div class="banner warn"><div class="row between"><span><strong>${esc(pending.length)} notice${pending.length === 1 ? ' needs' : 's need'} your acknowledgement.</strong></span><a class="btn sm" href="#/notices">Open notices</a></div></div>` : ''}
+    ${send.map((e) => `<div class="banner warn"><div class="row between"><span><strong>Please send to school for ${esc(kids.find((k) => k.id === e.studentId).firstName)}:</strong> ${esc([...e.data.items.filter((i) => i !== 'other').map((i) => ({ spareClothes: 'spare clothes', nappies: 'nappies', wipes: 'wipes' })[i] || i), ...(e.data.note ? [e.data.note] : [])].join(', '))}</span><a class="btn sm" href="#/diary?student=${esc(e.studentId)}&amp;date=${esc(e.date)}">Answer</a></div></div>`).join('')}
     <div id="home-install"></div>
     <div class="stack">${cards.join('') || empty('No children linked to this account')}</div>
     <h2 style="margin-top:20px">Coming up</h2>${eventList(evs)}
