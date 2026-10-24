@@ -1,13 +1,13 @@
-// Reports: outstanding / defaulters, collection day book, numeric reconciliation.
-import { todayISO, addDays, isISODate } from '../../domain/dates.js';
-import { esc, money, fdate, badge, empty, pageHead, options, downloadText, indexBy, fullName, DASH } from '../components.js';
+// Reports: outstanding / defaulters, collection day book, dues summary, numeric reconciliation.
+import { todayISO, addDays, isISODate, tsToLocalDate } from '../../domain/dates.js';
+import { esc, money, fdate, fdatetime, badge, empty, pageHead, options, downloadText, indexBy, fullName, DASH, PAYMENT_MODE_LABEL } from '../components.js';
 import { isRealMode } from '../mode.js';
 
 const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
 // spreadsheet formula injection: a text cell starting with = + - @ tab or CR gets a leading apostrophe
 const csvText = (v) => csvCell(/^[=+\-@\t\r]/.test(String(v ?? '')) ? `'${v}` : v);
 const rupeesPlain = (p) => (p == null ? '' : (p / 100).toFixed(2));
-const MODE = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank', 'online-mock': 'Online (mock)', online: 'Online', credit: 'Credit' };
+const MODE = PAYMENT_MODE_LABEL;
 
 // Only the reconciliation checks decide ok/bad. A difference between this year's report and the all-years total is
 // just prior-year balances, which is legitimate.
@@ -15,6 +15,17 @@ function reconBanner(recon, t) {
   const allOk = recon.checks.every((c) => c.ok);
   const prior = recon.school.outstanding - t.balancePaise;
   return `<div class="banner ${allOk ? 'ok' : 'bad'}">${allOk ? 'All reconciliation checks pass.' : '<strong>Reconciliation checks are failing</strong> - see the Reconciliation tab.'} All academic years: <strong>${money(recon.school.outstanding)}</strong> = this year's report <strong>${money(t.balancePaise)}</strong>${prior ? ` + other years <strong>${money(prior)}</strong>` : ''}.</div>`;
+}
+
+/** The first guardian of a child (the one the office calls), with click-to-call and click-to-chat links. */
+export function contactFor(db, studentId, balancePaise, overdueDays) {
+  const s = db.students.find((x) => x.id === studentId);
+  const g = s ? db.guardians.find((x) => x.id === (s.guardianIds || [])[0]) : null;
+  if (!g || !g.phone) return { name: g ? fullName(g) : DASH, phone: '', tel: null, wa: null };
+  let digits = String(g.phone).replace(/\D/g, '');
+  if (digits.length === 10) digits = `91${digits}`;
+  const text = `Fee reminder from ${db.school.name}: ${money(balancePaise)} is due for ${s.firstName}${overdueDays > 0 ? ` (overdue by ${overdueDays} days)` : ''}. Please pay or contact the school office.`;
+  return { name: fullName(g), phone: g.phone, tel: `tel:+${digits}`, wa: `https://wa.me/${digits}?text=${encodeURIComponent(text)}` };
 }
 
 async function outstanding(ctx, host) {
@@ -25,6 +36,7 @@ async function outstanding(ctx, host) {
   const defaultersOnly = query.def === '1';
   const rep = await api.fees.outstandingReport({ academicYearId: ayId, programId: programId || undefined, asOfDate: asOf });
   const rows = rep.rows.filter((r) => !defaultersOnly || (r.overdueDays > 0 && r.balancePaise > 0));
+  const contact = new Map(rows.map((r) => [r.studentId, contactFor(db, r.studentId, r.balancePaise, r.overdueDays)]));
   const t = rep.totals;
   let recon = null;
   let reconErr = null;
@@ -43,19 +55,42 @@ async function outstanding(ctx, host) {
       <div class="kpi"><div class="v">${esc(t.defaulters)}</div><div class="l">children overdue</div></div></div>
     ${reconErr ? `<div class="banner bad"><strong>Reconciliation could not be computed.</strong> ${esc(reconErr.message || reconErr)} Figures on this page cannot be cross-checked.</div>` : ''}
     ${recon ? reconBanner(recon, t) : ''}
-    ${rows.length ? `<div class="tablewrap"><table><thead><tr><th>Child</th><th>Programme</th><th class="r">Invoiced</th><th class="r">Concessions</th><th class="r">Late fees</th><th class="r">Paid</th><th class="r">Balance</th><th class="r">Overdue</th></tr></thead><tbody>
-      ${rows.map((r) => `<tr><td><a href="#/fees/student/${esc(r.studentId)}">${esc(r.name)}</a></td><td>${esc(r.program)}</td><td class="r num">${money(r.invoicedPaise)}</td><td class="r num">${money(r.concessionPaise)}</td><td class="r num">${money(r.lateFeePaise)}</td><td class="r num">${money(r.paidPaise)}</td><td class="r num"><strong>${money(r.balancePaise)}</strong></td><td class="r">${r.overdueDays > 0 && r.balancePaise > 0 ? badge(`${r.overdueDays} d`, 'bad') : DASH}</td></tr>`).join('')}
-      </tbody><tfoot><tr><td colspan="2">Total (${rows.length} shown)</td><td class="r num">${money(tot.invoicedPaise)}</td><td class="r num">${money(tot.concessionPaise)}</td><td class="r num">${money(tot.lateFeePaise)}</td><td class="r num">${money(tot.paidPaise)}</td><td class="r num">${money(tot.balancePaise)}</td><td></td></tr></tfoot></table></div>` : empty(defaultersOnly ? 'No defaulters' : 'No invoices in this view')}`;
+    ${rows.length ? `<div class="tablewrap"><table><thead><tr><th>Child</th><th>Programme</th><th>Parent</th><th class="r">Invoiced</th><th class="r">Concessions</th><th class="r">Late fees</th><th class="r">Paid</th><th class="r">Balance</th><th class="r">Overdue</th></tr></thead><tbody>
+      ${rows.map((r) => { const c = contact.get(r.studentId); return `<tr><td><a href="#/fees/student/${esc(r.studentId)}">${esc(r.name)}</a></td><td>${esc(r.program)}</td>
+        <td>${esc(c.name)}${c.tel ? `<br><a class="nowrap" href="${esc(c.tel)}">${esc(c.phone)}</a>${r.balancePaise > 0 ? ` &middot; <a href="${esc(c.wa)}" target="_blank" rel="noopener noreferrer">WhatsApp</a>` : ''}` : ''}</td>
+        <td class="r num">${money(r.invoicedPaise)}</td><td class="r num">${money(r.concessionPaise)}</td><td class="r num">${money(r.lateFeePaise)}</td><td class="r num">${money(r.paidPaise)}</td><td class="r num"><strong>${money(r.balancePaise)}</strong></td><td class="r">${r.overdueDays > 0 && r.balancePaise > 0 ? badge(`${r.overdueDays} d`, 'bad') : DASH}</td></tr>`; }).join('')}
+      </tbody><tfoot><tr><td colspan="3">Total (${rows.length} shown)</td><td class="r num">${money(tot.invoicedPaise)}</td><td class="r num">${money(tot.concessionPaise)}</td><td class="r num">${money(tot.lateFeePaise)}</td><td class="r num">${money(tot.paidPaise)}</td><td class="r num">${money(tot.balancePaise)}</td><td></td></tr></tfoot></table></div>
+      <small class="muted">WhatsApp opens a chat with a reminder already typed; nothing is sent until you press send in WhatsApp.</small>` : empty(defaultersOnly ? 'No defaulters' : 'No invoices in this view')}`;
 
   const go = (patch) => ctx.setQuery({ tab: 'outstanding', ...patch });
   host.querySelector('#rp-prog').addEventListener('change', (e) => go({ program: e.target.value }));
   host.querySelector('#rp-asof').addEventListener('change', (e) => e.target.value && go({ asof: e.target.value }));
   host.querySelector('#rp-def').addEventListener('change', (e) => go({ def: e.target.checked ? '1' : '' }));
   host.querySelector('#rp-csv').addEventListener('click', () => {
-    const head = ['Child', 'Programme', 'Invoiced', 'Concessions', 'Late fees', 'Paid', 'Balance', 'Days overdue'];
-    const lines = [head.map(csvCell).join(',')].concat(rows.map((r) => [csvText(r.name), csvText(r.program), ...[rupeesPlain(r.invoicedPaise), rupeesPlain(r.concessionPaise), rupeesPlain(r.lateFeePaise), rupeesPlain(r.paidPaise), rupeesPlain(r.balancePaise), r.overdueDays].map(csvCell)].join(',')));
+    const head = ['Child', 'Programme', 'Parent', 'Phone', 'Invoiced', 'Concessions', 'Late fees', 'Paid', 'Balance', 'Days overdue'];
+    const lines = [head.map(csvCell).join(',')].concat(rows.map((r) => { const c = contact.get(r.studentId); return [csvText(r.name), csvText(r.program), csvText(c.name), csvText(c.phone), ...[rupeesPlain(r.invoicedPaise), rupeesPlain(r.concessionPaise), rupeesPlain(r.lateFeePaise), rupeesPlain(r.paidPaise), rupeesPlain(r.balancePaise), r.overdueDays].map(csvCell)].join(','); }));
     downloadText(`outstanding_${asOf}.csv`, lines.join('\r\n'), 'text/csv');
   });
+}
+
+/**
+ * The day book as CSV lines (header first): one line per receipt (cancelled ones included, with their status) and per
+ * refund (amount negative), so a day can be closed from the file. who(id) names the person who recorded it.
+ */
+export function dayBookCsv(pays, refunds, studentName, who, receiptOf) {
+  const head = ['Type', 'Date', 'Number', 'Child', 'Mode', 'Reference', 'Amount', 'Status', 'Recorded by', 'Recorded at', 'Entered later'];
+  const lines = [head.map(csvCell).join(',')];
+  for (const p of pays) {
+    lines.push([csvCell('Receipt'), csvCell(p.paidOn), csvText(p.receiptNumber), csvText(studentName(p.studentId)), csvText(MODE[p.mode] || p.mode), csvText(p.reference || ''),
+      csvCell(rupeesPlain(p.amountPaise)), csvCell(p.status === 'valid' ? (p.mode === 'credit' ? 'Valid (credit applied, not new money)' : 'Valid') : 'Cancelled'),
+      csvText(who(p.recordedBy)), csvCell(p.recordedAt || ''), csvCell(p.recordedAt && tsToLocalDate(p.recordedAt) !== p.paidOn ? `yes (${tsToLocalDate(p.recordedAt)})` : '')].join(','));
+  }
+  for (const r of refunds) {
+    const pay = receiptOf(r.paymentId);
+    lines.push([csvCell('Refund'), csvCell(r.date), csvText(r.voucherNumber), csvText(pay ? studentName(pay.studentId) : ''), csvText(MODE[r.mode] || r.mode), csvText(r.reference || ''),
+      csvCell(`-${rupeesPlain(r.amountPaise)}`), csvCell(`Refund against ${pay ? pay.receiptNumber : '?'}`), csvText(who(r.recordedBy)), csvCell(''), csvCell('')].join(','));
+  }
+  return lines;
 }
 
 async function collection(ctx, host) {
@@ -65,29 +100,82 @@ async function collection(ctx, host) {
   const to = isISODate(query.to) ? query.to : today;
   const pays = (await api.fees.payments({ from, to })).slice().sort((a, b) => (a.paidOn < b.paidOn ? -1 : a.paidOn > b.paidOn ? 1 : a.receiptNumber < b.receiptNumber ? -1 : 1));
   const stu = indexBy(db.students);
+  const people = indexBy([...db.staff, ...db.guardians]);
+  const payById = indexBy(db.payments);
+  const who = (id) => (id ? fullName(people.get(id)) : 'Online (system)');
   const validAll = pays.filter((p) => p.status === 'valid');
   const valid = validAll.filter((p) => p.mode !== 'credit'); // money actually collected
   const creditApplied = validAll.filter((p) => p.mode === 'credit'); // internal transfers of credit already collected
-  const refunds = db.refunds.filter((r) => r.date >= from && r.date <= to);
+  const refunds = db.refunds.filter((r) => r.date >= from && r.date <= to).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const sum = (a, k = 'amountPaise') => a.reduce((s, x) => s + x[k], 0);
   const byMode = new Map();
   for (const p of valid) byMode.set(p.mode, (byMode.get(p.mode) || 0) + p.amountPaise);
+  // per day and mode, for the cash handover: receipts in, refunds out
+  const modes = [...byMode.keys()];
+  const days = new Map();
+  const day = (d) => { if (!days.has(d)) days.set(d, { date: d, modes: new Map(), receipts: 0, refunds: 0 }); return days.get(d); };
+  for (const p of valid) { const x = day(p.paidOn); x.modes.set(p.mode, (x.modes.get(p.mode) || 0) + p.amountPaise); x.receipts += p.amountPaise; }
+  for (const r of refunds) day(r.date).refunds += r.amountPaise;
+  const dayRows = [...days.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+  const later = (p) => p.recordedAt && tsToLocalDate(p.recordedAt) !== p.paidOn;
   host.innerHTML = `<div class="row" style="margin-bottom:10px"><label class="row" style="gap:6px"><span style="font-weight:800;font-size:.82rem">From</span><input type="date" id="cl-from" value="${esc(from)}" style="width:auto"></label>
-      <label class="row" style="gap:6px"><span style="font-weight:800;font-size:.82rem">To</span><input type="date" id="cl-to" value="${esc(to)}" style="width:auto"></label></div>
+      <label class="row" style="gap:6px"><span style="font-weight:800;font-size:.82rem">To</span><input type="date" id="cl-to" value="${esc(to)}" style="width:auto"></label>
+      <button class="btn sm" id="cl-today">Today</button><button class="btn sm" id="cl-csv">Export CSV</button></div>
     <div class="grid cols-4" style="margin-bottom:12px">
       <div class="kpi good"><div class="v">${money(sum(valid))}</div><div class="l">collected (${valid.length} valid receipts)</div></div>
       <div class="kpi"><div class="v">${money(sum(creditApplied))}</div><div class="l">credit applied (${creditApplied.length}) - not new money</div></div>
       <div class="kpi"><div class="v">${money(sum(refunds))}</div><div class="l">refunded (${refunds.length})</div></div>
       <div class="kpi"><div class="v">${money(sum(valid) - sum(refunds))}</div><div class="l">net</div></div>
       <div class="kpi"><div class="v">${pays.length - validAll.length}</div><div class="l">cancelled receipts</div></div></div>
-    ${byMode.size ? `<p class="muted">By mode: ${[...byMode].map(([m, a]) => `${esc(MODE[m] || m)} ${money(a)}`).join(' &middot; ')}</p>` : ''}
-    ${pays.length ? `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Receipt</th><th>Child</th><th>Mode</th><th class="r">Amount</th><th>Status</th></tr></thead><tbody>
-      ${pays.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td>${fdate(p.paidOn)}</td><td><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td>${esc(fullName(stu.get(p.studentId)))}</td><td>${esc(MODE[p.mode] || p.mode)}</td><td class="r num">${money(p.amountPaise)}</td><td>${p.status === 'valid' ? badge('Valid', 'ok') : badge('Cancelled', 'mute')}</td></tr>`).join('')}
-      </tbody><tfoot><tr><td colspan="4">Total collected (excludes credit applied)</td><td class="r num">${money(sum(valid))}</td><td></td></tr></tfoot></table></div>` : empty('No payments in this period')}
-    ${refunds.length ? `<h2 style="margin-top:18px">Refunds</h2><div class="tablewrap"><table><thead><tr><th>Date</th><th>Voucher</th><th class="r">Amount</th><th>Reason</th></tr></thead><tbody>${refunds.map((r) => `<tr><td>${fdate(r.date)}</td><td>${esc(r.voucherNumber)}</td><td class="r num">${money(r.amountPaise)}</td><td>${esc(r.reason)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+    ${dayRows.length ? `<h2>By day and mode</h2><div class="tablewrap" style="margin-bottom:14px"><table><thead><tr><th>Date</th>${modes.map((m) => `<th class="r">${esc(MODE[m] || m)}</th>`).join('')}<th class="r">Collected</th><th class="r">Refunded</th><th class="r">Net</th></tr></thead><tbody>
+      ${dayRows.map((d) => `<tr><td class="nowrap">${fdate(d.date)}</td>${modes.map((m) => `<td class="r num">${d.modes.has(m) ? money(d.modes.get(m)) : DASH}</td>`).join('')}<td class="r num">${money(d.receipts)}</td><td class="r num">${d.refunds ? money(d.refunds) : DASH}</td><td class="r num"><strong>${money(d.receipts - d.refunds)}</strong></td></tr>`).join('')}
+      </tbody><tfoot><tr><td>Total</td>${modes.map((m) => `<td class="r num">${money(byMode.get(m))}</td>`).join('')}<td class="r num">${money(sum(valid))}</td><td class="r num">${money(sum(refunds))}</td><td class="r num">${money(sum(valid) - sum(refunds))}</td></tr></tfoot></table></div>` : ''}
+    ${pays.some(later) ? '<p class="muted">Receipts marked <strong>entered later</strong> were recorded on a later day than their payment date: they change a day that may already have been closed.</p>' : ''}
+    ${pays.length ? `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Receipt</th><th>Child</th><th>Mode</th><th>Reference</th><th class="r">Amount</th><th>Status</th><th>Recorded by</th></tr></thead><tbody>
+      ${pays.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td class="nowrap">${fdate(p.paidOn)}</td><td class="nowrap"><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td>${esc(fullName(stu.get(p.studentId)))}</td><td>${esc(MODE[p.mode] || p.mode)}</td><td>${esc(p.reference || DASH)}</td><td class="r num">${money(p.amountPaise)}</td><td>${p.status === 'valid' ? badge('Valid', 'ok') : badge('Cancelled', 'mute')}${later(p) ? ` ${badge('entered later', 'warn')}` : ''}</td><td><small>${esc(who(p.recordedBy))}<br>${fdatetime(p.recordedAt)}</small></td></tr>`).join('')}
+      </tbody><tfoot><tr><td colspan="5">Total collected (excludes credit applied)</td><td class="r num">${money(sum(valid))}</td><td colspan="2"></td></tr></tfoot></table></div>` : empty('No payments in this period')}
+    ${refunds.length ? `<h2 style="margin-top:18px">Refunds</h2><div class="tablewrap"><table><thead><tr><th>Date</th><th>Voucher</th><th>Mode</th><th class="r">Amount</th><th>Reason</th></tr></thead><tbody>${refunds.map((r) => `<tr><td>${fdate(r.date)}</td><td>${esc(r.voucherNumber)}</td><td>${esc(MODE[r.mode] || r.mode)}</td><td class="r num">${money(r.amountPaise)}</td><td>${esc(r.reason)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
   const go = (patch) => ctx.setQuery({ tab: 'collection', from, to, ...patch });
   host.querySelector('#cl-from').addEventListener('change', (e) => e.target.value && go({ from: e.target.value }));
   host.querySelector('#cl-to').addEventListener('change', (e) => e.target.value && go({ to: e.target.value }));
+  host.querySelector('#cl-today').addEventListener('click', () => go({ from: today, to: today }));
+  host.querySelector('#cl-csv').addEventListener('click', () => {
+    const lines = dayBookCsv(pays, refunds, (id) => fullName(stu.get(id)), who, (id) => payById.get(id));
+    downloadText(`day-book_${from}_${to}.csv`, lines.join('\r\n'), 'text/csv');
+  });
+}
+
+/** The dues summary grid as CSV lines (header first, a total line last). */
+export function summaryCsv(s) {
+  const head = ['Programme', 'Instalment', 'Due', 'Invoices', 'Open', 'Invoiced', 'Concessions', 'Paid', 'Balance'];
+  const row = (a, b, c, r) => [csvText(a), csvText(b), csvCell(c), csvCell(r.invoices), csvCell(r.open), ...[r.invoicedPaise, r.concessionPaise, r.paidPaise, r.balancePaise].map((p) => csvCell(rupeesPlain(p)))].join(',');
+  return [head.map(csvCell).join(','), ...s.rows.map((r) => row(r.programName, r.installmentName, r.dueDate, r)), row('Total', '', '', s.totals)];
+}
+
+async function summary(ctx, host) {
+  const { api, db, query } = ctx;
+  const ayId = db.school.currentAcademicYearId;
+  const asOf = isISODate(query.asof) ? query.asof : todayISO();
+  const s = await api.fees.duesSummary({ academicYearId: ayId, asOfDate: asOf });
+  let check = null;
+  try { check = (await api.fees.outstandingReport({ academicYearId: ayId })).totals.balancePaise; } catch { /* shown as not cross-checked */ }
+  const t = s.totals;
+  const ag = [['notDue', 'Not yet due'], ['days0to30', '1 to 30 days late'], ['days31to60', '31 to 60 days late'], ['over60', 'More than 60 days late']];
+  host.innerHTML = `<div class="row" style="margin-bottom:10px"><label class="row" style="gap:6px"><span style="font-weight:800;font-size:.82rem">Ageing as of</span><input type="date" id="sm-asof" value="${esc(asOf)}" style="width:auto"></label>
+      <button class="btn sm" id="sm-csv">Export CSV</button></div>
+    ${check === null ? '<div class="banner warn">The outstanding report could not be loaded, so this summary is not cross-checked.</div>'
+      : `<div class="banner ${check === t.balancePaise ? 'ok' : 'bad'}">${check === t.balancePaise ? 'Balance agrees with the Outstanding report' : '<strong>Balance differs from the Outstanding report</strong>'}: ${money(t.balancePaise)} here, ${money(check)} there.</div>`}
+    <h2>By programme and instalment</h2>
+    ${s.rows.length ? `<div class="tablewrap"><table><thead><tr><th>Programme</th><th>Instalment</th><th>Due</th><th class="r">Invoiced</th><th class="r">Concessions</th><th class="r">Paid</th><th class="r">Balance</th><th class="r">Unpaid</th></tr></thead><tbody>
+      ${s.rows.map((r) => `<tr><td>${esc(r.programName)}</td><td>${esc(r.installmentName)}</td><td class="nowrap">${fdate(r.dueDate)}</td><td class="r num">${money(r.invoicedPaise)}</td><td class="r num">${money(r.concessionPaise)}</td><td class="r num">${money(r.paidPaise)}</td><td class="r num"><strong>${money(r.balancePaise)}</strong></td><td class="r num">${esc(r.open)} of ${esc(r.invoices)}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td colspan="3">Total</td><td class="r num">${money(t.invoicedPaise)}</td><td class="r num">${money(t.concessionPaise)}</td><td class="r num">${money(t.paidPaise)}</td><td class="r num">${money(t.balancePaise)}</td><td class="r num">${esc(t.open)} of ${esc(t.invoices)}</td></tr></tfoot></table></div>` : empty('No invoices this year')}
+    <div class="grid cols-2" style="margin-top:14px">
+      <div><h2>Invoiced by fee head</h2><div class="tablewrap"><table><tbody>${s.byHead.map((h) => `<tr><td>${esc(h.name)}</td><td class="r num">${money(h.invoicedPaise)}</td></tr>`).join('')}
+        <tr><td>Less concessions</td><td class="r num">&minus;${money(t.concessionPaise)}</td></tr></tbody><tfoot><tr><td>Invoiced after concessions</td><td class="r num">${money(t.invoicedPaise - t.concessionPaise)}</td></tr></tfoot></table></div></div>
+      <div><h2>Outstanding by age</h2><div class="tablewrap"><table><tbody>${ag.map(([k, l]) => `<tr><td>${esc(l)}</td><td class="r num">${esc(s.ageing[k].invoices)}</td><td class="r num">${money(s.ageing[k].balancePaise)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><td>Total</td><td class="r num">${esc(t.open)}</td><td class="r num">${money(t.balancePaise)}</td></tr></tfoot></table></div><small class="muted">Days late count from each invoice's effective due date.</small></div></div>`;
+  host.querySelector('#sm-asof').addEventListener('change', (e) => e.target.value && ctx.setQuery({ tab: 'summary', asof: e.target.value }));
+  host.querySelector('#sm-csv').addEventListener('click', () => downloadText(`dues-summary_${ayId}_${asOf}.csv`, summaryCsv(s).join('\r\n'), 'text/csv'));
 }
 
 async function reconcile(ctx, host) {
@@ -108,11 +196,13 @@ async function reconcile(ctx, host) {
     </tbody></table></div>`;
 }
 
+const TABS = [['outstanding', 'Outstanding'], ['collection', 'Collection day book'], ['summary', 'Summary'], ['reconcile', 'Reconciliation']];
+
 export async function render(ctx) {
-  const tab = ['outstanding', 'collection', 'reconcile'].includes(ctx.query.tab) ? ctx.query.tab : 'outstanding';
+  const tab = TABS.some(([k]) => k === ctx.query.tab) ? ctx.query.tab : 'outstanding';
   ctx.el.innerHTML = `${pageHead('Reports')}
-    <div class="seg" style="margin-bottom:14px"><a href="${ctx.href('/reports', { tab: 'outstanding' })}" ${tab === 'outstanding' ? 'aria-current="page"' : ''}>Outstanding</a><a href="${ctx.href('/reports', { tab: 'collection' })}" ${tab === 'collection' ? 'aria-current="page"' : ''}>Collection day book</a><a href="${ctx.href('/reports', { tab: 'reconcile' })}" ${tab === 'reconcile' ? 'aria-current="page"' : ''}>Reconciliation</a>${isRealMode() ? '<a href="#/reports/settlements">Online settlements</a>' : ''}</div>
+    <div class="seg" style="margin-bottom:14px">${TABS.map(([k, l]) => `<a href="${ctx.href('/reports', { tab: k })}" ${tab === k ? 'aria-current="page"' : ''}>${esc(l)}</a>`).join('')}${isRealMode() ? '<a href="#/reports/settlements">Online settlements</a>' : ''}</div>
     <div id="rp-body"></div>`;
   const host = ctx.el.querySelector('#rp-body');
-  await ({ outstanding, collection, reconcile }[tab])(ctx, host);
+  await ({ outstanding, collection, summary, reconcile }[tab])(ctx, host);
 }

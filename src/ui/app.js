@@ -41,6 +41,7 @@ const ROUTES = [
   { pattern: '/fees/structures', roles: ['admin', 'accountant'], load: () => import('./screens/fees-structures.js') },
   { pattern: '/fees/student/:studentId', roles: ['admin', 'accountant', 'parent'], load: () => import('./screens/fees-payment.js') },
   { pattern: '/print/receipt/:id', roles: ['admin', 'accountant', 'parent'], bare: true, load: () => import('./screens/receipt-print.js') },
+  { pattern: '/print/statement/:studentId', roles: ['admin', 'accountant', 'parent'], bare: true, load: () => import('./screens/statement-print.js') },
   { pattern: '/reports', roles: ['admin', 'accountant'], load: () => import('./screens/reports.js') },
   { pattern: '/audit', roles: ['admin', 'accountant'], load: () => import('./screens/audit.js') },
   { pattern: '/settings', roles: ALL, demoRoles: ['admin'], load: () => import('./screens/settings.js') },

@@ -329,6 +329,16 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
       return F.outstandingReport(d, { academicYearId: academicYearId || d.school.currentAcademicYearId, programId, asOfDate: asOfDate || today() });
     }),
     reconcile: op(() => { fin(); return reconcile(db(), { asOfDate: today() }); }),
+    /** duesSummary({academicYearId?, asOfDate?}) → {rows (programme x instalment), byHead, ageing, totals}; totals equal outstandingReport's. */
+    duesSummary: op(({ academicYearId, asOfDate } = {}) => {
+      fin(); const d = db();
+      return F.duesSummary(d, { academicYearId: academicYearId || d.school.currentAcademicYearId, asOfDate: asOfDate || today() });
+    }),
+    /** statement(studentId, academicYearId?) → the year's fee statement (receipts, refunds, net, paid by head); staff, or the child's parent. */
+    statement: op((studentId, academicYearId) => {
+      const p = allow('admin', 'accountant', 'parent'); mustSee(p, studentId); const d = db();
+      return F.feeStatement(d, studentId, academicYearId || d.school.currentAcademicYearId);
+    }),
     mockOnlinePayment: cmd('fees.mockOnlinePayment'),
   };
 

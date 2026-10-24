@@ -56,7 +56,7 @@ export async function render(ctx) {
   const studentRefunds = db.refunds.filter((r) => payById.get(r.paymentId)?.studentId === student.id);
 
   ctx.el.innerHTML = `<p><a href="#/fees">&larr; Fees</a></p>
-    <div class="page-head"><div><h1>${esc(fullName(student))} ${student.status === 'left' ? badge('Left', 'mute') : ''}</h1><div class="sub">${esc(db.programs.find((p) => p.id === student.programId)?.name || DASH)} &middot; Adm. ${esc(student.admissionNo)} &middot; ${guardians.map((g) => esc(fullName(g))).join(', ') || DASH}${staff ? ` &middot; fee category: ${student.feeCategory === 'staffWard' ? 'staff ward' : 'regular'}${persona.role === 'admin' ? ' <button class="btn sm ghost" id="fp-feecat">Change</button>' : ''}` : ''}</div></div></div>
+    <div class="page-head"><div><h1>${esc(fullName(student))} ${student.status === 'left' ? badge('Left', 'mute') : ''}</h1><div class="sub">${esc(db.programs.find((p) => p.id === student.programId)?.name || DASH)} &middot; Adm. ${esc(student.admissionNo)} &middot; ${guardians.map((g) => esc(fullName(g))).join(', ') || DASH}${staff ? ` &middot; fee category: ${student.feeCategory === 'staffWard' ? 'staff ward' : 'regular'}${persona.role === 'admin' ? ' <button class="btn sm ghost" id="fp-feecat">Change</button>' : ''}` : ''}</div></div><a class="btn sm" href="#/print/statement/${esc(student.id)}">Fee statement</a></div>
     <div id="fp-flash"></div>
     <div class="grid cols-3" style="margin-bottom:14px">
       <div class="kpi ${outstanding ? 'bad' : 'good'}"><div class="v">${money(outstanding)}</div><div class="l">outstanding</div></div>

@@ -718,6 +718,97 @@ export function receiptView(db, paymentId) {
 }
 
 /**
+ * Dues of one academic year for the principal (current figures, as outstandingReport without asOfDate, which its totals
+ * equal): rows per programme and instalment {invoices, open, invoicedPaise, concessionPaise, paidPaise, balancePaise},
+ * byHead (invoice lines per fee head; they add up to invoicedPaise), and ageing of the open balance by days past the
+ * effective due date on asOfDate (notDue, days0to30, days31to60, over60). Cancelled invoices are left out.
+ */
+export function duesSummary(db, { academicYearId, asOfDate }) {
+  if (!isISODate(asOfDate)) fail('VALIDATION', `Invalid date: ${asOfDate}`);
+  const grid = new Map(), heads = new Map();
+  const bucket = () => ({ invoices: 0, balancePaise: 0 });
+  const ageing = { notDue: bucket(), days0to30: bucket(), days31to60: bucket(), over60: bucket() };
+  const totals = { invoices: 0, open: 0, invoicedPaise: 0, concessionPaise: 0, paidPaise: 0, balancePaise: 0 };
+  for (const inv of db.invoices) {
+    if (inv.academicYearId !== academicYearId || inv.status === 'cancelled') continue;
+    const a = invoiceAmounts(db, inv);
+    const s = byId(db.students, inv.studentId);
+    const programId = s ? s.programId : null;
+    const key = `${programId}|${inv.installmentName}`;
+    if (!grid.has(key)) grid.set(key, { programId, programName: (programId && byId(db.programs, programId)?.name) || '—', installmentName: inv.installmentName, dueDate: inv.dueDate, invoices: 0, open: 0, invoicedPaise: 0, concessionPaise: 0, paidPaise: 0, balancePaise: 0 });
+    const r = grid.get(key);
+    if (compareISO(inv.dueDate, r.dueDate) < 0) r.dueDate = inv.dueDate;
+    const open = a.balancePaise > 0 ? 1 : 0;
+    for (const t of [r, totals]) { t.invoices++; t.open += open; t.invoicedPaise += a.linesPaise; t.concessionPaise += a.concessionPaise; t.paidPaise += a.paidPaise; t.balancePaise += a.balancePaise; }
+    for (const l of inv.lines) {
+      if (!heads.has(l.headId)) { const h = byId(db.feeHeads, l.headId); heads.set(l.headId, { headId: l.headId, name: h ? h.name : l.headId, kind: h ? h.kind : null, invoicedPaise: 0 }); }
+      heads.get(l.headId).invoicedPaise += l.amountPaise;
+    }
+    if (open) {
+      const eff = effectiveDueDate(db, inv);
+      const late = compareISO(asOfDate, eff) > 0 ? diffDays(eff, asOfDate) : -1;
+      const b = late < 0 ? ageing.notDue : late <= 30 ? ageing.days0to30 : late <= 60 ? ageing.days31to60 : ageing.over60;
+      b.invoices++;
+      b.balancePaise += a.balancePaise;
+    }
+  }
+  const rows = [...grid.values()].sort((x, y) => x.programName.localeCompare(y.programName) || compareISO(x.dueDate, y.dueDate) || x.installmentName.localeCompare(y.installmentName));
+  const byHead = [...heads.values()].sort((x, y) => y.invoicedPaise - x.invoicedPaise || x.name.localeCompare(y.name));
+  return { academicYearId, asOfDate, rows, byHead, ageing, totals };
+}
+
+export const HEAD_KIND_LABEL = { tuition: 'Tuition', transport: 'Transport', materials: 'Materials', admission: 'Admission', lateFee: 'Late fees', openingBalance: 'Earlier dues (opening balance)' };
+
+/**
+ * A family's fee statement for one academic year (the employer / tax declaration request): the year's valid receipts
+ * (credit transfers left out: that money was received on an earlier receipt) and refunds, the net in words, and what the
+ * year's payments settled, by fee head kind (tuition separately). An invoice whose whole total was paid by this year's
+ * payments is split by its lines, its concessions shown once; a part payment is not split by head (partPaidPaise),
+ * since no rule says which head it paid. byKind − concessionPaise + partPaidPaise = appliedPaise.
+ */
+export function feeStatement(db, studentId, academicYearId) {
+  const s = mustGet(db, 'students', studentId, 'Student');
+  const ay = mustGet(db, 'academicYears', academicYearId, 'Academic year');
+  const yearOf = (d, stored) => stored ?? academicYearFor(db, d)?.id;
+  const mine = db.payments.filter(p => p.studentId === s.id && p.status === 'valid' && yearOf(p.paidOn, p.academicYearId) === ay.id)
+    .sort((a, b) => compareISO(a.paidOn, b.paidOn) || (a.receiptNumber < b.receiptNumber ? -1 : 1));
+  const receipts = mine.filter(p => p.mode !== 'credit').map(p => ({ paymentId: p.id, receiptNumber: p.receiptNumber, paidOn: p.paidOn, mode: p.mode, reference: p.reference, amountPaise: p.amountPaise }));
+  const payIds = new Set(db.payments.filter(p => p.studentId === s.id).map(p => p.id));
+  const refunds = db.refunds.filter(r => payIds.has(r.paymentId) && yearOf(r.date) === ay.id).sort((a, b) => compareISO(a.date, b.date))
+    .map(r => ({ voucherNumber: r.voucherNumber, date: r.date, invoiceId: r.invoiceId, amountPaise: r.amountPaise }));
+  const applied = new Map();
+  for (const p of mine) for (const a of p.allocations) applied.set(a.invoiceId, (applied.get(a.invoiceId) || 0) + a.amountPaise);
+  for (const r of refunds) if (r.invoiceId) applied.set(r.invoiceId, (applied.get(r.invoiceId) || 0) - r.amountPaise);
+  const kinds = new Map();
+  let concessionPaise = 0, partPaidPaise = 0;
+  const invoices = [];
+  for (const [invoiceId, paid] of applied) {
+    if (!paid) continue;
+    const inv = byId(db.invoices, invoiceId);
+    const amt = inv ? invoiceAmounts(db, inv) : null;
+    const whole = !!amt && paid === amt.totalPaise;
+    if (whole) {
+      for (const l of inv.lines) { const k = headKind(db, l.headId) || 'other'; kinds.set(k, (kinds.get(k) || 0) + l.amountPaise); }
+      concessionPaise += amt.concessionPaise;
+    } else partPaidPaise += paid;
+    invoices.push({ invoiceId, number: inv ? inv.number : '—', installmentName: inv ? inv.installmentName : '—', paidPaise: paid, whole });
+  }
+  const order = [...HEAD_KINDS, 'other'];
+  const byKind = [...kinds].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])).map(([kind, amountPaise]) => ({ kind, label: HEAD_KIND_LABEL[kind] || 'Other', amountPaise }));
+  const receivedPaise = sumPaise(receipts.map(r => r.amountPaise));
+  const refundedPaise = sumPaise(refunds.map(r => r.amountPaise));
+  const program = byId(db.programs, s.programId);
+  return {
+    school: { name: db.school.name, address: db.school.address, phone: db.school.phone },
+    academicYear: { id: ay.id, label: ay.label || ay.id, startDate: ay.startDate, endDate: ay.endDate },
+    student: fullName(s), admissionNo: s.admissionNo, program: program ? program.name : '—',
+    guardians: (s.guardianIds || []).map(id => fullName(byId(db.guardians, id))).filter(Boolean),
+    receipts, refunds, receivedPaise, refundedPaise, netPaise: receivedPaise - refundedPaise, netWords: amountInWords(receivedPaise - refundedPaise),
+    invoices, byKind, concessionPaise, partPaidPaise, appliedPaise: sumPaise(invoices.map(i => i.paidPaise)),
+  };
+}
+
+/**
  * Per-student outstanding for one academic year, as it stood at the end of asOfDate (historical: see
  * invoiceAmountsAsOf). Without asOfDate, current figures. paidPaise is net of refunds, so
  * invoiced − concession − paid = balance on every row.

@@ -198,6 +198,53 @@ test('#50 the principal can mark a child staff-ward (audited); the structure\'s 
   assert.deepEqual(inv(db, 'A', 'Term 2').concessions, [], 'a regular child gets none');
 });
 
+// ---------------------------------------------------------------- #48 dues summary, #49 annual statement
+
+test('#48 dues summary: programme x instalment grid, by head, ageing; every total agrees with the outstanding report', () => {
+  const db = withInvoices();
+  const a1 = inv(db, 'A', 'Term 1');
+  F.recordPayment(db, { studentId: 'A', amountPaise: F.invoiceBalance(db, a1), mode: 'cash', paidOn: '2026-06-10', allocations: [{ invoiceId: a1.id, amountPaise: F.invoiceBalance(db, a1) }] }, ctx('2026-06-10'));
+  F.recordPayment(db, { studentId: 'C', amountPaise: 500000, mode: 'upi', paidOn: '2026-07-01' }, ctx('2026-07-01'));
+  F.addConcession(db, inv(db, 'B', 'Term 2').id, { type: 'scholarship', description: 'x', amountPaise: 200000 }, ctx());
+  const asOf = '2026-11-20';
+  const s = F.duesSummary(db, { academicYearId: 'AY2026-27', asOfDate: asOf });
+  const o = F.outstandingReport(db, { academicYearId: 'AY2026-27' });
+  assert.equal(s.rows.length, 4, 'P1/P2 x Term 1/Term 2');
+  for (const k of ['invoicedPaise', 'concessionPaise', 'paidPaise', 'balancePaise']) assert.equal(s.totals[k], o.totals[k], k);
+  assert.equal(s.rows.reduce((n, r) => n + r.invoices, 0), db.invoices.length);
+  const p1t1 = s.rows.find(r => r.programId === 'P1' && r.installmentName === 'Term 1');
+  assert.deepEqual([p1t1.invoices, p1t1.open], [2, 1], 'A paid, C part-paid');
+  assert.equal(s.byHead.reduce((n, h) => n + h.invoicedPaise, 0), s.totals.invoicedPaise, 'heads add up to the lines');
+  assert.equal(s.byHead.find(h => h.headId === 'H-MAT').invoicedPaise, 300000 * 3);
+  const buckets = Object.values(s.ageing);
+  assert.equal(buckets.reduce((n, b) => n + b.balancePaise, 0), s.totals.balancePaise, 'ageing adds up to the balance');
+  assert.equal(buckets.reduce((n, b) => n + b.invoices, 0), s.totals.open);
+  assert.ok(s.ageing.over60.balancePaise > 0 && s.ageing.days31to60.invoices > 0, 'Term 1 (Jun) over 60 days; Term 2 (Oct) 31-60 days on 20-Nov');
+});
+
+test('#49 annual statement: receipts and refunds of the year, net in words, what was paid by fee head (tuition separately); part payments are not split', () => {
+  const db = withInvoices();
+  const a1 = inv(db, 'A', 'Term 1'), a2 = inv(db, 'A', 'Term 2');
+  const p1 = F.recordPayment(db, { studentId: 'A', amountPaise: 2800000, mode: 'cash', paidOn: '2026-06-10', allocations: [{ invoiceId: a1.id, amountPaise: 2800000 }] }, ctx('2026-06-10'));
+  const p2 = F.recordPayment(db, { studentId: 'A', amountPaise: 1000000, mode: 'upi', reference: 'UPI-1', paidOn: '2026-10-05', allocations: [{ invoiceId: a2.id, amountPaise: 1000000 }] }, ctx('2026-10-05'));
+  F.refund(db, { paymentId: p2.id, invoiceId: a2.id, amountPaise: 100000, mode: 'cash', date: '2026-10-06', reason: 'excess' }, ctx('2026-10-06'));
+  const cancelled = F.recordPayment(db, { studentId: 'A', amountPaise: 5000, mode: 'cash', paidOn: '2026-10-07' }, ctx('2026-10-07'));
+  F.cancelPayment(db, cancelled.id, 'typo', ctx('2026-10-07'));
+  F.recordPayment(db, { studentId: 'A', amountPaise: 1000, mode: 'cash', paidOn: '2026-05-20', allocations: [] }, ctx('2026-05-20')); // AY2025-26: not in this statement
+  const st = F.feeStatement(db, 'A', 'AY2026-27');
+  assert.deepEqual(st.receipts.map(r => r.receiptNumber), [p1.receiptNumber, p2.receiptNumber], 'valid receipts of the year only');
+  assert.equal(st.receivedPaise, 3800000);
+  assert.equal(st.refundedPaise, 100000);
+  assert.equal(st.netPaise, 3700000);
+  assert.match(st.netWords, /Thirty[- ]Seven Thousand/i);
+  assert.deepEqual(st.byKind.map(k => [k.kind, k.amountPaise]), [['tuition', 2500000], ['materials', 300000]]);
+  assert.equal(st.partPaidPaise, 900000, 'Term 2: 10,000 paid less 1,000 refunded, not split by head');
+  assert.equal(st.concessionPaise, 0);
+  assert.equal(st.byKind.reduce((n, k) => n + k.amountPaise, 0) - st.concessionPaise + st.partPaidPaise, st.appliedPaise);
+  assert.equal(st.appliedPaise, st.netPaise, 'everything received was applied to invoices');
+  assert.throws(() => F.feeStatement(db, 'A', 'AY2099-00'), { code: 'NOT_FOUND' });
+});
+
 // ---------------------------------------------------------------- screens (demo api over the seed; fake DOM as in tests/care-ui.test.mjs)
 
 const NOW = new Date();
@@ -364,6 +411,81 @@ test('#51 #54 invoice detail: a part-paid invoice still offers Add concession (u
   const list = await draw(api, ACCOUNTANT_P, Invoices);
   const name = (await api.people.student(part.studentId)).name;
   assert.match(list, new RegExp(`<optgroup label="Left, with dues"><option value="${part.studentId}">${name}</option>`));
+});
+
+const Reports = await import('../src/ui/screens/reports.js');
+/** A Reports tab draws into #rp-body. */
+const drawReport = async (api, who, query) => { const top = await draw(api, who, Reports, query); return top + last.el.querySelector('#rp-body').innerHTML; };
+const Statement = await import('../src/ui/screens/statement-print.js');
+
+test('#45 day book: Today and Export, per-day subtotals by mode that add up, recorded by, and back-dated entries flagged; the CSV has a line per receipt and refund', async () => {
+  const api = await mkApi();
+  api.session.set(ACCOUNTANT_P);
+  const sid = (await api.fees.invoices({})).find((i) => i.status !== 'cancelled' && i.balancePaise > 0).studentId;
+  const yesterday = addDays(todayISO(), -1);
+  const back = await api.fees.recordPayment({ studentId: sid, amountPaise: 10000, mode: 'upi', reference: '=HYPERLINK("x")', paidOn: yesterday });
+  const from = addDays(todayISO(), -40), to = todayISO();
+  const html = await drawReport(api, ACCOUNTANT_P, { tab: 'collection', from, to });
+  assert.match(html, /id="cl-today"/);
+  assert.match(html, /id="cl-csv"/);
+  assert.match(html, /By day and mode/);
+  assert.match(html, /entered later/);
+  assert.match(html, /Ava|Demoson|Recorded by/);
+  const pays = await api.fees.payments({ from, to });
+  const valid = pays.filter((p) => p.status === 'valid' && p.mode !== 'credit').reduce((s, p) => s + p.amountPaise, 0);
+  const foot = html.match(/<tfoot><tr><td>Total<\/td>(.*?)<\/tr><\/tfoot>/)[1];
+  const cells = [...foot.matchAll(/₹([\d,]+\.\d\d)/g)].map((m) => Math.round(Number(m[1].replace(/,/g, '')) * 100));
+  const modeCells = cells.slice(0, cells.length - 3);
+  assert.equal(modeCells.reduce((a, b) => a + b, 0), valid, 'the mode columns add up to the money collected');
+  assert.equal(cells.at(-3), valid);
+  const db = api.getDb();
+  const refunds = db.refunds.filter((r) => r.date >= from && r.date <= to);
+  const lines = Reports.dayBookCsv(pays, refunds, (id) => id, (id) => (id ? `who-${id}` : 'Online (system)'), (id) => db.payments.find((p) => p.id === id));
+  assert.equal(lines.length, 1 + pays.length + refunds.length, 'one line per receipt and refund, plus the header');
+  assert.match(lines[0], /"Recorded by","Recorded at","Entered later"/);
+  const mine = lines.find((l) => l.includes(back.receiptNumber));
+  assert.match(mine, new RegExp(`"Receipt","${yesterday}",".*","UPI","'=HYPERLINK\\(""x""\\)","100.00","Valid","who-stf-accountant",".*","yes \\(${todayISO()}\\)"`), 'formula guarded; entered later');
+});
+
+test('#47 defaulters: each row has the first parent with a call link and a WhatsApp link carrying the reminder', async () => {
+  const api = await mkApi();
+  const html = await drawReport(api, ACCOUNTANT_P, { tab: 'outstanding', def: '1' });
+  assert.match(html, /<th>Parent<\/th>/);
+  assert.match(html, /href="tel:\+919000000\d{3}">\+91-90000-00\d{3}<\/a>/);
+  assert.match(html, /href="https:\/\/wa\.me\/919000000\d{3}\?text=Fee%20reminder%20from%20/);
+  const db = api.getDb();
+  const s = db.students.find((x) => x.status === 'active');
+  const c = Reports.contactFor(db, s.id, 123456, 9);
+  const g = db.guardians.find((x) => x.id === s.guardianIds[0]);
+  assert.equal(c.phone, g.phone);
+  assert.match(decodeURIComponent(c.wa.split('text=')[1]), new RegExp(`₹1,234\\.56 is due for ${s.firstName} \\(overdue by 9 days\\)`));
+});
+
+test('#48 Summary tab: grid, by head, ageing; agrees with the Outstanding report; CSV has a line per row and a total', async () => {
+  const api = await mkApi();
+  const html = await drawReport(api, ACCOUNTANT_P, { tab: 'summary' });
+  assert.match(html, /aria-current="page">Summary/);
+  assert.match(html, /Balance agrees with the Outstanding report/);
+  assert.match(html, /Invoiced by fee head/);
+  assert.match(html, /More than 60 days late/);
+  api.session.set(ACCOUNTANT_P);
+  const s = await api.fees.duesSummary({});
+  const csv = Reports.summaryCsv(s);
+  assert.equal(csv.length, s.rows.length + 2);
+  assert.match(csv.at(-1), new RegExp(`^"Total",.*"${(s.totals.balancePaise / 100).toFixed(2)}"$`));
+});
+
+test('#49 statement print: staff and the child\'s own parent; demo stamp; another family is refused', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT_P);
+  const kid = (await api.people.childrenOf('grd-01'))[0];
+  const html = await draw(api, PARENT_P, Statement, {}, { studentId: kid.id });
+  assert.match(html, /FEE STATEMENT/);
+  assert.match(html, /DEMO &mdash; NOT A REAL STATEMENT/);
+  assert.match(html, /Net fees paid in the year/);
+  const other = api.getDb().students.find((s) => !s.guardianIds.includes('grd-01'));
+  assert.match(await draw(api, PARENT_P, Statement, {}, { studentId: other.id }), /Statement not found/);
+  assert.match(await draw(api, ACCOUNTANT_P, Payment, {}, { studentId: kid.id }), new RegExp(`href="#/print/statement/${kid.id}"`));
 });
 
 test('#42 a programme without a structure offers Create; the editor can add instalments and heads (blank rows dropped)', async () => {
