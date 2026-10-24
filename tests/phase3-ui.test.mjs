@@ -93,6 +93,7 @@ const fire = async (el, type, matches = {}) => {
   for (const f of [...(el.handlers[type] || [])]) Promise.resolve(f({ target: { closest: (sel) => matches[sel] ?? null }, preventDefault() {} })).catch((e) => { el.lastError = e; });
   await new Promise((r) => setTimeout(r, 15));
 };
+const until = async (cond, ms = 2000) => { for (const end = Date.now() + ms; !cond() && Date.now() < end;) await new Promise((r) => setTimeout(r, 5)); };
 const noRawHtml = (html, what) => {
   assert.ok(!html.includes('<img src=x'), `${what}: raw <img> from user text`);
   assert.ok(!html.includes('<script>alert'), `${what}: raw <script> from user text`);
@@ -702,6 +703,7 @@ test('consent: submitting sends the account and only the photo choices the paren
     const form = root.querySelector('#cs-form');
     form.querySelectorAll = (sel) => (sel.includes('name=purpose') ? [{ value: 'app_account' }] : sel.includes('photos-child') ? [{ value: 'stu-2' }] : []);
     await fire(form, 'submit');
+    await until(() => sent && done); // the notice hash runs on a worker thread; fire's 15 ms is not always enough under load
     assert.deepEqual(sent.purposes, ['app_account']);
     assert.deepEqual(sent.perChild, { 'stu-2': ['photos'] }, 'Vivaan yes, Neel no');
     assert.equal(sent.version, Priv.PRIVACY_VERSION);
@@ -709,6 +711,7 @@ test('consent: submitting sends the account and only the photo choices the paren
     sent = null; done = false;
     form.querySelectorAll = (sel) => (sel.includes('name=purpose') ? [{ value: 'app_account' }, { value: 'push' }] : []);
     await fire(form, 'submit');
+    await until(() => sent);
     assert.ok(!('perChild' in sent), 'no photo choice, nothing about photos is sent');
     assert.deepEqual(sent.purposes, ['app_account', 'push']);
     sent = null;
