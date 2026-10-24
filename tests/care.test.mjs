@@ -227,8 +227,9 @@ test('schema v4: migrate v3 → v4 adds the three care collections empty and cha
   v3.schemaVersion = 3;
   const before = JSON.stringify({ ...v3, schemaVersion: 5 });
   const m = migrate(structuredClone(v3));
-  const { leaveRequests, pickupContacts, pickups, evaluations, signatures, ...rest } = m;
-  assert.deepEqual([leaveRequests, pickupContacts, pickups, evaluations, signatures], [[], [], [], [], []]);
+  const { leaveRequests, pickupContacts, pickups, ...rest } = m;
+  assert.deepEqual([leaveRequests, pickupContacts, pickups], [[], [], []]);
+  for (const c of V5_COLLECTIONS) { assert.deepEqual(rest[c], [], c); delete rest[c]; }
   for (const k of V5_SCHOOL_KEYS) { assert.equal(rest.school[k], null); delete rest.school[k]; }
   assert.equal(JSON.stringify(rest), before);
   const db = seed();

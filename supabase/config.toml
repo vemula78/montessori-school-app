@@ -118,13 +118,19 @@ port = 54324
 # and out only through URLs the `command` function signs after the registry authorized the caller.
 enabled = true
 # The maximum file size allowed (e.g. "5MB", "500KB").
-file_size_limit = "1MiB"
+file_size_limit = "3MiB"
 
 # Mirrors the row migration 0005 inserts into storage.buckets (the cloud project gets it from the migration).
 [storage.buckets.child-photos]
 public = false
 file_size_limit = "400KiB"
 allowed_mime_types = ["image/jpeg"]
+
+# Mirrors migration 0011: notice attachments (private, no storage policies; at most 2 MB each).
+[storage.buckets.notice-files]
+public = false
+file_size_limit = "2MiB"
+allowed_mime_types = ["application/pdf", "image/jpeg", "image/png"]
 
 # Mirrors migration 0010: staff and director signatures for the Progress Report (private, no storage policies).
 [storage.buckets.signatures]

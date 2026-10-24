@@ -195,3 +195,51 @@ test('closing a staff record closes the sign-in at once (snapshot revoked, comma
   ok(await command(admin.token, 'setup.saveStaff', { id: 'stf-teacher-pb', programIds: ['prog-primary-b'] }), 'classes back');
   assert.equal((await snapshot(tpb)).status, 'active');
 });
+
+test('#12 #84 notice files: uploaded with the command (checked from the bytes, ≤ 2 MB), attached when sent, served to the notice\'s families only, never after withdrawal; a correction that drops a file deletes it', async () => {
+  const pdf = (n = 2000) => Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(n, 0x20), Buffer.from('\n%%EOF')]);
+  const objectOf = id => psql(`select count(*) from storage.objects where bucket_id = 'notice-files' and name = (select doc->>'path' from notice_files where id = '${id}')`);
+  refused(await withFile(parentBus, 'notices.uploadFile', [{ name: 'x.pdf' }], pdf()), 403, 'NOT_ALLOWED', 'a parent');
+  refused(await withFile(tpa, 'notices.uploadFile', [{ name: 'x.svg' }], Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>')), 422, 'VALIDATION', 'not a PDF/JPEG/PNG');
+  refused(await withFile(tpa, 'notices.uploadFile', [{ name: 'big.pdf' }], pdf(2 * 1024 * 1024)), 422, 'VALIDATION', 'over 2 MB');
+  const big = ok(await withFile(tpa, 'notices.uploadFile', [{ name: 'Term plan.pdf' }], pdf(1536 * 1024)), 'a 1.5 MB file');
+  const png = ok(await withFile(tpa, 'notices.uploadFile', [{ name: 'poster.png' }], fixture('tiny.png')), 'png');
+  assert.deepEqual([big.status, big.mime], ['staged', 'application/pdf']);
+  assert.equal(objectOf(big.id), '1');
+  refused(await command(parentBus.token, 'notices.fileUrl', big.id), 403, 'NOT_ALLOWED', 'a staged file is its uploader\'s');
+  const n = ok(await command(tpa.token, 'notices.send', { title: 'Fake circular', body: 'Fake body', audience: { scope: 'program', programIds: ['prog-primary-a'] }, attachmentIds: [big.id, png.id] }), 'send');
+  assert.deepEqual(n.attachments.map(a => a.name), ['Term plan.pdf', 'poster.png']);
+  const url = ok(await command(parentBus.token, 'notices.fileUrl', png.id), 'fileUrl (Ira is in Primary A)');
+  const res = await fetch(`${local().url}/storage/v1${url.signedPath}`);
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), fixture('tiny.png'));
+  assert.ok(Date.parse(url.expiresAt) - Date.now() <= 61000);
+  refused(await command(acct.token, 'notices.uploadFile', { name: 'x' }), 403, 'NOT_ALLOWED', 'the accountant does not upload');
+  // a correction dropping the PDF deletes its object; the old wording is kept
+  const c = ok(await command(tpa.token, 'notices.correct', n.id, { body: 'Fixed body', reason: 'Fake: wrong date', attachmentIds: [png.id] }), 'correct');
+  assert.deepEqual(c.filesRemoved, [big.id]);
+  assert.equal(objectOf(big.id), '0', 'the dropped file is gone from storage');
+  assert.equal(psql(`select doc->'history'->0->>'body' from notices where id = '${n.id}'`), 'Fake body');
+  ok(await command(tpa.token, 'notices.withdraw', n.id, 'Fake: sent by mistake'), 'withdraw');
+  refused(await command(parentBus.token, 'notices.fileUrl', png.id), 404, 'NOT_FOUND', 'withdrawn');
+  ok(await command(tpa.token, 'notices.fileUrl', png.id), 'staff still open it');
+  // a staged file never sent is removed by the nightly job after 24 hours
+  const stale = ok(await withFile(tpa, 'notices.uploadFile', [{ name: 'old.pdf' }], pdf()), 'stale');
+  psql(`update notice_files set doc = jsonb_set(doc, '{uploadedAt}', to_jsonb('2026-01-01T00:00:00.000Z'::text)) where id = '${stale.id}'`);
+  const cron = await fn('cron-daily', { steps: ['filesCleanup'] }, null, { 'X-Cron-Secret': local().env.CRON_SECRET });
+  assert.equal(cron.status, 200, JSON.stringify(cron.data));
+  assert.ok(cron.data.report.filesCleanup.stagedFilesExpired >= 1);
+  assert.equal(psql(`select status from notice_files where id = '${stale.id}'`), 'removed');
+  assert.equal(objectOf(stale.id), '0');
+});
+
+test('#85 running late: the route\'s driver sends an important notice to that route\'s families only', async () => {
+  const driver = await signIn('driver1@example.com');
+  refused(await command(tpa.token, 'transport.runningLate', { routeId: 'route-1', kind: 'late10' }), 403, 'NOT_ALLOWED', 'a teacher');
+  refused(await command(driver.token, 'transport.runningLate', { routeId: 'route-2', kind: 'late10' }), 403, 'NOT_ALLOWED', 'another route');
+  const n = ok(await command(driver.token, 'transport.runningLate', { routeId: 'route-1', kind: 'breakdown' }), 'runningLate');
+  assert.equal(n.important, true);
+  const kids = psql(`select string_agg(distinct x.student_id, ',' order by x.student_id) from notice_receipt_students x where x.notice_id = '${n.id}'`).split(',');
+  const route1 = psql(`select string_agg(id, ',' order by id) from students where route_id = 'route-1' and status = 'active'`).split(',');
+  assert.deepEqual(kids, route1);
+  assert.equal((await restAs(tpa.token, `notices?id=eq.${n.id}&select=id`)).data.length, 0, 'teachers do not read bus-route notices');
+});

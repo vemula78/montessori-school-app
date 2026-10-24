@@ -26,6 +26,7 @@ export const RETENTION_COVERAGE = {
   leaveRequests: 'attendance', pickupContacts: 'attendance', pickups: 'attendance',
   evaluations: 'diary',
   signatures: 'kept: staff data, not a child\'s; removed when replaced or deleted by the principal',
+  noticeFiles: 'kept with their notice (school documents, no child data); staged files unused for 24 hours are removed by the nightly job',
 };
 
 /** 'YYYY-MM-DD' + n months, the day clamped to the month's end (31-Jan + 1 → 28/29-Feb). */

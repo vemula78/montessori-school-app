@@ -23,6 +23,11 @@ export function resolveAudience(db, audience) {
     const ids = audience.studentIds || [];
     if (!ids.length) fail('VALIDATION', 'Choose at least one child');
     students = ids.map(id => mustGet(db, 'students', id, 'Student')).filter(s => s.status === 'active');
+  } else if (audience.scope === 'route') { // the families of the children who ride these bus routes (wave 2, #85)
+    const ids = audience.routeIds || [];
+    if (!ids.length) fail('VALIDATION', 'Choose at least one bus route');
+    for (const r of ids) if (!byId(db.routes, r)) fail('VALIDATION', `Unknown route: ${r}`);
+    students = activeStudents(db).filter(s => ids.includes(s.routeId));
   } else fail('VALIDATION', `Unknown audience scope: ${audience.scope}`);
   const map = new Map();
   for (const s of students) {
@@ -34,12 +39,16 @@ export function resolveAudience(db, audience) {
   return map;
 }
 
-/** Program ids an audience touches (used for teacher scoping). Empty array = whole school. */
+/** Program ids an audience touches (used for teacher scoping). Empty array = whole school. A bus-route audience is the
+ * principal's and the driver's: it touches no programme a teacher manages (null). */
 export function audiencePrograms(db, audience) {
   if (audience.scope === 'school') return [];
+  if (audience.scope === 'route') return null;
   if (audience.scope === 'program') return [...audience.programIds];
   return [...new Set(audience.studentIds.map(id => byId(db.students, id)?.programId).filter(Boolean))];
 }
+
+export const NOTICE_REASON_MAX = 200;
 
 export function sendNotice(db, { title, body, audience, requiresAck = false, important = false }, ctx) {
   if (!title || !String(title).trim()) fail('VALIDATION', 'Title is required');
@@ -104,12 +113,65 @@ export function noticesForGuardian(db, guardianId) {
   return mine.map(r => ({ ...byId(db.notices, r.noticeId), receipt: { ...r } })).filter(n => n.id);
 }
 
-/** Teacher sees school-wide notices plus those touching any of their programs. */
+/** Teacher sees school-wide notices plus those touching any of their programs (never a bus-route notice). */
 export function noticesForPrograms(db, programIds) {
   return db.notices.filter(n => {
     const ps = audiencePrograms(db, n.audience);
-    return ps.length === 0 || ps.some(p => programIds.includes(p));
+    return ps !== null && (ps.length === 0 || ps.some(p => programIds.includes(p)));
   });
+}
+
+const reasonText = reason => {
+  const why = String(reason ?? '').trim().replace(/\s+/g, ' ');
+  if (!why) fail('VALIDATION', 'Give the reason');
+  if (why.length > NOTICE_REASON_MAX) fail('VALIDATION', `The reason must be at most ${NOTICE_REASON_MAX} characters`);
+  return why;
+};
+
+/**
+ * correct(noticeId, {title?, body?, reason}) — fix a sent notice; what it said before is kept in history (oldest first),
+ * correctedAt shows parents that it changed. Receipts (read, acknowledged) stay as they were.
+ */
+export function correctNotice(db, noticeId, { title, body, reason } = {}, ctx) {
+  const n = mustGet(db, 'notices', noticeId, 'Notice');
+  if (n.withdrawnAt) fail('VALIDATION', 'This notice was withdrawn');
+  const why = reasonText(reason);
+  const t = title === undefined ? n.title : String(title).trim();
+  const b = body === undefined ? n.body : String(body);
+  if (!t) fail('VALIDATION', 'Title is required');
+  if (!b.trim()) fail('VALIDATION', 'Message body is required');
+  n.history = [...(n.history || []), { title: n.title, body: n.body, at: n.correctedAt || n.createdAt, by: n.correctedBy || n.createdBy, reason: why }];
+  Object.assign(n, { title: t, body: b, correctedAt: ctx.now, correctedBy: ctx.actor.id });
+  appendAudit(db, ctx, { entity: 'notice', entityId: n.id, action: 'correct', summary: `notice corrected (${n.history.length} earlier version(s) kept)` });
+  return n;
+}
+
+/** withdraw(noticeId, reason) — the notice stays, marked withdrawn for parents (its files are no longer served to them). */
+export function withdrawNotice(db, noticeId, reason, ctx) {
+  const n = mustGet(db, 'notices', noticeId, 'Notice');
+  if (n.withdrawnAt) fail('VALIDATION', 'This notice was already withdrawn');
+  Object.assign(n, { withdrawnAt: ctx.now, withdrawnBy: ctx.actor.id, withdrawReason: reasonText(reason) });
+  appendAudit(db, ctx, { entity: 'notice', entityId: n.id, action: 'withdraw', summary: 'notice withdrawn' });
+  return n;
+}
+
+/**
+ * Who has not read / not acknowledged a notice (#86), per guardian: {counts:{recipients, read, acknowledged},
+ * notRead:[row], notAcknowledged:[row]}, row = {guardianId, guardianName, phone|null, studentIds}. phone only when withPhone.
+ */
+export function unreadReport(db, noticeId, { withPhone = false, studentFilter = null } = {}) {
+  const n = mustGet(db, 'notices', noticeId, 'Notice');
+  const rows = db.noticeReceipts.filter(r => r.noticeId === noticeId).map(r => {
+    const g = byId(db.guardians, r.guardianId);
+    return { guardianId: r.guardianId, guardianName: fullName(g), phone: withPhone && g ? g.phone || null : null,
+      studentIds: studentFilter ? r.studentIds.filter(studentFilter) : [...r.studentIds], readAt: r.readAt, ackAt: r.ackAt };
+  }).filter(r => r.studentIds.length);
+  const strip = ({ readAt, ackAt, ...x }) => x;
+  return {
+    counts: { recipients: rows.length, read: rows.filter(r => r.readAt).length, acknowledged: rows.filter(r => r.ackAt).length },
+    notRead: rows.filter(r => !r.readAt).map(strip),
+    notAcknowledged: n.requiresAck ? rows.filter(r => !r.ackAt).map(strip) : [],
+  };
 }
 
 // ---------------- threads ----------------

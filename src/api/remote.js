@@ -23,6 +23,7 @@ import { PRIVILEGED_ROLES } from '../domain/admin.js';
 import { evaluationPrintView } from '../domain/evaluations.js';
 import { fileProblem } from '../domain/files.js';
 import { SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, SIGNATURE_MAX_EDGE } from '../domain/signatures.js';
+import { NOTICE_FILE_MIMES, NOTICE_FILE_MAX_BYTES } from '../domain/notice-files.js';
 
 /** base64 of bytes (browser: btoa over binary chunks). */
 function toBase64(bytes) {
@@ -327,6 +328,21 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     }),
     remove: op(owner => command('signatures.remove', [{ owner }])),
   };
+  Object.assign(notices, {
+    /** uploadFile(blob, name) → staged file {id, name, mime, bytes, status}; attach it with notices.send/correct attachmentIds. */
+    uploadFile: raw(async (blob, name) => {
+      me();
+      const info = await inspectUpload(blob);
+      const problem = fileProblem(info, { mimes: NOTICE_FILE_MIMES, maxBytes: NOTICE_FILE_MAX_BYTES });
+      if (problem) throw new ApiError('VALIDATION', `This file cannot be attached: ${problem}`);
+      return structuredClone(await commandWithFile('notices.uploadFile', [{ name }], info.data));
+    }),
+    /** fileBlob(fileId) → Blob of an attachment you may read. */
+    fileBlob: raw(async fileId => {
+      const r = await command('notices.fileUrl', [fileId], { reload: false });
+      return fetchSigned(r.signedPath, 'file');
+    }),
+  });
   const evaluations = {
     ...surface.evaluations,
     /** printData(id) → the print page's data with signers[].blob (Blob|null). Parents: published reports of their own children. */

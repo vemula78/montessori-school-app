@@ -20,7 +20,7 @@
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(260);
+select plan(269);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -654,6 +654,29 @@ select lives_ok($$select public.persist('pgtap-w2-setup', 1, jsonb_build_object(
 select tests.as_user('00000000-0000-4000-8000-000000000002');
 select is(app.my_role(), 'teacher', 'w2_reopened_staff_reads_again');
 reset role;
+
+-- notice attachments (#12 #84): staged rows are the uploader's; parents read the attached files of their notices until withdrawn
+select lives_ok($$select public.persist('pgtap-w2-msg', 0, jsonb_build_object('upserts', jsonb_build_object('noticeFiles', jsonb_build_array(
+  jsonb_build_object('id', 'nfl-t-1', 'noticeId', null, 'name', 'a.pdf', 'mime', 'application/pdf', 'path', 'ntc/t-1.pdf', 'status', 'staged', 'uploadedBy', 'stf-teacher-pa'),
+  jsonb_build_object('id', 'nfl-t-2', 'noticeId', (select n.id from public.notices n where n.doc->'audience'->>'scope' = 'school' order by n.id limit 1), 'name', 'b.pdf',
+    'mime', 'application/pdf', 'path', 'ntc/t-2.pdf', 'status', 'attached', 'uploadedBy', 'stf-principal')))))$$, 'w2_persist_writes_notice_files');
+select throws_ok($$insert into public.notice_files (id, doc) values ('nfl-x', '{"id":"nfl-x","status":"attached","uploadedBy":"stf-principal"}')$$, '23514', null, 'w2_an_attached_file_names_its_notice');
+select tests.as_user('00000000-0000-4000-8000-000000000002'); -- teacher-pa
+select is((select array_agg(id order by id) from public.notice_files where id like 'nfl-t-%'), array['nfl-t-1', 'nfl-t-2'], 'w2_teacher_reads_own_staged_and_school_notice_files');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000003'); -- accountant
+select is((select array_agg(id order by id) from public.notice_files where id like 'nfl-t-%'), array['nfl-t-2'], 'w2_accountant_reads_no_staged_file');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000006'); -- grd-02: received every school notice
+select is((select array_agg(id order by id) from public.notice_files where id like 'nfl-t-%'), array['nfl-t-2'], 'w2_parent_reads_attached_files_of_own_notices');
+select ok(public.my_snapshot()->'noticeFiles' @> '[{"id":"nfl-t-2"}]'::jsonb and not (public.my_snapshot()->'noticeFiles'->0 ? 'path'), 'w2_snapshot_notice_files_without_paths');
+reset role;
+update public.notices set doc = doc || '{"withdrawnAt":"2026-10-24T05:00:00.000Z"}'::jsonb where id = (select doc->>'noticeId' from public.notice_files where id = 'nfl-t-2');
+select tests.as_user('00000000-0000-4000-8000-000000000006');
+select is((select count(*)::int from public.notice_files where id = 'nfl-t-2'), 0, 'w2_parent_reads_no_file_of_a_withdrawn_notice');
+reset role;
+select is((select public from storage.buckets where id = 'notice-files'), false, 'w2_notice_files_bucket_private');
+select throws_ok($$select public.persist('pgtap-w2-msg', 1, '{"deletes":{"noticeFiles":["nfl-t-1"]}}'::jsonb)$$, '42501', null, 'w2_notice_files_never_deleted');
 
 select * from finish();
 rollback;

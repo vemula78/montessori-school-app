@@ -43,6 +43,8 @@ import { signatureList, currentSignature, SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, 
 import { schoolDetails, officeHoursStatus } from '../domain/school.js';
 import { sniffMime, pngSize, fileProblem } from '../domain/files.js';
 import { healthAlerts, healthView } from '../domain/health.js';
+import { filesOfNotice, NOTICE_FILE_MIMES, NOTICE_FILE_MAX_BYTES } from '../domain/notice-files.js';
+import { RUNNING_LATE_KINDS } from '../domain/commands.js';
 import { totp, verifyTotp, randomSecret, otpauthUri, secondsLeft } from './totp.js';
 
 export { buildPersonas };
@@ -210,7 +212,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     setStopPosition: cmd('setup.setStopPosition'),
   };
 
-  const withStats = (d, n) => ({ ...n, ...M.noticeStats(d, n.id) });
+  const withFiles = (d, n) => ({ ...n, attachments: filesOfNotice(d, n.id) });
+  const withStats = (d, n) => withFiles(d, { ...n, ...M.noticeStats(d, n.id) });
   const byNewest = (a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0);
   const notices = {
     list: op(() => {
@@ -220,7 +223,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
         return M.noticesForGuardian(d, p.guardianId).map(n => {
           const about = n.receipt.studentIds;
           const audience = n.audience.scope === 'students' ? { ...n.audience, studentIds: n.audience.studentIds.filter(id => about.includes(id)) } : n.audience;
-          return { ...n, audience, aboutStudentIds: [...about] };
+          return withFiles(d, { ...n, audience, aboutStudentIds: [...about] });
         }).sort(byNewest);
       }
       if (p.role === 'admin' || p.role === 'accountant') return d.notices.map(n => withStats(d, n)).sort(byNewest);
@@ -239,6 +242,23 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     }),
     markRead: cmd('notices.markRead'),
     acknowledge: cmd('notices.acknowledge'),
+    /**
+     * unread(noticeId) → {counts:{recipients, read, acknowledged}, notRead:[{guardianId, guardianName, phone, studentIds, studentNames}],
+     * notAcknowledged:[…]} — who to follow up (#86). Principal; a teacher sees their own children's families only.
+     */
+    unread: op(noticeId => {
+      const p = allow('admin', 'teacher'); const d = db();
+      canManageNotice(p, d, noticeId);
+      const r = M.unreadReport(d, noticeId, { withPhone: true, studentFilter: p.role === 'teacher' ? id => p.studentIds.includes(id) : null });
+      const named = rows => rows.map(x => ({ ...x, studentNames: x.studentIds.map(id => fullName(byId(d.students, id))) }));
+      return { counts: r.counts, notRead: named(r.notRead), notAcknowledged: named(r.notAcknowledged) };
+    }),
+    /** correct(noticeId, {title?, body?, reason, attachmentIds?}) — the earlier wording is kept in history; attachmentIds = the new full list. */
+    correct: cmd('notices.correct'),
+    /** withdraw(noticeId, reason) — parents see it marked withdrawn (withdrawnAt) and get none of its files. */
+    withdraw: cmd('notices.withdraw'),
+    /** discardFile(fileId) — a file uploaded but not yet sent. */
+    discardFile: cmd('notices.discardFile'),
   };
 
   const threads = {
@@ -333,6 +353,9 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
      * receivers(routeId) → {studentId: [{id, name, relation, phone}]}: the people each child's family listed as allowed to collect
      * them (active), for "who received the child" on a drop. Principal and the route's driver/attendant.
      */
+    /** runningLate({routeId, kind}) — kind one of runningLateKinds(): an important notice to the route's families. Driver of the route, principal. */
+    runningLate: cmd('transport.runningLate'),
+    runningLateKinds: op(() => [...RUNNING_LATE_KINDS]),
     receivers: op(routeId => {
       const p = allow('admin', 'driver'); const d = db(); mustRoute(p, d, routeId);
       const kids = d.students.filter(s => s.routeId === routeId && s.status === 'active').map(s => s.id);
@@ -988,6 +1011,50 @@ export function createApi(opts = {}) {
       return r;
     }),
   };
+  const demoNoticeFile = async f => {
+    if (f.demo && f.demo.illustration) {
+      const svg = (await import('../seed/illustrations.js')).illustrationSvg(f.demo.illustration);
+      if (svg) return new Blob([svg], { type: 'image/svg+xml' });
+    }
+    const rec = await demoPhotos.get(f.id);
+    return rec ? (rec.blob || rec) : null;
+  };
+  const discardFileCmd = notices.discardFile;
+  Object.assign(notices, {
+    /** uploadFile(blob, name) → {id, name, mime, bytes, status:'staged', …}: a PDF/JPEG/PNG ≤ 2 MB kept for you until a notice uses it (notices.send / correct attachmentIds). */
+    uploadFile: raw(async (blob, name) => {
+      const p = me(); db();
+      const info = await inspectUpload(blob);
+      const problem = fileProblem(info, { mimes: NOTICE_FILE_MIMES, maxBytes: NOTICE_FILE_MAX_BYTES });
+      if (problem) throw new ApiError('VALIDATION', `This file cannot be attached: ${problem}`);
+      const fileInfo = { path: `demo/${Date.now().toString(36)}`, mime: info.mime, bytes: info.bytes, sha256: null, width: info.width ?? null, height: info.height ?? null };
+      const f = out(storage.commit(d => execute('notices.uploadFile', d, [{ name }], { ...ctxNow(p), fileInfo }, p)));
+      await demoPhotos.put(f.id, { blob, width: null, height: null });
+      return f;
+    }),
+    /** fileBlob(fileId) → Blob of an attachment you may read (parents: not once the notice is withdrawn). */
+    fileBlob: raw(async fileId => {
+      const p = me(); const d = db();
+      const f = (d.noticeFiles || []).find(x => x.id === fileId && x.status !== 'removed');
+      if (!f) throw new ApiError('NOT_FOUND', 'File not found');
+      const n = f.noticeId ? (d.notices || []).find(x => x.id === f.noticeId) : null;
+      const ok = f.status === 'staged' ? (p.role === 'admin' || f.uploadedBy === p.staffId)
+        : STAFF_SEES_ALL.includes(p.role) || (p.role === 'teacher' && (await notices.list()).some(x => x.id === f.noticeId))
+          || (p.role === 'parent' && (d.noticeReceipts || []).some(r => r.noticeId === f.noticeId && r.guardianId === p.guardianId));
+      if (!ok) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
+      if (p.role === 'parent' && n && n.withdrawnAt) throw new ApiError('NOT_FOUND', 'This notice was withdrawn');
+      const b = await demoNoticeFile(f);
+      if (!b) throw new ApiError('NOT_FOUND', 'This file is not stored in this browser (demo files live in the browser that added them)');
+      return b;
+    }),
+    discardFile: raw(async fileId => {
+      const r = await discardFileCmd(fileId);
+      await demoPhotos.remove(fileId);
+      sysCommit('notices.finishFileDelete', [{ fileIds: [fileId] }]);
+      return r;
+    }),
+  });
+
   const evaluations = {
     ...surface.evaluations,
     /**

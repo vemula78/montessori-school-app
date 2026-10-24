@@ -20,9 +20,9 @@
 //  11. photosCleanup: delete the objects of 'deleting' rows (→ deleted/expired), reject uploads abandoned for 2 hours,
 //      delete objects of closed rows at once and objects without a row (or with a pending one) after 2 hours
 //  12. signInEventsPruned: sign-in activity older than 90 days is deleted (data minimisation)
-//  13. filesCleanup (schema v5): delete the objects of removed signatures not deleted yet (a failure at removal), and
-//      objects in the signatures bucket that no row points at, once they are an hour old (an upload in flight is never
-//      touched)
+//  13. filesCleanup (schema v5): delete the objects of removed signatures and notice files not deleted yet (a failure at
+//      removal), remove notice files staged for 24 hours and never sent, and delete objects in the signatures and
+//      notice-files buckets that no row points at, once they are an hour old (an upload in flight is never touched)
 // Every step runs; the answer is HTTP 500 {ok:false, failedSteps, report} if any step threw, if a privacy step (photo
 // consent sweep, retention, photo cleanup, erasure clean-up) reports errors[] / failed > 0, or if gateway events reached
 // the retry cap in the last 7 days (failedStepsOf, _shared/cron.js). A failed push in the reminders step is routine
@@ -47,6 +47,8 @@ import { cleanupDeleting, sweepPhotos } from '../_shared/photos.ts';
 import { cleanupSignatures } from '../_shared/signatures.ts';
 import { listObjects, removeObjects } from '../_shared/files.ts';
 import { SIGNATURE_BUCKET } from '../_shared/domain/signatures.js';
+import { cleanupNoticeFiles } from '../_shared/notice-files.ts';
+import { NOTICE_FILE_BUCKET } from '../_shared/domain/notice-files.js';
 import { remindersDue, lateFeesDueList } from '../_shared/domain/reminders.js';
 import { dateInZone, IST_OFFSET_MIN } from '../_shared/domain/dates.js';
 import { byId } from '../_shared/domain/people.js';
@@ -207,7 +209,15 @@ Deno.serve(async (req) => {
       const objects = await listObjects(SIGNATURE_BUCKET, 'sig');
       const orphans = objects.filter(o => !known.has(o.name) && o.createdAt && Date.parse(o.createdAt) < nowMs - 3600_000).map(o => o.name);
       const orphanObjectsDeleted = orphans.length ? await removeObjects(SIGNATURE_BUCKET, orphans) : 0;
-      return { signaturesRemoved: sig.removed, signatureObjectsDeleted: sig.objectsDeleted, orphanObjectsDeleted, errors: sig.errors };
+      // notice attachments: staged files left unused for 24 hours, removed ones' objects, objects no row names
+      const expired = (await runCommand('notices.expireStagedFiles', [], system('notice-files'))).result.expired;
+      const nf = await cleanupNoticeFiles(null);
+      const knownFiles = new Set((await restAll('notice_files?select=id,path:doc->>path,status&order=id')).map((r: any) => r.path));
+      const fileObjects = await listObjects(NOTICE_FILE_BUCKET, 'ntc');
+      const fileOrphans = fileObjects.filter(o => !knownFiles.has(o.name) && o.createdAt && Date.parse(o.createdAt) < nowMs - 3600_000).map(o => o.name);
+      const fileOrphansDeleted = fileOrphans.length ? await removeObjects(NOTICE_FILE_BUCKET, fileOrphans) : 0;
+      return { signaturesRemoved: sig.removed, signatureObjectsDeleted: sig.objectsDeleted, orphanObjectsDeleted: orphanObjectsDeleted + fileOrphansDeleted,
+        stagedFilesExpired: expired, noticeFilesRemoved: nf.removed, noticeFileObjectsDeleted: nf.objectsDeleted, errors: [...sig.errors, ...nf.errors] };
     });
 
     // every step ran; any failure makes the whole run a failure the scheduler can see (audit C6)

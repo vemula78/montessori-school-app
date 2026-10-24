@@ -8,6 +8,8 @@
 --   * a closed staff record (staff.doc.active = false) closes that person's sign-in at once: app.my_link() gives nothing
 --     (staff_closed, kept by a trigger on staff) and my_snapshot says 'revoked'
 --   * load_slice hints diaryEntryIds (several diary entries) and learningStudentIds (several children's learning records)
+--   * notice attachments: notice_files rows (staged → attached → removed), bytes in the PRIVATE bucket `notice-files`
+--     (no storage policies; the command function signs 60-second downloads for those who may read the notice)
 -- persist / load_slice / my_snapshot of 0010 move to schema app and are wrapped here (the 0004–0010 pattern).
 
 -- ---------------------------------------------------------------- health alerts
@@ -96,18 +98,50 @@ create or replace function app.my_link() returns public.app_users language sql s
     and not exists (select 1 from public.staff_closed c where c.staff_id = u.staff_id)
 $$;
 
+-- ---------------------------------------------------------------- notice attachments (#12 #84), bus-route notices (#85)
+-- Files are staged by their uploader, then attached to a notice; parents read the rows of notices sent to them (the
+-- notices policy decides) unless the notice was withdrawn. A bus-route notice ({scope:'route', routeIds}) reaches parents
+-- through their receipts, like every notice; teachers do not read it (the notices policy has no case for it).
+create table public.notice_files (
+  id text primary key, doc jsonb not null,
+  notice_id text generated always as (doc->>'noticeId') stored,
+  uploaded_by text generated always as (doc->>'uploadedBy') stored not null,
+  status text generated always as (doc->>'status') stored check (status in ('staged', 'attached', 'removed')),
+  check ((status = 'attached') <= (notice_id is not null))
+);
+create index notice_files_notice on public.notice_files (notice_id);
+alter table public.notice_files enable row level security;
+alter table public.notice_files force row level security;
+create policy read_scoped on public.notice_files for select to authenticated using (
+  case (select app.my_role())
+    when 'admin' then true when 'accountant' then status <> 'staged'
+    when 'teacher' then (status = 'staged' and uploaded_by = (select app.my_staff_id()))
+      or (status = 'attached' and exists (select 1 from public.notices n where n.id = notice_id))
+    when 'parent' then status = 'attached' and exists (select 1 from public.notices n where n.id = notice_id and n.doc->>'withdrawnAt' is null)
+    else false end);
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('notice-files', 'notice-files', false, 2097152, array['application/pdf', 'image/jpeg', 'image/png'])
+on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
 -- ---------------------------------------------------------------- load_slice wrapper
 alter function public.load_slice(text[], jsonb) set schema app;
 alter function app.load_slice(text[], jsonb) rename to load_slice_0010;
 create function public.load_slice(p_collections text[], p_hints jsonb default '{}'::jsonb) returns jsonb
 language plpgsql stable security invoker set search_path = public, app, pg_temp as $$
 declare
-  r jsonb := app.load_slice_0010(p_collections, p_hints);
+  v5b constant jsonb := '{"noticeFiles":"notice_files"}';
+  r jsonb := app.load_slice_0010(array(select c from unnest(p_collections) c where not v5b ? c), p_hints);
   learn constant jsonb := '{"observations":"observations","photos":"photos","progressEvents":"progress_events","reports":"reports"}';
   ids text[];
   c text;
   v jsonb;
 begin
+  -- wave-2 collections: small, loaded whole
+  foreach c in array p_collections loop
+    continue when not v5b ? c;
+    execute format('select jsonb_agg(doc order by id) from public.%I', v5b->>c) into v;
+    r := jsonb_set(r, array['db', c], coalesce(v, '[]'::jsonb));
+  end loop;
   -- the students' allergies and medical alerts (student_health.alerts)
   if 'students' = any(p_collections) then
     r := jsonb_set(r, '{db,students}', coalesce((select jsonb_agg(x || jsonb_build_object('healthAlerts', (select h.alerts from public.student_health h where h.student_id = x->>'id')) order by n)
@@ -138,16 +172,27 @@ alter function app.persist(text, bigint, jsonb) rename to persist_0010;
 create function public.persist(p_rev_key text, p_expected bigint, p_changes jsonb) returns bigint
 language plpgsql volatile security invoker set search_path = public, app, pg_temp as $$
 declare
+  v5b constant jsonb := '{"noticeFiles":"notice_files"}';
   inner_changes jsonb := p_changes;
   studs jsonb := p_changes->'upserts'->'students';
+  col text;
+  arr jsonb;
   x jsonb;
   res bigint;
 begin
+  if p_changes ? 'upserts' then
+    inner_changes := jsonb_set(inner_changes, '{upserts}', (p_changes->'upserts') - array(select jsonb_object_keys(v5b)));
+  end if;
   if jsonb_typeof(studs) = 'array' then
     inner_changes := jsonb_set(inner_changes, '{upserts,students}', coalesce((select jsonb_agg(e - 'healthAlerts') from jsonb_array_elements(studs) e), '[]'::jsonb));
   end if;
   -- the earlier persist first (it keeps or deletes the student_health row by the note)
   res := app.persist_0010(p_rev_key, p_expected, inner_changes);
+  for col, arr in select * from jsonb_each(coalesce(p_changes->'upserts', '{}'::jsonb)) loop
+    continue when not v5b ? col or jsonb_typeof(arr) <> 'array';
+    execute format('insert into public.%I (id, doc) select e->>''id'', e from jsonb_array_elements($1) e on conflict (id) do update set doc = excluded.doc', v5b->>col)
+      using arr;
+  end loop;
   if jsonb_typeof(studs) = 'array' then
     for x in select * from jsonb_array_elements(studs) loop
       continue when not x ? 'healthAlerts';
@@ -178,6 +223,7 @@ begin
   if r->>'status' <> 'active' then return r; end if;
   r := jsonb_set(r, '{students}', coalesce((select jsonb_agg(x || jsonb_build_object('healthAlerts', (select h.alerts from public.student_health h where h.student_id = x->>'id')) order by n)
     from jsonb_array_elements(r->'students') with ordinality e(x, n)), '[]'::jsonb));
+  r := r || jsonb_build_object('noticeFiles', coalesce((select jsonb_agg(doc - 'path' order by id) from public.notice_files), '[]'::jsonb));
   -- the driver: reported absences of their route's children, dates only (no reason, no guardian)
   if r->'me'->>'role' = 'driver' then
     r := jsonb_set(r, '{leaveRequests}', coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'studentId', d.student_id, 'fromDate', d.from_date, 'toDate', d.to_date,
@@ -187,9 +233,9 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- grants
-revoke all on public.leave_days, public.staff_closed from anon, authenticated;
-grant select on public.leave_days, public.staff_closed to authenticated;
-grant all on public.leave_days, public.staff_closed to service_role;
+revoke all on public.leave_days, public.staff_closed, public.notice_files from anon, authenticated;
+grant select on public.leave_days, public.staff_closed, public.notice_files to authenticated;
+grant all on public.leave_days, public.staff_closed, public.notice_files to service_role;
 revoke all on function app.leave_days_sync(), app.staff_closed_sync() from public, anon, authenticated;
 grant execute on function app.leave_days_sync(), app.staff_closed_sync() to service_role;
 revoke all on function public.my_snapshot(), public.load_slice(text[], jsonb), public.persist(text, bigint, jsonb) from public, anon, authenticated;

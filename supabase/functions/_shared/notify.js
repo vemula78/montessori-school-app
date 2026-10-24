@@ -104,7 +104,7 @@ export function pushMessages(name, before, after, result) {
         payload: { title: 'Message from school', body: `New message about ${s ? s.firstName : 'your child'}`, url: `#/messages/${t.id}`, tag: `msg-${sent.id}` } });
     }
   }
-  if (name === 'notices.send' && result && result.important) {
+  if ((name === 'notices.send' || name === 'transport.runningLate') && result && result.important) {
     const rs = after.noticeReceipts.filter(r => r.noticeId === result.id);
     out.push({ guardianIds: [...new Set(rs.map(r => r.guardianId))], studentIds: [...new Set(rs.flatMap(r => r.studentIds || []))], purposes: ['push'], payload: { title: 'Important notice', body: result.title, url: `#/notices/${result.id}`, tag: `notice-${result.id}` } });
   }

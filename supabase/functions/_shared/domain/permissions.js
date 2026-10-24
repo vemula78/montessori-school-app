@@ -155,6 +155,8 @@ export const PERMISSIONS = {
       js: { kind: 'command', name: 'signatures.uploadCheck', args: [{ owner: { kind: 'staff', staffId: 'stf-teacher-pa' } }] }, sql: null },
     { key: 'school_settings', label: 'Set the school details (report footer, privacy contact, office hours, UPI)', allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'command', name: 'admin.setSchoolDetails', args: [{ directorName: 'Matrix Exampleton' }] }, sql: null },
+    { key: 'running_late', label: 'Tell a bus route\'s families the bus is late (route 1)', allow: row(Y, N, N, N, Y, N, N),
+      js: { kind: 'command', name: 'transport.runningLate', args: [{ routeId: 'route-1', kind: 'late10' }] }, sql: null },
     { key: 'set_health', label: "Set a child's allergies and medical alerts (stu-04)", allow: row(Y, N, N, N, N, Y, N),
       js: { kind: 'command', name: 'health.set', args: [{ studentId: 'stu-04', allergies: 'Fake: none known' }] }, sql: null },
     { key: 'export_family', label: "Download a family's data (grd-02)", allow: row(Y, N, N, N, N, Y, N),

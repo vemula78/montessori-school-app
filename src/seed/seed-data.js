@@ -321,6 +321,10 @@ export function buildSeed(now = new Date()) {
   const route2Kids = db.students.filter((s) => s.routeId === 'route-2' && s.status === 'active').map((s) => s.id);
   const n5 = sendOn('2026-09-28', ADMIN, { title: 'Route 2 morning pickup timings revised', body: 'From Monday the Route 2 morning pickup starts five minutes earlier. See the Bus tab for the new stop times. Sample text for the demo.', audience: { scope: 'students', studentIds: route2Kids }, requiresAck: false, important: false });
   const n6 = sendOn('2026-10-01', ADMIN, { title: 'Parent-teacher meeting - Primary A and B', body: 'The parent-teacher meeting for Primary A and B is on Saturday 17 October. Slots will be shared by the class teacher. Sample text for the demo.', audience: { scope: 'program', programIds: [P.pa, P.pb] }, requiresAck: false, important: false });
+  // a demo attachment on the PTM notice: a drawing (no stored object; the real app takes PDF/JPEG/PNG files)
+  db.noticeFiles.push({ id: 'nfl-demo-1', noticeId: n6.id, name: 'Meeting plan (sample).svg', mime: 'image/svg+xml', bytes: null, sha256: null, width: 200, height: 150,
+    path: 'demo/nfl-demo-1', status: 'attached', uploadedBy: ID.principal, uploadedAt: isoAt('2026-10-01', 9, 25), attachedAt: isoAt('2026-10-01', 9, 30),
+    removedAt: null, objectDeletedAt: null, demo: { illustration: 'numberRods' } });
   const g1 = grd.Neel; // the "parent with siblings" persona keeps to-dos open: no ack on the field-trip slip or the flu advisory
   engage(n1, { salt: 1 });
   engage(n2, { skipAck: [g1], salt: 0 });

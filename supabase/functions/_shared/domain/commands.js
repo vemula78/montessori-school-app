@@ -51,6 +51,7 @@ import * as EV from './evaluations.js';
 import * as SG from './signatures.js';
 import * as SC from './school.js';
 import * as HL from './health.js';
+import * as NF from './notice-files.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
@@ -141,7 +142,7 @@ export function canManageNotice(p, db, noticeId) {
   if (p.role === 'admin') return n;
   if (p.role === 'teacher') {
     const ps = M.audiencePrograms(db, n.audience);
-    if (n.createdBy === p.staffId || ps.length === 0 || ps.some(x => p.programIds.includes(x))) return n;
+    if (n.createdBy === p.staffId || (ps !== null && (ps.length === 0 || ps.some(x => p.programIds.includes(x))))) return n;
   }
   return deny('Not your notice');
 }
@@ -205,10 +206,78 @@ export const COMMANDS = {
         const a = input && input.audience;
         if (!a || a.scope === 'school') deny('Teachers can message their own programs only');
         const ps = M.audiencePrograms(db, a);
-        if (!ps.length || ps.some(x => !p.programIds.includes(x))) deny('Teachers can message their own programs only');
+        if (!ps || !ps.length || ps.some(x => !p.programIds.includes(x))) deny('Teachers can message their own programs only');
       }
     },
-    run: (db, [input], ctx) => M.sendNotice(db, input, ctx),
+    // input.attachmentIds: files this person uploaded first (notices.uploadFile), at most three, bound in the same write
+    run(db, [input], ctx) {
+      const { attachmentIds, ...rest } = input || {};
+      const n = M.sendNotice(db, rest, ctx);
+      const files = NF.attachNoticeFiles(db, n, attachmentIds, ctx);
+      return files.length ? { ...n, attachments: files.map(NF.noticeFileView) } : n;
+    },
+  },
+  /** uploadFile({name}) — a PDF/JPEG/PNG (≤ 2 MB) travels beside the command; staged for this person until a notice uses it. */
+  'notices.uploadFile': {
+    slice: 'messaging', authorize: p => allow(p, 'admin', 'teacher'),
+    run: (db, [a], ctx) => NF.stageNoticeFile(db, a || {}, ctx.fileInfo, ctx),
+  },
+  'notices.uploadFileCheck': { slice: 'messaging', serverOnly: true, readOnly: true, authorize: p => allow(p, 'admin', 'teacher'), run: () => ({ ok: true }) },
+  /** discardFile(fileId) — a staged file of this person (or any, for the principal). */
+  'notices.discardFile': {
+    slice: 'messaging',
+    authorize(p, db, [id]) {
+      allow(p, 'admin', 'teacher');
+      const f = byId(db.noticeFiles || [], id);
+      if (!f) fail('NOT_FOUND', 'File not found');
+      if (p.role !== 'admin' && f.uploadedBy !== p.staffId) deny('Not your file');
+    },
+    run: (db, [id], ctx) => NF.discardNoticeFile(db, id, ctx),
+  },
+  /** correct(noticeId, {title?, body?, reason, attachmentIds?}) — the earlier wording is kept; attachmentIds = the full new list. */
+  'notices.correct': {
+    slice: 'messaging',
+    authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher'); canManageNotice(p, db, id); },
+    run(db, [id, a = {}], ctx) {
+      const n = M.correctNotice(db, id, a || {}, ctx);
+      const files = a && a.attachmentIds !== undefined ? NF.setNoticeFiles(db, n, a.attachmentIds, ctx) : { added: [], removed: [] };
+      return { ...n, attachments: NF.filesOfNotice(db, n.id), filesRemoved: files.removed };
+    },
+  },
+  /** withdraw(noticeId, reason) — parents then see it as withdrawn (and get none of its files). */
+  'notices.withdraw': {
+    slice: 'messaging',
+    authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher'); canManageNotice(p, db, id); },
+    run: (db, [id, reason], ctx) => M.withdrawNotice(db, id, reason, ctx),
+  },
+  /**
+   * The file of a notice, for someone who may read it: staff who see the notice; a parent with a receipt of it (never once
+   * withdrawn); a staged file only its uploader or the principal. The command function signs a 60-second path.
+   */
+  'notices.fileUrl': {
+    slice: 'messaging', serverOnly: true, readOnly: true,
+    authorize: (p, db, [id]) => { mayReadNoticeFile(p, db, id); },
+    run: (db, [id]) => { const f = byId(db.noticeFiles, id); return { fileId: f.id, path: f.path, name: f.name, mime: f.mime }; },
+  },
+  /** System (command function, cron): staged files left over 24 hours; objects of removed files are gone. */
+  'notices.expireStagedFiles': { slice: 'messaging', serverOnly: true, authorize: p => allow(p, 'system'), run: (db, args, ctx) => NF.expireStagedFiles(db, ctx) },
+  'notices.finishFileDelete': {
+    slice: 'messaging', authorize: p => allow(p, 'system'),
+    run: (db, [a = {}], ctx) => NF.finishNoticeFileDelete(db, Array.isArray(a?.fileIds) ? a.fileIds : [], ctx),
+  },
+  /**
+   * runningLate({routeId, kind:'late10'|'late20'|'late30'|'breakdown'}) — the route's driver or the principal: an important
+   * notice to the families of the children on that route (push to those who agreed).
+   */
+  'transport.runningLate': {
+    slice: 'messaging',
+    authorize: (p, db, [a = {}]) => { allow(p, 'admin', 'driver'); mustRoute(p, db, a?.routeId); },
+    run(db, [a = {}], ctx) {
+      const r = byId(db.routes, a.routeId);
+      const text = LATE_TEXT[a.kind];
+      if (!text) fail('VALIDATION', `Unknown message: ${a.kind}`);
+      return M.sendNotice(db, { title: `${r.name}: ${text.title}`, body: text.body, audience: { scope: 'route', routeIds: [r.id] }, requiresAck: false, important: true }, ctx);
+    },
   },
   'notices.markRead': { slice: 'messaging', authorize: p => allow(p, 'parent'), run: (db, [noticeId], ctx, p) => M.markNoticeRead(db, noticeId, p.guardianId, ctx) },
   'notices.acknowledge': { slice: 'messaging', authorize: p => allow(p, 'parent'), run: (db, [noticeId], ctx, p) => M.acknowledgeNotice(db, noticeId, p.guardianId, ctx) },
@@ -1247,6 +1316,34 @@ function takerOf(p, db, id) {
   if (p.role !== 'admin' && ph.takenBy !== p.staffId) deny('Only the person who took the photo can finish its upload');
   return ph;
 }
+const LATE_TEXT = {
+  late10: { title: 'bus running about 10 minutes late', body: 'The school bus is running about 10 minutes late today. Thank you for your patience.' },
+  late20: { title: 'bus running about 20 minutes late', body: 'The school bus is running about 20 minutes late today. Thank you for your patience.' },
+  late30: { title: 'bus running about 30 minutes late', body: 'The school bus is running about 30 minutes late or more today. Thank you for your patience.' },
+  breakdown: { title: 'bus breakdown', body: 'The school bus has broken down. The children are safe with the staff; the school will call you about the arrangements.' },
+};
+export const RUNNING_LATE_KINDS = Object.keys(LATE_TEXT);
+/** May persona p have the bytes of this notice file? (staged: uploader/principal; attached: who reads the notice) */
+function mayReadNoticeFile(p, db, id) {
+  allow(p, 'admin', 'accountant', 'teacher', 'parent');
+  const f = byId(db.noticeFiles || [], id);
+  if (!f || f.status === 'removed') fail('NOT_FOUND', 'File not found');
+  if (f.status === 'staged') { if (p.role !== 'admin' && f.uploadedBy !== p.staffId) deny('Not your file'); return f; }
+  const n = byId(db.notices, f.noticeId);
+  if (!n) fail('NOT_FOUND', 'Notice not found');
+  if (STAFF_SEES_ALL.includes(p.role)) return f;
+  if (p.role === 'teacher') {
+    const ps = M.audiencePrograms(db, n.audience);
+    const mine = ps !== null && (ps.length === 0 || ps.some(x => p.programIds.includes(x)) || n.createdBy === p.staffId);
+    if (!mine) deny('Not your notice');
+    return f;
+  }
+  const r = db.noticeReceipts.find(x => x.noticeId === n.id && x.guardianId === p.guardianId && (x.studentIds || []).some(sid => p.studentIds.includes(sid)));
+  if (!r) deny('This notice was not sent to you');
+  if (n.withdrawnAt) fail('NOT_FOUND', 'This notice was withdrawn');
+  return f;
+}
+
 function careRow(db, collection, id, label) {
   const r = byId(db[collection] || [], id);
   if (!r) fail('NOT_FOUND', `${label} not found`);
@@ -1262,7 +1359,8 @@ const CARE = ['leaveRequests', 'pickupContacts', 'pickups'];
 export const SLICES = {
   ledger: { reads: [...BASE, 'calendarEvents', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'importRows', 'erasureRequests'],
     writes: ['school', 'counters', 'academicYears', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests'] },
-  messaging: { reads: [...BASE, 'notices', 'noticeReceipts', 'threads', 'messages'], writes: ['notices', 'noticeReceipts', 'threads', 'messages'] },
+  // noticeFiles (wave 2): attachments, staged by their uploader and bound when a notice is sent or corrected
+  messaging: { reads: [...BASE, 'notices', 'noticeReceipts', 'threads', 'messages', 'noticeFiles'], writes: ['notices', 'noticeReceipts', 'threads', 'messages', 'noticeFiles'] },
   calendar: { reads: [...BASE, 'calendarEvents'], writes: ['calendarEvents'] },
   // pickupContacts: a drop records who received the child (someone on the family's list)
   transport: { reads: [...BASE, 'calendarEvents', 'trips', 'pickupContacts'], writes: ['trips'] },
@@ -1273,7 +1371,7 @@ export const SLICES = {
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
   export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
     'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents',
-    'dataRequests', ...LEARNING, ...CARE, 'evaluations'], writes: [] },
+    'dataRequests', ...LEARNING, ...CARE, 'evaluations', 'noticeFiles'], writes: [] },
   // erasure scrubs the absence reasons the guardian wrote (leaveRequests)
   erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'dataRequests', 'leaveRequests'],
     writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows', 'dataRequests', 'leaveRequests'] },

@@ -5,8 +5,8 @@
 export const SCHEMA_VERSION = 5; // v2 (Phase 3): learning collections, consents in the document, students.leftOn, school.retention
 // v3 (administration): dataRequests (the data-rights desk), school.announcement
 // v4 (care): leaveRequests, pickupContacts, pickups
-// v5 (wave 2): evaluations (annual Progress Report), signatures; students.level/levelAy; school settings (reportFooter,
-//     directorName, privacyContact, officeHours, upi)
+// v5 (wave 2): evaluations (annual Progress Report), signatures, noticeFiles; students.level/levelAy, healthAlerts; school
+//     settings (reportFooter, directorName, privacyContact, officeHours, upi)
 
 /**
  * @typedef {{graceDays:number, mode:'flat'|'perDay', amountPaise:number, capPaise:number|null, shiftDueToWorkingDay:boolean}} LateFeeRule
@@ -120,6 +120,12 @@ export const SCHEMA_VERSION = 5; // v2 (Phase 3): learning collections, consents
  *   width:number|null, height:number|null, status:'ready'|'removed', uploadedBy:string, uploadedAt:string, removedBy:string|null,
  *   removedAt:string|null, objectDeletedAt:string|null, demo?:{svg:string}}} Signature
  *   Metadata only: the image is in the private bucket `signatures` (real app) or IndexedDB / a drawn SVG (demo).
+ * @typedef {{id:string, noticeId:string|null, name:string, mime:string, bytes:number|null, sha256:string|null, width:number|null, height:number|null,
+ *   path:string, status:'staged'|'attached'|'removed', uploadedBy:string, uploadedAt:string, attachedAt:string|null, removedAt:string|null,
+ *   objectDeletedAt:string|null, demo?:{illustration:string}}} NoticeFile
+ *   A notice attachment (PDF/JPEG/PNG, ≤ 2 MB, at most 3 per notice): metadata only; bytes in the private bucket `notice-files`.
+ *   Notices (v5) may also carry history [{title, body, at, by, reason}], correctedAt/By, withdrawnAt/By, withdrawReason, and the
+ *   audience {scope:'route', routeIds}.
  * @typedef {{id:string, ts:string, actorRole:string, actorId:string, entity:string, entityId:string, action:string, summary:string}} AuditRow
  * @typedef {{invoice:Object<string,number>, receipt:Object<string,number>, refund:Object<string,number>}} Counters
  * @typedef {{schemaVersion:number, rev:number, school:School, academicYears:AcademicYear[], programs:Program[],
@@ -129,7 +135,7 @@ export const SCHEMA_VERSION = 5; // v2 (Phase 3): learning collections, consents
  *   credits:Credit[], attendance:AttendanceRecord[], diaryEntries:DiaryEntry[], auditLog:AuditRow[], counters:Counters,
  *   presentations:Presentation[], observations:Observation[], photos:Photo[], progressEvents:ProgressEvent[], reports:Report[],
  *   consents:Consent[], dataRequests:DataRequest[], leaveRequests:LeaveRequest[], pickupContacts:PickupContact[], pickups:Pickup[],
- *   evaluations:Evaluation[], signatures:Signature[]}} Db
+ *   evaluations:Evaluation[], signatures:Signature[], noticeFiles:NoticeFile[]}} Db
  * @typedef {{role:'admin'|'teacher'|'accountant'|'driver'|'parent'|'system', id:string}} Actor
  * @typedef {{actor:Actor, now:string, today:string}} Ctx  now = ISO timestamp, today = local 'YYYY-MM-DD'
  */
@@ -140,10 +146,10 @@ export const COLLECTIONS = [
   'threads', 'messages', 'calendarEvents', 'routes', 'trips', 'feeHeads', 'feeStructures',
   'invoices', 'payments', 'refunds', 'credits', 'attendance', 'diaryEntries', 'auditLog',
   'presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'dataRequests',
-  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'signatures',
+  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'signatures', 'noticeFiles',
 ];
 /** Collections added by schema v5 (migrate() gives an older document empty lists). */
-export const V5_COLLECTIONS = ['evaluations', 'signatures'];
+export const V5_COLLECTIONS = ['evaluations', 'signatures', 'noticeFiles'];
 /** School settings added by schema v5 (null until the principal sets them). */
 export const V5_SCHOOL_KEYS = ['reportFooter', 'directorName', 'privacyContact', 'officeHours', 'upi'];
 

@@ -62,7 +62,7 @@ test('rubrics: the school\'s four forms, word for word (40 / 52 / 58 / 58 items)
   if (json) assert.deepEqual(JSON.parse(JSON.stringify(RUBRICS)), JSON.parse(readFileSync(json, 'utf8')));
 });
 
-test('schema v5: migrate v4 → v5 adds evaluations and signatures empty and the school settings null; nothing else changes', () => {
+test('schema v5: migrate v4 → v5 adds the v5 collections (evaluations, signatures, notice files, …) empty and the school settings null; nothing else changes', () => {
   assert.equal(SCHEMA_VERSION, 5);
   for (const c of V5_COLLECTIONS) assert.ok(COLLECTIONS.includes(c));
   const v4 = seed();
@@ -71,8 +71,8 @@ test('schema v5: migrate v4 → v5 adds evaluations and signatures empty and the
   v4.schemaVersion = 4;
   const before = JSON.stringify({ ...v4, schemaVersion: 5 });
   const m = migrate(structuredClone(v4));
-  const { evaluations, signatures, ...rest } = m;
-  assert.deepEqual([evaluations, signatures], [[], []]);
+  const rest = { ...m };
+  for (const c of V5_COLLECTIONS) { assert.deepEqual(rest[c], [], c); delete rest[c]; }
   for (const k of V5_SCHOOL_KEYS) { assert.equal(rest.school[k], null, k); delete rest.school[k]; }
   assert.equal(JSON.stringify(rest), before);
   assert.deepEqual(validateDb(seed()).filter(v => v.severity !== 'warning'), [], 'the v5 seed is valid');
@@ -431,4 +431,88 @@ test('#21 diary.removeMany and #29 progress.recordMany: all or none', async () =
   await assert.rejects(api.progress.recordMany({ entries: [{ studentId: 'stu-02', presentationId: pres.id, status: 'introduced', date: TODAY }] }), code('NOT_ALLOWED'));
   assert.equal(COMMANDS['diary.removeMany'].load([ids]).diaryEntryIds.length, 3);
   assert.deepEqual(COMMANDS['progress.recordMany'].load([{ entries }]).learningStudentIds, ['stu-06', 'stu-09']);
+});
+
+test('#12 #84 notice attachments: staged by the uploader, bound when sent (≤ 3), parents read them until the notice is withdrawn; correction keeps history', async () => {
+  const api = await mkApi();
+  const pdf = new Blob([new TextEncoder().encode('%PDF-1.4\nfake circular\n%%EOF')], { type: 'application/pdf' });
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.notices.uploadFile(new Blob(['<svg/>'], { type: 'image/svg+xml' }), 'x.svg'), /PDF, JPG, PNG/);
+  const f1 = await api.notices.uploadFile(pdf, 'C:\\fake\\Circular.pdf');
+  assert.deepEqual([f1.name, f1.mime, f1.status, f1.noticeId, f1.path], ['Circular.pdf', 'application/pdf', 'staged', null, undefined]);
+  const files = [f1];
+  for (let i = 0; i < 3; i++) files.push(await api.notices.uploadFile(new Blob([PNG], { type: 'image/png' }), `poster-${i}.png`));
+  const audience = { scope: 'program', programIds: ['prog-primary-a'] };
+  await assert.rejects(api.notices.send({ title: 'Fake circular', body: 'Fake body', audience, attachmentIds: files.map(f => f.id) }), /at most 3/);
+  const n = await api.notices.send({ title: 'Fake circular', body: 'Fake body', audience, attachmentIds: files.slice(0, 2).map(f => f.id) });
+  assert.deepEqual(n.attachments.map(a => a.name), ['Circular.pdf', 'poster-0.png']);
+  api.session.set('persona-stf-teacher-pb');
+  await assert.rejects(api.notices.send({ title: 'x', body: 'x', audience: { scope: 'program', programIds: ['prog-primary-b'] }, attachmentIds: [files[2].id] }), code('NOT_ALLOWED'), "another person's file");
+  await assert.rejects(api.notices.fileBlob(files[2].id), code('NOT_ALLOWED'), "someone else's staged file");
+  api.session.set('persona-grd-01'); // Neel is in Primary A
+  const mine = (await api.notices.list()).find(x => x.id === n.id);
+  assert.deepEqual(mine.attachments.map(a => a.name), ['Circular.pdf', 'poster-0.png']);
+  assert.equal((await api.notices.fileBlob(f1.id)).size, f1.bytes);
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.notices.correct(n.id, { body: 'Fixed body' }), /reason/);
+  const c = await api.notices.correct(n.id, { body: 'Fixed body', reason: 'Fake: date was wrong', attachmentIds: [f1.id, files[2].id] });
+  assert.deepEqual([c.body, c.history.length, c.history[0].body, c.history[0].reason], ['Fixed body', 1, 'Fake body', 'Fake: date was wrong']);
+  assert.deepEqual(c.attachments.map(a => a.name), ['Circular.pdf', 'poster-1.png']);
+  assert.deepEqual(c.filesRemoved, [files[1].id]);
+  await api.notices.withdraw(n.id, 'Fake: sent by mistake');
+  await assert.rejects(api.notices.withdraw(n.id, 'again'), /already withdrawn/);
+  await assert.rejects(api.notices.correct(n.id, { body: 'x', reason: 'x' }), /withdrawn/);
+  api.session.set('persona-grd-01');
+  const w = (await api.notices.list()).find(x => x.id === n.id);
+  assert.ok(w.withdrawnAt && w.withdrawReason, 'parents see it withdrawn');
+  await assert.rejects(api.notices.fileBlob(f1.id), /withdrawn/);
+  api.session.set('persona-stf-teacher-pa');
+  await api.notices.discardFile(files[3].id);
+  assert.equal(api.getDb().noticeFiles.find(x => x.id === files[3].id).status, 'removed');
+  assert.ok(api.getDb().noticeFiles.find(x => x.id === files[3].id).objectDeletedAt);
+  // the seed's demo attachment is a drawing
+  api.session.set('persona-grd-02');
+  const ptm = (await api.notices.list()).find(x => x.attachments.some(a => a.id === 'nfl-demo-1'));
+  assert.ok(ptm, 'the PTM notice carries the demo file');
+  assert.equal((await api.notices.fileBlob('nfl-demo-1')).type, 'image/svg+xml');
+});
+
+test('#86 who has not read a notice: per family, with phone numbers to call; a teacher sees their own children\'s families only', async () => {
+  const api = await mkApi();
+  api.session.set('persona-stf-principal');
+  const n = (await api.notices.list()).find(x => x.title.startsWith('Seasonal flu advisory'));
+  const r = await api.notices.unread(n.id);
+  assert.equal(r.counts.recipients, n.recipientCount);
+  assert.equal(r.counts.read, n.readCount);
+  assert.equal(r.notRead.length, n.recipientCount - n.readCount);
+  assert.ok(r.notRead.every(x => /^\+91-90000-00\d{3}$/.test(x.phone) && x.studentNames.length));
+  assert.equal(r.notAcknowledged.length, n.recipientCount - n.ackCount);
+  api.session.set('persona-stf-teacher-pa');
+  const t = await api.notices.unread(n.id);
+  const pa = new Set(api.getDb().students.filter(s => s.programId === 'prog-primary-a').map(s => s.id));
+  assert.ok(t.notRead.every(x => x.studentIds.every(id => pa.has(id))));
+  api.session.set('persona-stf-accountant');
+  await assert.rejects(api.notices.unread(n.id), code('NOT_ALLOWED'));
+});
+
+test('#85 bus-route notices: the principal or the route\'s driver; "running late" reaches that route\'s families only; teachers neither send nor list them', async () => {
+  const api = await mkApi();
+  api.session.set('persona-stf-driver-1');
+  assert.deepEqual(await api.transport.runningLateKinds(), ['late10', 'late20', 'late30', 'breakdown']);
+  await assert.rejects(api.transport.runningLate({ routeId: 'route-2', kind: 'late10' }), code('NOT_ALLOWED'));
+  await assert.rejects(api.transport.runningLate({ routeId: 'route-1', kind: 'late99' }), /Unknown message/);
+  const n = await api.transport.runningLate({ routeId: 'route-1', kind: 'late20' });
+  assert.deepEqual([n.audience, n.important], [{ scope: 'route', routeIds: ['route-1'] }, true]);
+  const db = api.getDb();
+  const route1 = new Set(db.students.filter(s => s.routeId === 'route-1' && s.status === 'active').map(s => s.id));
+  const recs = db.noticeReceipts.filter(r => r.noticeId === n.id);
+  assert.ok(recs.length > 0 && recs.every(r => r.studentIds.every(id => route1.has(id))));
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.notices.send({ title: 'x', body: 'x', audience: { scope: 'route', routeIds: ['route-1'] } }), code('NOT_ALLOWED'));
+  assert.ok(!(await api.notices.list()).some(x => x.id === n.id), 'not in a teacher\'s list');
+  await assert.rejects(api.notices.withdraw(n.id, 'x'), code('NOT_ALLOWED'));
+  api.session.set('persona-stf-principal');
+  const p = await api.notices.send({ title: 'Fake route notice', body: 'Fake', audience: { scope: 'route', routeIds: ['route-2'] } });
+  assert.ok(api.getDb().noticeReceipts.filter(r => r.noticeId === p.id).length > 0);
+  assert.deepEqual(validateDb(api.getDb()).filter(v => v.severity !== 'warning'), []);
 });

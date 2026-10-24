@@ -71,6 +71,7 @@ const ENUMS = {
   pickupContacts: ['active', 'removed'],
   evaluations: ['draft', 'submitted', 'published'],
   signatures: ['ready', 'removed'],
+  noticeFiles: ['staged', 'attached', 'removed'],
 };
 const LEVELS = ['toddlers', 'mont1', 'mont2', 'mont3'];
 const AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
@@ -168,6 +169,7 @@ function checks(db, add, v) {
     const a = n.audience || {};
     if (a.scope === 'program') for (const p of a.programIds || []) ref('notice', n.id, 'audience.programIds', 'programs', p);
     else if (a.scope === 'students') for (const s of a.studentIds || []) ref('notice', n.id, 'audience.studentIds', 'students', s);
+    else if (a.scope === 'route') for (const r of a.routeIds || []) ref('notice', n.id, 'audience.routeIds', 'routes', r);
     else if (a.scope !== 'school') add('BAD_AUDIENCE', 'notice', n.id, 'unknown audience scope');
   }
   const recKeys = new Set();
@@ -429,6 +431,11 @@ function checks(db, add, v) {
     const k = `${x.ownerKind}|${x.staffId ?? ''}`;
     if (x.status === 'ready') { if (liveSig.has(k)) add('DUPLICATE_SIGNATURE', 'signature', x.id, 'more than one current signature for one person'); liveSig.add(k); }
   }
+  for (const f of db.noticeFiles) {
+    if (f.noticeId) ref('noticeFile', f.id, 'noticeId', 'notices', f.noticeId);
+    if (f.status === 'attached' && !f.noticeId) add('MALFORMED', 'noticeFile', f.id, 'an attached file names no notice');
+  }
+  for (const n of db.notices) if (db.noticeFiles.filter(f => f.noticeId === n.id && f.status === 'attached').length > 3) add('TOO_MANY_FILES', 'notice', n.id, 'more than three attachments');
   const consentKeys = new Set();
   for (const c of db.consents) {
     ref('consent', c.id, 'guardianId', 'guardians', c.guardianId);

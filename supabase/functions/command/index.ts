@@ -18,6 +18,8 @@ import { signUpload, signView, verifyUpload, cleanupDeleting, deleteObjects, del
 import { COMMANDS } from '../_shared/domain/commands.js';
 import { decodeUpload, checkUpload, newPath, putObject, removeObjects, signDownload } from '../_shared/files.ts';
 import { cleanupSignatures } from '../_shared/signatures.ts';
+import { cleanupNoticeFiles } from '../_shared/notice-files.ts';
+import { NOTICE_FILE_BUCKET, NOTICE_FILE_MIMES, NOTICE_FILE_MAX_BYTES, NOTICE_FILE_VIEW_TTL_S } from '../_shared/domain/notice-files.js';
 import { SIGNATURE_BUCKET, SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, SIGNATURE_MAX_EDGE, SIGNATURE_VIEW_TTL_S } from '../_shared/domain/signatures.js';
 
 // Commands whose file travels in the request (body.file = {base64}): authorized by their check twin first, then the bytes
@@ -25,6 +27,7 @@ import { SIGNATURE_BUCKET, SIGNATURE_MIMES, SIGNATURE_MAX_BYTES, SIGNATURE_MAX_E
 // replayed request id deletes the stored object again.
 const FILE_COMMANDS: Record<string, { check: string; bucket: string; prefix: string; rules: { mimes: string[]; maxBytes: number; maxEdge?: number } }> = {
   'signatures.upload': { check: 'signatures.uploadCheck', bucket: SIGNATURE_BUCKET, prefix: 'sig', rules: { mimes: SIGNATURE_MIMES, maxBytes: SIGNATURE_MAX_BYTES, maxEdge: SIGNATURE_MAX_EDGE } },
+  'notices.uploadFile': { check: 'notices.uploadFileCheck', bucket: NOTICE_FILE_BUCKET, prefix: 'ntc', rules: { mimes: NOTICE_FILE_MIMES, maxBytes: NOTICE_FILE_MAX_BYTES } },
 };
 
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L
@@ -103,6 +106,11 @@ serve(async (req) => {
     for (const x of run.result || []) { const { path, ...rest } = x; out.push({ ...rest, ...(await signDownload(SIGNATURE_BUCKET, path, SIGNATURE_VIEW_TTL_S)) }); }
     return { result: out };
   }
+  const droppedFiles = name === 'notices.discardFile' ? [run.result?.removed] : name === 'notices.correct' ? (run.result?.filesRemoved || []) : [];
+  if (droppedFiles.filter(Boolean).length) {
+    try { const c = await cleanupNoticeFiles(droppedFiles.filter(Boolean)); if (c.errors.length) console.error(`${name}: file deletion failed; cron retries`); } catch (e: any) { console.error(`${name}: file deletion failed; cron retries:`, e?.message); }
+  }
+  if (name === 'notices.fileUrl') return { result: { fileId: run.result.fileId, name: run.result.name, mime: run.result.mime, ...(await signDownload(NOTICE_FILE_BUCKET, run.result.path, NOTICE_FILE_VIEW_TTL_S)) } };
   if (name === 'signatures.viewUrl') return { result: { signatureId: run.result.signatureId, ...(await signDownload(SIGNATURE_BUCKET, run.result.path, SIGNATURE_VIEW_TTL_S)) } };
   if (name === 'photos.register' && !run.replayed && run.result && run.result.path) {
     try { return { result: { ...run.result, upload: await signUpload(run.result.path) } }; } catch (e: any) {

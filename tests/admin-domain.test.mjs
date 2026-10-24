@@ -276,7 +276,8 @@ test('schema v3: dataRequests collection and school.announcement; migrate v2 →
   assert.equal(m.schemaVersion, 5);
   assert.deepEqual(m.dataRequests, []);
   assert.equal(m.school.announcement, null);
-  const { dataRequests, leaveRequests, pickupContacts, pickups, evaluations, signatures, ...rest } = m; void dataRequests; void leaveRequests; void pickupContacts; void pickups; void evaluations; void signatures;
+  const { dataRequests, leaveRequests, pickupContacts, pickups, ...rest } = m; void dataRequests; void leaveRequests; void pickupContacts; void pickups;
+  for (const c of V5_COLLECTIONS) delete rest[c];
   const { announcement, reportFooter, directorName, privacyContact, officeHours, upi, ...school } = rest.school; void announcement; void reportFooter; void directorName; void privacyContact; void officeHours; void upi;
   assert.equal(JSON.stringify({ ...rest, school }), before, 'nothing else changed');
   assert.deepEqual(validateDb(m).filter(v => v.severity !== 'warning'), []);
