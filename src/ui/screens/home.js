@@ -81,7 +81,7 @@ async function parentHome(ctx) {
       const dates = (st) => db.attendance.filter((a) => a.studentId === k.id && a.status === st && a.date >= from && a.date <= today).map((a) => a.date).sort().map(fdate);
       const parts = [['Absent', 'absent'], ['Late', 'late'], ['Leave', 'leave']].map(([l, st]) => [l, dates(st)]).filter(([, d]) => d.length).map(([l, d]) => `${l} ${d.join(', ')}`);
       const present = s.present + s.late; // a late child was at school
-      month = `<small><strong>This month: present ${esc(present)} of ${esc(s.workingDays)} school day${s.workingDays === 1 ? '' : 's'}</strong>${s.unmarked ? ` (${esc(s.unmarked)} not marked)` : ''}${parts.length ? `<br>${esc(parts.join(' · '))}` : ''}</small>`;
+      month = `<div><small><strong>This month: present ${esc(present)} of ${esc(s.workingDays)} school day${s.workingDays === 1 ? '' : 's'}</strong>${s.unmarked ? ` (${esc(s.unmarked)} not marked)` : ''}${parts.length ? `<br>${esc(parts.join(' · '))}` : ''}</small></div>`;
     } catch { /* not shown */ }
     cards.push(`<div class="card stack">
       <div class="row"><span class="avatar">${esc((k.firstName[0] || '') + (k.lastName[0] || ''))}</span><div class="grow"><div class="item-title">${esc(fullName(k))}</div><small>${esc(progs.get(k.programId)?.name || DASH)}</small></div>${attBadge}</div>
