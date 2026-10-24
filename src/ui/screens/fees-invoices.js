@@ -155,13 +155,16 @@ async function parentList(ctx) {
     if (scope.length) { try { link = await api.fees.upiLink(k.id, scope); } catch { /* no UPI option */ } }
     try { claims = await api.fees.claims({ studentId: k.id }); } catch { /* not shown */ }
     upi.set(k.id, { link, scope });
+    // the online amount is the invoice balance, which a reported UPI payment does not reduce until the office confirms it
+    const waiting = claims.some((x) => x.status === 'pending');
     // nothing left to pay once reported payments cover the balance (link null): the reports below say they are being checked
     const upiBtns = link?.link ? `<button class="btn" data-upi="${esc(k.id)}">Pay ${money(link.amountPaise)} by UPI app</button><button class="btn ghost" data-claim="${esc(k.id)}">I paid by UPI</button>` : '';
     blocks.push(`<div class="card stack"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3><div class="row">${bal ? badge(`Due ${money(bal)}`, 'bad') : ''}${up ? badge(`Upcoming ${money(up)}`, 'info') : ''}${open.length ? '' : badge('All paid', 'ok')}<a class="btn sm" href="#/fees/student/${esc(k.id)}">Payments &amp; receipts</a></div></div>
       ${inv.length ? `<ul class="list">${inv.map((i) => `<li><div class="row between"><div><a href="#/fees/invoice/${esc(i.id)}" class="item-title">${esc(i.installmentName)}</a> <small>${esc(i.number)} &middot; due ${fdate(i.dueDate)}${isOpen(i) && dueHint(i.dueDate, today) ? ` <strong>(${esc(dueHint(i.dueDate, today))})</strong>` : ''}</small></div>
         <div class="row"><span class="num">${isOpen(i) ? money(i.balancePaise) : money(i.totalPaise)}</span>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</div></div></li>`).join('')}</ul>` : empty('No invoices yet')}
       ${claimList(claims)}
-      <div class="row">${bal ? `<button class="btn primary" data-pay="${esc(k.id)}" data-scope="now">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>`
+      <div class="row">${waiting ? '<small class="muted">Online payment is paused until the school has checked your UPI payment, so nothing is paid twice.</small>'
+        : bal ? `<button class="btn primary" data-pay="${esc(k.id)}" data-scope="now">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>`
         : open.length ? `<button class="btn" data-pay="${esc(k.id)}" data-scope="all">Pay ${money(up)} early${REAL ? ' online' : ' (mock)'}</button>` : ''}${upiBtns}</div></div>`);
   }
   ctx.el.innerHTML = `${pageHead('Fees', '', `<button class="btn" id="fi-ask">Ask the office about fees</button>${REAL ? '<a class="btn" href="#/reminders">Reminders</a>' : ''}`)}${pending}<div class="stack">${blocks.join('') || empty('No children linked to this account')}</div>

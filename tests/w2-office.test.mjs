@@ -237,3 +237,17 @@ test('#88 the meetings list and the home page link to the meeting; an unknown me
   assert.match(await draw(api, PARENT, Ptm), /Times not published yet/);
   assert.match(await draw(api, PARENT, Ptm, { params: { id: 'evt-nope' } }), /Meeting not found/);
 });
+
+test('#81 while a UPI payment the parent reported waits for the office, that child has no "Pay online" button (no paying twice)', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  // the seed may already hold a waiting report for stu-02; the point is the state while one is waiting
+  const pend = (await api.fees.claims({ studentId: 'stu-02' })).filter((c) => c.status === 'pending');
+  if (!pend.length) {
+    const inv = (await api.fees.invoices({ studentId: 'stu-02' })).find((i) => i.balancePaise > 0);
+    await api.fees.claimUpi({ studentId: 'stu-02', invoiceIds: [inv.id], amountPaise: inv.balancePaise, reference: 'UTR987654321', paidOn: todayISO() });
+  }
+  const html = await draw(api, PARENT, Fees);
+  assert.doesNotMatch(html, /data-pay="stu-02"/, 'no online payment for the child while a UPI report waits');
+  assert.match(html, /Online payment is paused until the school has checked your UPI payment/);
+});
