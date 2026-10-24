@@ -245,7 +245,8 @@ export const COMMANDS = {
   'transport.endTrip': {
     slice: 'transport', load: ([tripId]) => ({ tripId }),
     authorize: (p, db, [tripId]) => { allow(p, 'admin', 'driver'); driverTrip(p, db, tripId); },
-    run: (db, [tripId], ctx) => tripOut(db, T.endTrip(db, tripId, ctx)),
+    // opts.busChecked: the driver ticked "no child is left on board" (required on a drop trip)
+    run: (db, [tripId, opts], ctx) => tripOut(db, T.endTrip(db, tripId, ctx, { busChecked: opts?.busChecked === true })),
   },
   'transport.recordPosition': {
     slice: 'transport', load: ([tripId]) => ({ tripId }),
@@ -337,7 +338,7 @@ export const COMMANDS = {
     slice: 'transport', serverOnly: true, load: ([tripId]) => ({ tripId }),
     authorize: p => allow(p, 'system'),
     run(db, [tripId, reason], ctx) {
-      const t = T.endTrip(db, tripId, ctx);
+      const t = T.endTrip(db, tripId, ctx, { auto: true });
       t.autoEnded = String(reason || 'ended automatically');
       return tripOut(db, t);
     },

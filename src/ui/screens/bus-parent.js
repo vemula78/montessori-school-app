@@ -6,7 +6,7 @@ import { isRealMode } from '../mode.js';
 
 const nowISO = () => new Date().toISOString();
 // parentView event kinds are trip|stop|child; colour the dot from the wording as well
-const timelineClass = (e) => { const t = String(e.text).toLowerCase(); return t.includes('arrived') ? 'arrived' : t.includes('nearing') ? 'nearing' : t.includes('boarded') || t.includes('dropped') ? 'boarded' : t.includes('absent') ? 'absent' : ''; };
+const timelineClass = (e) => { const t = String(e.text).toLowerCase(); return e.kind === 'correction' ? '' : t.includes('arrived') ? 'arrived' : t.includes('nearing') ? 'nearing' : t.includes('boarded') || t.includes('dropped') ? 'boarded' : t.includes('absent') ? 'absent' : ''; };
 
 export async function render(ctx) {
   const { api, persona, query } = ctx;

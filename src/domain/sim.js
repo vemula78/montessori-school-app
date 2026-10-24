@@ -1,7 +1,7 @@
 // Simulated trip plan (pure). The UI drives timing; each point is fed to recordPosition.
-// Visits stops in seq order, dwells at each, ends at the last stop. Deterministic: no jitter.
+// Visits stops in the trip direction's order (stopsForDirection), dwells at each, ends at the last stop. Deterministic: no jitter.
 
-import { haversineMeters, stopsInOrder } from './transport.js';
+import { haversineMeters, stopsForDirection } from './transport.js';
 
 export const DWELL_TICKS = 3;
 export const SIM_ACCURACY_M = 8;
@@ -26,10 +26,10 @@ export function pathFollowsStops(path, stops) {
   return true;
 }
 
-/** Use route.path only if it follows the stops in order; otherwise straight lines between stops. */
-function waypoints(route) {
-  const stops = stopsInOrder(route);
-  const path = route.path;
+/** Use route.path (or, for a drop run the other way round, the path reversed) only if it follows the stops in order; otherwise straight lines between stops. */
+function waypoints(route, direction) {
+  const stops = stopsForDirection(route, direction);
+  const path = route.path && !pathFollowsStops(route.path, stops) ? route.path.slice().reverse() : route.path;
   if (pathFollowsStops(path, stops)) {
     return path.map(p => ({ lat: p.lat, lng: p.lng, stop: stops.some(s => haversineMeters(p, s) <= PATH_SNAP_M) }));
   }
@@ -37,11 +37,11 @@ function waypoints(route) {
 }
 
 /** @returns {{lat:number, lng:number, accuracy:number, dtMs:number}[]} */
-export function simulationPlan(route, { speedKmph = 20, tickMs = 1000 } = {}) {
+export function simulationPlan(route, { speedKmph = 20, tickMs = 1000, direction = 'pickup' } = {}) {
   if (!route || !route.stops || route.stops.length === 0) return [];
   if (!(speedKmph > 0) || !(tickMs > 0)) throw new RangeError('speedKmph and tickMs must be positive');
   const step = (speedKmph * 1000 / 3600) * (tickMs / 1000);
-  const wps = waypoints(route);
+  const wps = waypoints(route, direction);
   const out = [];
   const push = (lat, lng) => out.push({ lat, lng, accuracy: SIM_ACCURACY_M, dtMs: out.length ? tickMs : 0 });
   const dwell = wp => { for (let i = 0; i < DWELL_TICKS; i++) push(wp.lat, wp.lng); };

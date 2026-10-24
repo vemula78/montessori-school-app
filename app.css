@@ -292,6 +292,9 @@ select { appearance: auto; }
 .banner.warn { background: var(--mustard-soft); color: var(--mustard-ink); border-color: var(--mustard); }
 .banner.bad { background: var(--berry-soft); color: var(--berry); border-color: var(--berry); }
 .banner.ok { background: var(--sage-soft); color: var(--sage-ink); }
+/* the driver's "Tracking is OFF" alarm: white on berry, as .btn.danger */
+.banner.alarm { background: var(--berry); color: #fff; border-color: var(--berry); font-size: 1.05rem; }
+.banner.alarm .btn { color: var(--berry); }
 .banner .row { gap: 8px; }
 .banner .btn { background: var(--paper); }
 .toast-host { position: fixed; left: 0; right: 0; bottom: calc(var(--tab-h) + 12px); z-index: 90; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; padding: 0 14px; }

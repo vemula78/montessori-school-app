@@ -138,7 +138,8 @@ test('trips older than 30 days keep events but drop positions', () => {
   const old = T.startTrip(db, { routeId: 'R1', direction: 'drop', simulated: true }, { ...ctx(), today: '2026-08-01' });
   T.recordPosition(db, old.id, { lat: 12.97, lng: 77.75, accuracy: 5, ts: iso(BASE_MS) });
   old.stopEvents.push({ stopId: 'S1', type: 'arrived', ts: iso(BASE_MS) });
-  T.endTrip(db, old.id, ctx());
+  T.markChild(db, old.id, { studentId: 'K1', type: 'dropped' }, ctx()); // a drop trip ends only with every child marked and the bus checked (#64)
+  T.endTrip(db, old.id, ctx(), { busChecked: true });
   T.pruneOldTrips(db, '2026-10-02');
   assert.equal(old.positions.length, 0);
   assert.equal(old.stopEvents.length, 1);

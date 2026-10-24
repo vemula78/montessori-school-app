@@ -38,10 +38,11 @@ export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents
  *   transportFeePaise is charged once per fee installment for a student on the route.
  * @typedef {{lat:number, lng:number, accuracy:number, ts:string}} Fix
  * @typedef {{stopId:string, type:'nearing'|'arrived'|'departed', ts:string}} StopEvent
- * @typedef {{studentId:string, stopId:string, type:'boarded'|'dropped'|'absent', ts:string, by:string}} ChildEvent
+ * @typedef {{studentId:string, stopId:string, type:'boarded'|'dropped'|'absent'|'corrected', ts:string, by:string,
+ *   corrects?:string, correctsTs?:string}} ChildEvent   'corrected' undoes the child's latest standing mark
  * @typedef {{id:string, routeId:string, direction:'pickup'|'drop', date:string, driverId:string, simulated:boolean,
  *   status:'active'|'ended', startedAt:string, endedAt:string|null, positions:Fix[], stopEvents:StopEvent[],
- *   childEvents:ChildEvent[], tracker?:Object}} Trip
+ *   childEvents:ChildEvent[], tracker?:Object, busCheckedAt?:string, busCheckedBy?:string, autoEnded?:string}} Trip
  *   tracker = per-stop hysteresis state used by event derivation (domain/transport.js).
  * @typedef {{id:string, name:string, kind:'tuition'|'transport'|'materials'|'admission'|'lateFee'}} FeeHead
  * @typedef {{headId:string, amountPaise:number}} StructureLine
