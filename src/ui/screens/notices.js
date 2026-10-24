@@ -1,5 +1,5 @@
 // Notice board: staff compose + track recipients; parents read + acknowledge.
-import { esc, icon, badge, empty, pageHead, fdatetime, fullName, indexBy, formModal, attempt, toast, DASH } from '../components.js';
+import { esc, icon, badge, empty, pageHead, fdatetime, fullName, indexBy, formModal, attempt, toast, notifyQuota, DASH } from '../components.js';
 
 const STAFF = ['admin', 'teacher'];
 
@@ -122,11 +122,7 @@ async function detail(ctx) {
   } else if (staff) {
     body = `<div class="banner">${esc(recNote)}</div>`;
   } else {
-    let cur = n;
-    if (cur.receipt && !cur.receipt.readAt) {
-      await attempt(() => api.notices.markRead(id));
-      cur = (await api.notices.list()).find((x) => x.id === id) || cur; // re-read: markRead committed
-    }
+    const cur = n;
     const fresh = cur.receipt;
     const about = cur.aboutStudentIds || fresh?.studentIds || [];
     body = `${fresh ? `<p><small>About: <strong>${esc(childNames(ctx.db, about))}</strong></small></p>` : ''}
@@ -141,6 +137,8 @@ async function detail(ctx) {
     const ok = await attempt(() => api.notices.acknowledge(id), 'Acknowledged');
     if (ok.ok) ctx.rerender();
   });
+  // the read receipt goes after the notice is on screen; a failure is not the parent's problem (console only)
+  if (!staff && n.receipt && !n.receipt.readAt) api.notices.markRead(id).catch((err) => { notifyQuota(err); console.error(err); });
 }
 
 export async function render(ctx) {

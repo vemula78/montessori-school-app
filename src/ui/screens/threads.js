@@ -1,5 +1,5 @@
 // Two-way parent <-> teacher messaging. Read receipts are set by the api only when the *other* party opens a thread.
-import { esc, icon, badge, empty, pageHead, fdatetime, ftime, fullName, indexBy, formModal, attempt, notFoundOrThrow, DASH, options } from '../components.js';
+import { esc, icon, badge, empty, pageHead, fdatetime, ftime, fullName, indexBy, formModal, attempt, notFoundOrThrow, notifyQuota, DASH, options } from '../components.js';
 
 const me = (p) => p.guardianId || p.staffId;
 
@@ -67,16 +67,16 @@ async function list(ctx) {
 async function detail(ctx) {
   const { api, db, persona } = ctx;
   const id = ctx.params.id;
-  await attempt(() => api.threads.markRead(id)); // marks the OTHER party's messages as read
   const got = await api.threads.get(id).catch(notFoundOrThrow);
   if (!got || !got.thread) { ctx.el.innerHTML = `${empty('Conversation not found')}<p><a class="btn" href="#/messages">Back</a></p>`; return; }
   const { thread, messages } = got;
   const stu = db.students.find((s) => s.id === thread.studentId);
   const mine = (m) => m.senderRole === persona.role && m.senderId === me(persona);
+  const dayOf = (m) => fdatetime(m.sentAt).split(' ')[0]; // DD-MMM-YYYY, in the same zone as the HH:MM under each bubble
   ctx.el.innerHTML = `<p><a href="#/messages">&larr; All messages</a></p>
     <div class="page-head"><div><h1>${esc(thread.subject)}</h1><div class="sub">About ${esc(fullName(stu))} &middot; ${esc(db.programs.find((p) => p.id === thread.programId)?.name || DASH)}</div></div>
       ${thread.status === 'closed' ? badge('Closed', 'mute') : persona.role !== 'parent' ? '<button class="btn sm" id="t-close">Close conversation</button>' : ''}</div>
-    <div class="bubbles" aria-live="polite">${messages.map((m) => `<div class="bubble ${mine(m) ? 'mine' : ''}">${esc(m.body)}<span class="meta">${esc(senderName(db, m))} &middot; ${ftime(m.sentAt)}${mine(m) ? (m.readAt ? ` &middot; Read ${ftime(m.readAt)}` : ' &middot; Sent') : ''}</span></div>`).join('')}</div>
+    <div class="bubbles" aria-live="polite">${messages.map((m, i) => `${dayOf(m) !== (i ? dayOf(messages[i - 1]) : '') ? `<small class="bubble-day muted">${esc(dayOf(m))}</small>` : ''}<div class="bubble ${mine(m) ? 'mine' : ''}">${esc(m.body)}<span class="meta">${esc(senderName(db, m))} &middot; ${ftime(m.sentAt)}${mine(m) ? (m.readAt ? ` &middot; Read ${ftime(m.readAt)}` : ' &middot; Sent') : ''}</span></div>`).join('')}</div>
     ${thread.status === 'closed' ? '<div class="banner" style="margin-top:14px">This conversation is closed.</div>' : `
     <form id="t-reply" class="stack" style="margin-top:14px"><label class="field"><span class="lbl">Reply</span><textarea name="body" required></textarea></label><button class="btn primary" type="submit">Send reply</button></form>`}`;
   ctx.el.querySelector('#t-reply')?.addEventListener('submit', async (e) => {
@@ -95,6 +95,8 @@ async function detail(ctx) {
   const sig = () => ctx.db.messages.filter((m) => m.threadId === id).map((m) => `${m.id}:${m.readAt || ''}`).join('|');
   const shown = sig();
   ctx.onChange(() => { const ta = ctx.el.querySelector('#t-reply textarea'); if (sig() !== shown && (!ta || !ta.value)) ctx.rerender(); });
+  // marks the OTHER party's messages read, only when there are some, after the thread is on screen; failures stay quiet
+  if (thread.unreadCount) api.threads.markRead(id).catch((err) => { notifyQuota(err); console.error(err); });
 }
 
 export async function render(ctx) {

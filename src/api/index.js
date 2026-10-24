@@ -361,6 +361,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     correct: cmd('diary.correct'),
     remove: cmd('diary.remove'),
     markRead: cmd('diary.markRead'),
+    /** markReadMany(ids): a parent's read receipts for one day, sent after the page is painted (the real app reloads once). */
+    markReadMany: op(async (ids) => { for (const id of ids) await cmd('diary.markRead')(id); }),
   };
 
   // the accountant reads the audit log except the account desk's rows (entity appUser), as the real app's RLS does

@@ -170,3 +170,89 @@ test('#2 start-up nudge: shown while this phone has no subscription, gone once d
   b = pushBrowser();
   try { localStorage.setItem('school.push.optout', '1'); assert.equal(await push.nudge(), null, 'turned off on this device'); } finally { b.done(); }
 });
+
+// ---- #4 / #33 read receipts never hold up the screen; #19 message dates ------------------------------
+const PRINCIPAL = 'persona-stf-principal';
+// wraps api.<area>.<fn> so each call records whether the screen had already been painted
+function spyAfterPaint(ctx, area, fn, impl) {
+  const calls = [];
+  const orig = ctx.api[area][fn];
+  ctx.api[area][fn] = (...args) => { calls.push({ args, painted: ctx.el.innerHTML.length > 0 }); return impl ? impl(...args) : orig(...args); };
+  return calls;
+}
+
+test('#4 parent diary: the day is painted first, then ONE background call marks every unread entry read', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const kid = api.getDb().students.find((s) => s.id === api.session.current().studentIds[0]);
+  api.session.set(TEACHER);
+  for (const text of ['Pouring water', 'Pink tower']) await api.diary.add({ studentId: kid.id, date: todayISO(), type: 'activity', data: { text } });
+  const Diary = await import('../src/ui/screens/diary.js');
+  const ctx = mkCtx(api, PARENT, { student: kid.id, date: todayISO() });
+  const calls = spyAfterPaint(ctx, 'diary', 'markReadMany');
+  await Diary.render(ctx);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].painted, 'painted before the read receipt');
+  assert.ok(calls[0].args[0].length >= 2);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok((await api.diary.forStudentDate(kid.id, todayISO())).every((e) => e.parentReadAt), 'all marked read');
+  const again = mkCtx(api, PARENT, { student: kid.id, date: todayISO() });
+  const none = spyAfterPaint(again, 'diary', 'markReadMany');
+  await Diary.render(again);
+  assert.equal(none.length, 0, 'nothing unread: no call');
+});
+
+test('#4 notice: the body shows without waiting for the read receipt, and the list is not re-read', async () => {
+  const api = await mkApi();
+  api.session.set(PRINCIPAL);
+  const n = await api.notices.send({ title: 'Sports day', body: 'Wear white', audience: { scope: 'school' } });
+  const Notices = await import('../src/ui/screens/notices.js');
+  const ctx = mkCtx(api, PARENT, {}, { id: n.id });
+  let lists = 0;
+  const origList = api.notices.list;
+  api.notices.list = (...a) => { lists++; return origList(...a); };
+  const calls = spyAfterPaint(ctx, 'notices', 'markRead', () => new Promise(() => {})); // never answers (2G)
+  await Notices.render(ctx);
+  assert.match(ctx.el.innerHTML, /Wear white/);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].painted);
+  assert.equal(lists, 1, 'one read of the list, no second read after marking');
+});
+
+test('#4/#33 conversation: no read receipt when nothing is unread; an offline read receipt never blocks or breaks the thread', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const sid = api.session.current().studentIds[0];
+  const t = await api.threads.open({ studentId: sid, subject: 'Lunch', body: 'Is there rice today?' });
+  const Threads = await import('../src/ui/screens/threads.js');
+  let ctx = mkCtx(api, PARENT, {}, { id: t.id });
+  let calls = spyAfterPaint(ctx, 'threads', 'markRead');
+  await Threads.render(ctx);
+  assert.equal(calls.length, 0, 'only my own message: nothing to mark');
+  api.session.set(TEACHER);
+  await api.threads.reply(t.id, 'Yes, rice and dal');
+  ctx = mkCtx(api, PARENT, {}, { id: t.id });
+  calls = spyAfterPaint(ctx, 'threads', 'markRead', () => Promise.reject(Object.assign(new Error('offline'), { code: 'OFFLINE' })));
+  const errs = console.error; console.error = () => {};
+  try { await Threads.render(ctx); await new Promise((r) => setTimeout(r, 5)); } finally { console.error = errs; }
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].painted);
+  assert.match(ctx.el.innerHTML, /rice and dal/);
+});
+
+test('#19 a conversation over several days shows the date (DD-MMM-YYYY) whenever the day changes', async () => {
+  let now = new Date(NOW.getTime() - 3 * 86400000);
+  const api = createApi({ backend: memoryBackend(), sessionBackend: memoryBackend(), seedFn: () => buildSeed(NOW), clock: () => now });
+  await api.ready();
+  api.session.set(PARENT);
+  const sid = api.session.current().studentIds[0];
+  const t = await api.threads.open({ studentId: sid, subject: 'Shoes', body: 'First day message' });
+  await api.threads.reply(t.id, 'Same day follow-up');
+  now = NOW;
+  await api.threads.reply(t.id, 'Later message');
+  const { fdatetime } = await import('../src/ui/components.js');
+  const html = await draw(api, PARENT, await import('../src/ui/screens/threads.js'), {}, { id: t.id });
+  const day = (d) => fdatetime(d.toISOString()).split(' ')[0];
+  const seps = [...html.matchAll(/class="bubble-day[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1]);
+  assert.deepEqual(seps, [day(new Date(NOW.getTime() - 3 * 86400000)), day(NOW)]);
+});

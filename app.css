@@ -338,6 +338,7 @@ tr.row-mute td { color: var(--ink-soft); text-decoration: line-through; }
 .bubbles { display: flex; flex-direction: column; gap: 8px; }
 .bubble { max-width: 82%; padding: 9px 13px; border-radius: 16px; background: var(--paper); border: 1px solid var(--line); align-self: flex-start; white-space: pre-wrap; word-wrap: break-word; }
 .bubble.mine { align-self: flex-end; background: var(--clay-soft); border-color: transparent; }
+.bubble-day { align-self: center; font-size: .75rem; font-weight: 700; }
 .bubble .meta { display: block; font-size: .72rem; color: var(--ink-soft); font-weight: 700; margin-top: 3px; }
 
 /* ---- calendar ---- */

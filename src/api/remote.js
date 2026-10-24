@@ -106,6 +106,11 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
   const surface = createSurface({ db, me, clock, cmd, appUsers: () => adminRemote.appUsers(), requireConsent: true });
   const { people, notices, threads, calendar, transport, fees, attendance, diary, audit, importHelpers, curriculum, observations, progress, reports, rights, announcement } = surface;
   const oversight = surface.oversight;
+  // a day's diary read receipts go together, followed by ONE snapshot reload instead of one per entry
+  diary.markReadMany = op(async ids => {
+    await Promise.all(ids.map(id => command('diary.markRead', [id], { reload: false })));
+    try { await refresh(); } catch (e) { console.error('saved, but the refetch failed:', toApiError(e)); }
+  });
 
   // ---------------- audit: read from audit_log (RLS: principal, accountant), never from the snapshot ----------------
   // from/to/actor/q filter on the server before the row cap (ts is UTC; the dates are the school's, IST), then again here

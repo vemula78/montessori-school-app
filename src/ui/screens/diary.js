@@ -215,7 +215,6 @@ async function parentView(ctx) {
   const date = isISODate(query.date) ? query.date : today;
   const entries = (await api.diary.forStudentDate(kid.id, date)).slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   const dayOff = entries.length ? '' : await dayOffNote(ctx, date, kid.programId);
-  for (const e of entries) if (!e.parentReadAt) { try { await api.diary.markRead(e.id); } catch (err) { notifyQuota(err); /* read marker is not critical, but a full store must still raise the warning */ } }
   ctx.el.innerHTML = `${pageHead('Daily diary', fullName(kid))}
     ${kids.length > 1 ? `<div class="seg" role="tablist" style="margin-bottom:10px">${kids.map((k) => `<button role="tab" aria-pressed="${k.id === kid.id}" data-kid="${esc(k.id)}">${esc(k.firstName)}</button>`).join('')}</div>` : ''}
     <div class="row" style="margin-bottom:12px">
@@ -228,6 +227,9 @@ async function parentView(ctx) {
   ctx.el.querySelector('#d-prev').addEventListener('click', () => go({ date: addDays(date, -1) }));
   ctx.el.querySelector('#d-next').addEventListener('click', () => go({ date: addDays(date, 1) }));
   wireLastWork(ctx, date, kid.programId, go);
+  // read receipts after the day is on screen, all in one call; not critical, but a full store must still raise the warning
+  const unread = entries.filter((e) => !e.parentReadAt).map((e) => e.id);
+  if (unread.length) api.diary.markReadMany(unread).catch((err) => { notifyQuota(err); console.error(err); });
 }
 
 export async function render(ctx) {
