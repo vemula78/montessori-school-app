@@ -683,6 +683,7 @@ export const COMMANDS = {
         `Fee records (invoices, payments, refunds, receipts) are kept as the law requires; the payer now shows as ${label}.`,
         "The children's own school records (enrolment, attendance, diary, fees, absences and pick-ups) stay under the school's retention schedule; the reasons this guardian gave for absences were erased.",
         "People this guardian listed as allowed to collect a child stay on the list until the other guardian or the school removes them.",
+        "UPI payments this guardian reported are kept with the fee records (amount, bank reference, date); meeting bookings, allergies and medical alerts stay with the child's records.",
         "Messages written by school staff in this guardian's conversations are kept; the guardian's own messages were erased.",
         'Consent records are kept as evidence of what was agreed and when (they carry ids, not names).',
         'Audit log entries are kept; they carry ids and amounts, not names.',

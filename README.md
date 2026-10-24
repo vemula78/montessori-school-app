@@ -104,6 +104,24 @@ scripts/      dev server, scan, domain sync, seed/first-run SQL generators, mock
   only as Blobs (`api.signatures.upload(owner, blob)`: PNG/JPEG ≤ 200 KB, checked from the bytes on the server; the principal for
   anyone and the director, a teacher their own). The demo draws fake signatures.
 
+### Wave 2 (schema v5, migration 0011)
+
+- **Allergies and medical alerts** (`api.health`): set by the principal or a parent (audited by field name), read by the principal,
+  the child's teachers and parents; kept in `student_health`, never in the student document the driver and accountant read.
+- **Driver**: the dates (never the reasons) of absences reported for children on their route, those children's pick-up people,
+  and who received a child at a drop (`receivedBy` on the event; named in the parent's push). Teachers read their children's
+  trips and boarding marks (never positions). A closed staff record closes that sign-in at once.
+- **Notices**: up to three PDF/JPEG/PNG files (2 MB each, private bucket `notice-files`, the bytes travel with
+  `notices.uploadFile` and are checked on the server), correction with history, withdrawal with a reason, a "who has not read"
+  list with phone numbers, a bus-route audience and the driver's "running late" message.
+- **Messages to the office** (`to: 'accountant' | 'principal'`; teachers never read them) and office hours as a setting;
+  **toileting and "please send"** diary entries (the family acknowledges); **UPI straight to the school** (a `upi://pay` link,
+  the family's report checked against the open balance, confirmed by the accountant as an ordinary receipt or rejected);
+  **parent-teacher meeting slots** (one booking per child and meeting; other families' bookings show only as taken).
+- **Privacy notice v3** names the service providers, the sign-in log and the school's own privacy contact (a setting the
+  principal fills in). Every RLS policy evaluates its helpers once per statement (0010): a parent's snapshot went from 5–7 s
+  to under half a second on the local seed.
+
 ## Phase 2 / real app
 
 The go-live handoff for the school — click-by-click, from creating the Supabase project to installing the app on
