@@ -179,8 +179,19 @@ async function adminHome(ctx) {
     leftNoDate = (rp.leftWithoutDate || []).length;
   } catch { /* unavailable */ }
   let active = 0, busFail = 0;
+  const stillRunning = []; // a trip from an earlier day, or 30 minutes past its last stop's scheduled time
   try {
-    for (const r of await api.transport.routes()) { try { if (await api.transport.activeTrip(r.id)) active += 1; } catch { busFail += 1; } }
+    for (const r of await api.transport.routes()) {
+      try {
+        const t = await api.transport.activeTrip(r.id);
+        if (!t) continue;
+        active += 1;
+        const mins = (hhmm) => { const [h, m] = String(hhmm || '23:59').split(':').map(Number); return h * 60 + m; };
+        const lastAt = r.stops.map((s) => (t.direction === 'drop' ? s.scheduledDrop : s.scheduledPickup)).sort().pop();
+        const now = new Date();
+        if (t.date < today || now.getHours() * 60 + now.getMinutes() > mins(lastAt) + 30) stillRunning.push(['#/bus', 'bus', `Trip still running: ${r.name} (${t.direction === 'drop' ? 'afternoon drop' : 'morning pickup'} since ${fdatetime(t.startedAt)})`]);
+      } catch { busFail += 1; }
+    }
   } catch { busFail += 1; }
   const evs = await upcomingEvents(ctx);
   const notices = indexBy(db.notices);
@@ -199,6 +210,7 @@ async function adminHome(ctx) {
   };
   const todo = [
     nightly && NIGHTLY[nightly.state] && ['#/audit', 'shield', NIGHTLY[nightly.state](nightly)],
+    ...stillRunning,
     unmarkedProgs.length && ['#/attendance', 'check', `Attendance not complete today: ${unmarkedProgs.join(', ')}`],
     unreadMsgs && ['#/messages', 'chat', `${plural(unreadMsgs, 'parent message', 'parent messages')} not yet read by staff`],
     awaitingNotices && ['#/notices', 'bell', `${plural(awaitingNotices, 'notice', 'notices')} awaiting acknowledgement (${plural(awaiting.length, 'parent', 'parents')})`],
