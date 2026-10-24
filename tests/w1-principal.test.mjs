@@ -396,3 +396,19 @@ test('#40 #77 wiring: the two screens are principal-only routes in both apps and
   assert.equal(navFor('admin').find((i) => i.path === '/setup').label, 'Staff, classes & routes');
   assert.match(read('src/ui/screens/bus-driver.js'), /api\.setup\.setStopPosition\(/);
 });
+
+// ---------------------------------------------------------------- #56 a single principal who loses their phone
+test('#56 with one principal the two-step policy tab warns before requiring it and gives the ways back in; a second principal removes the warning', async () => {
+  const api = as(await mkApi(), ADMIN);
+  const one = await draw(api, ADMIN, Admin, { tab: 'twostep' });
+  assert.match(one, /Only one principal/);
+  assert.match(one, /second authenticator/);
+  assert.match(one, /#\/setup\?tab=staff/);
+  const p2 = await api.setup.saveStaff({ firstName: 'Deputy', lastName: 'Exampleton', role: 'admin', email: 'deputy@example.com' });
+  assert.ok(p2.id);
+  const two = await draw(api, ADMIN, Admin, { tab: 'twostep' });
+  assert.ok(!/Only one principal/.test(two));
+  // the setup screen suggests keeping the same key on a second device, and GO-LIVE documents the database recovery
+  assert.match(read('src/ui/two-step.js'), /second device/);
+  assert.match(read('docs/GO-LIVE.md'), /only one principal/i);
+});

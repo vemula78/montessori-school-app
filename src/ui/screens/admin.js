@@ -283,8 +283,11 @@ async function twostep(ctx, host) {
   try { pol = await api.admin.accounts.twoStepPolicy(); } catch (e) { host.innerHTML = banner('bad', `<strong>The policy could not be loaded.</strong> ${esc(errMessage(e))}`); return; }
   const real = isRealMode();
   const allEnrolled = pol.privileged.every((p) => p.enrolled);
+  // only another principal can reset a lost authenticator: with one principal, a lost phone means a database fix
+  const lonePrincipal = pol.privileged.filter((p) => p.role === 'admin').length <= 1;
   host.innerHTML = `<div class="card stack"><h2>Two-step sign-in for the principal and the accountant</h2>
       ${pol.required ? banner('ok', '<strong>Required.</strong> The principal and the accountant must enter an authenticator code to use the app.') : banner('warn', '<strong>Not required yet.</strong> Each person is protected from the moment they set it up. Once everyone below has, require it for all.')}
+      ${lonePrincipal ? banner('warn', `<strong>Only one principal.</strong> If the principal&rsquo;s phone is lost, nobody in the app can reset their two-step sign-in. Before relying on it, do one of these: add the same setup key to a second authenticator (for example the office phone kept in the safe) when setting it up, or make a second principal on <a href="${esc(ctx.href('/setup', { tab: 'staff' }))}">Staff, classes &amp; routes</a> who signs in. Otherwise recovery needs the school&rsquo;s developer, who removes the authenticator in the database (GO-LIVE, step 13).`) : ''}
       <div class="tablewrap"><table><thead><tr><th>Person</th><th>Role</th><th>Authenticator</th></tr></thead><tbody>
         ${pol.privileged.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(ROLE[p.role] || p.role)}</td><td>${p.enrolled ? badge('Set up', 'ok') : badge('Not set up', 'warn')}</td></tr>`).join('')}
       </tbody></table></div>

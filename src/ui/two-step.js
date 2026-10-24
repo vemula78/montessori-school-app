@@ -83,6 +83,7 @@ export async function mountTwoStep(host, { api = defaultApi, onVerified, allowDi
             <li>In the authenticator app choose <em>Add account</em>, then <em>Enter a setup key</em>.</li>
             <li>Type this key: <div class="secret" id="ts-secret">${esc(en.secret)}</div></li>
             <li>Type the 6-digit code the app then shows, below.</li></ol>
+          <small>Keep a way back in: type the same key into an authenticator on a second device kept safe (for example the office phone in the safe). It shows the same codes, so a lost phone does not lock you out.</small>
           <details><summary style="cursor:pointer;font-weight:700">Setup link for the app (otpauth)</summary><div class="secret" style="margin-top:6px">${esc(en.uri)}</div></details>
           ${isRealMode() ? '' : demoPanel()}${codeForm('Turn on two-step sign-in')}`;
         wireVerify(en.factorId);
