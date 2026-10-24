@@ -515,3 +515,80 @@ test('#69 the system ends a finished route soon after its last stop, never one w
   for (const k of ['K1', 'K2', 'K5']) T.markChild(db, pick.id, { studentId: k, type: 'boarded' }, ctx(lastFixMs + 70000));
   assert.equal(run(pick.id, lastFixMs + 3 * 3600000 - 60000).ended, false, 'a pickup whose last stop was never left waits for the driver (or the 3-hour limit)');
 });
+
+// ---------------------------------------------------------------- #74 parent map
+function fakeLeaflet() {
+  const handlers = {};
+  const log = { fits: 0, controls: [] };
+  const chain = (o = {}) => Object.assign(o, { addTo() { return o; }, bindTooltip() { return o; }, setLatLng() { return o; }, remove() {} });
+  const map = {
+    on(n, f) { (handlers[n] ||= []).push(f); return map; },
+    fire(n) { (handlers[n] || []).forEach(f => f({})); },
+    fitBounds() { log.fits += 1; map.fire('zoomstart'); return map; }, // with animate:false Leaflet fires zoomstart at once
+    setView() { return map; }, invalidateSize() {}, remove() {},
+    getBounds: () => ({ contains: () => false }), // the bus is always outside the current view
+  };
+  const L = {
+    map: () => map, tileLayer: () => chain(), marker: () => chain(), divIcon: () => ({}),
+    polyline: () => chain({ getBounds: () => ({ isValid: () => true }) }), latLngBounds: () => ({}),
+    control: () => { const c = { addTo() { c.el = c.onAdd(map); log.controls.push(c); return c; } }; return c; },
+    DomUtil: { create: (tag, cls) => ({ tag, className: cls, textContent: '', type: '', setAttribute() {}, listeners: {} }) },
+    DomEvent: { on(el, n, f) { el.listeners[n] = f; }, disableClickPropagation() {} },
+  };
+  return { L, map, log };
+}
+
+test('#74 the parent map follows the bus only until the parent zooms or drags; "Show bus" brings it back', async () => {
+  const { createRouteMap } = await import('../src/ui/map.js');
+  const { L, map, log } = fakeLeaflet();
+  globalThis.window = { L };
+  try {
+    const route = loopFixture().routes[0];
+    const m = createRouteMap(fake(), route, {});
+    const base = log.fits;
+    m.setBus(12.99, 77.75, 'BUS');
+    assert.equal(log.fits, base + 1, 'bus off-screen: the map refits while following');
+    map.fire('zoomstart'); // the parent zooms in on their stop
+    m.setBus(12.991, 77.75, 'BUS');
+    assert.equal(log.fits, base + 1, 'no snapping back after the parent zoomed');
+    const show = log.controls.at(-1)?.el;
+    assert.ok(show && /Show bus/.test(show.textContent), 'a Show bus button');
+    show.listeners.click({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(log.fits, base + 2, 'Show bus brings the bus into view');
+    m.setBus(12.992, 77.75, 'BUS');
+    assert.equal(log.fits, base + 3, 'and following resumes');
+  } finally { delete globalThis.window; }
+});
+
+// ---------------------------------------------------------------- #75 fleet screen
+test('#75 fleet history shows duration and stop events (not a positions count the real app cannot know); buses move on the live feed; polling every 20 s', async () => {
+  stubNavigator();
+  const api = await mkApi();
+  api.session.set('persona-stf-principal');
+  const trip = await api.transport.startTrip({ routeId: 'route-2', direction: 'pickup', simulated: true });
+  await api.transport.endTrip(trip.id, { busChecked: true });
+  let reads = 0;
+  const subscribed = [];
+  const transport = { ...api.transport,
+    activeTrip: async (id) => { reads += 1; return api.transport.activeTrip(id); },
+    subscribeTrip: (routeId, fn) => { subscribed.push(routeId); return () => {}; } };
+  const Admin = await import('../src/ui/screens/bus-admin.js');
+  const cleanups = [];
+  const ctx = { api: { ...api, transport }, persona: api.session.current(), query: {}, params: {}, el: fake(), get db() { return api.getDb(); },
+    go() {}, setQuery() {}, toast() {}, onChange() {}, cleanup: f => cleanups.push(f), rerender() {} };
+  mock.timers.enable({ apis: ['setInterval'] });
+  try {
+    await Admin.render(ctx);
+    const html = allHtml(ctx.el);
+    assert.match(html, /<th class="r">Duration<\/th>/);
+    assert.ok(!/>Positions</.test(html), 'no positions column');
+    assert.match(html, /<td class="r num">\d+ min<\/td>/);
+    assert.deepEqual(subscribed.sort(), ['route-1', 'route-2'], 'a live feed per route for the bus markers');
+    const after = reads;
+    mock.timers.tick(3000);
+    assert.equal(reads, after, 'no 3-second polling in the real app');
+    mock.timers.tick(17000);
+    await new Promise(r => setImmediate(r));
+    assert.ok(reads > after, 'a 20-second fallback poll');
+  } finally { cleanups.forEach(f => f()); mock.timers.reset(); }
+});

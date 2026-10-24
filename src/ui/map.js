@@ -37,18 +37,41 @@ export function createRouteMap(el, route, opts = {}) {
 
   const busIcon = (label) => L.divIcon({ className: '', html: `<div class="bus-pin">${esc(label || 'BUS')}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
   const buses = new Map();
+  // The map refits to keep the bus in view only until the user zooms or drags it (a parent looking at their own stop
+  // is not pulled back out on every fix); "Show bus" brings the bus back into view and resumes following.
+  let follow = true, fitting = false, lastBus = null, showBtn = null;
+  const fit = (b) => { fitting = true; try { map.fitBounds(b, { padding: [28, 28], animate: false }); } finally { fitting = false; } };
+  const userMoved = () => { if (!fitting) follow = false; };
+  map.on('zoomstart', userMoved);
+  map.on('dragstart', userMoved);
+  const showBus = () => { follow = true; if (lastBus) fit(L.latLngBounds([...pts, lastBus])); };
+  const addShowButton = () => {
+    const ctl = L.control({ position: 'topright' });
+    ctl.onAdd = () => {
+      const b = L.DomUtil.create('button', 'btn sm');
+      b.type = 'button';
+      b.textContent = 'Show bus';
+      L.DomEvent.disableClickPropagation(b);
+      L.DomEvent.on(b, 'click', (e) => { e.preventDefault(); showBus(); });
+      return b;
+    };
+    ctl.addTo(map);
+    return ctl;
+  };
   const place = (id, lat, lng, label) => {
     if (typeof lat !== 'number' || typeof lng !== 'number') return;
     let m = buses.get(id);
     if (!m) { m = L.marker([lat, lng], { icon: busIcon(label), zIndexOffset: 1000 }).addTo(map); buses.set(id, m); }
     else m.setLatLng([lat, lng]);
-    if (!map.getBounds().contains([lat, lng])) map.fitBounds(L.latLngBounds([...pts, [lat, lng]]), { padding: [28, 28] });
+    lastBus = [lat, lng];
+    if (!showBtn) showBtn = addShowButton();
+    if (follow && !map.getBounds().contains([lat, lng])) fit(L.latLngBounds([...pts, [lat, lng]]));
   };
   setTimeout(() => map.invalidateSize(), 0);
   return {
     setBus: (lat, lng, label) => place('one', lat, lng, label),
     setBuses: (list) => { for (const b of list) place(b.id, b.lat, b.lng, b.label); },
-    refit: () => { map.invalidateSize(); if (bounds && bounds.isValid()) map.fitBounds(bounds, { padding: [28, 28] }); },
+    refit: () => { map.invalidateSize(); if (bounds && bounds.isValid()) fit(bounds); },
     destroy: () => { try { map.remove(); } catch { /* already gone */ } },
   };
 }
