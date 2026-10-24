@@ -36,6 +36,12 @@ const ROUTES = [
   { pattern: '/pickup', roles: ['admin', 'teacher'], load: () => import('./screens/pickup.js') },
   { pattern: '/care', roles: ['parent'], load: () => import('./screens/care.js') },
   { pattern: '/print/report/:id', roles: ['admin', 'teacher', 'parent'], bare: true, load: () => import('./screens/report-print.js') },
+  // annual Progress Report (signatures and promote before :id)
+  { pattern: '/evaluations', roles: ['admin', 'teacher'], load: () => import('./screens/evaluations.js') },
+  { pattern: '/evaluations/signatures', roles: ['admin', 'teacher'], load: () => import('./screens/signatures.js') },
+  { pattern: '/evaluations/promote', roles: ['admin'], load: () => import('./screens/promote-levels.js') },
+  { pattern: '/evaluations/:id', roles: ['admin', 'teacher'], load: () => import('./screens/evaluations.js') },
+  { pattern: '/print/evaluation/:id', roles: ['admin', 'teacher', 'parent'], bare: true, load: () => import('./screens/evaluation-print.js') },
   {
     pattern: '/bus', roles: ['admin', 'driver', 'parent'],
     load: (p) => (p.role === 'driver' ? import('./screens/bus-driver.js') : p.role === 'parent' ? import('./screens/bus-parent.js') : import('./screens/bus-admin.js')),
@@ -50,6 +56,7 @@ const ROUTES = [
   { pattern: '/reports', roles: ['admin', 'accountant'], load: () => import('./screens/reports.js') },
   { pattern: '/audit', roles: ['admin', 'accountant'], load: () => import('./screens/audit.js') },
   { pattern: '/settings', roles: ALL, demoRoles: ['admin'], load: () => import('./screens/settings.js') },
+  { pattern: '/settings/school', roles: ['admin'], load: () => import('./screens/school-details.js') },
   { pattern: '/admin', roles: ['admin'], load: () => import('./screens/admin.js') },
   { pattern: '/people', roles: ['admin'], load: () => import('./screens/people.js') },
   { pattern: '/people/:id', roles: ['admin'], load: () => import('./screens/people.js') },

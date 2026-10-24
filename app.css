@@ -543,3 +543,55 @@ dd { overflow-wrap: anywhere; }
 .report .sign { display: flex; justify-content: space-between; gap: 12px; margin-top: 40px; font-size: .8rem; color: var(--ink-soft); }
 .report .note { font-size: .78rem; color: var(--ink-soft); margin: 12px 0 0; }
 @media (max-width: 480px) { .report { padding: 14px; } .report dl { grid-template-columns: 100px 1fr; } }
+
+/* annual Progress Report: the form (big two-choice toggles: ~58 per child on a phone) and the A4 sheet (print rules in src/ui/print.css) */
+.ev-group { font-size: 1.1rem; margin: 18px 0 0; color: var(--bark); }
+.ev-sec { padding: 10px 12px; }
+.ev-sec h3 { margin: 0; font-size: 1rem; }
+.ev-sec-head { margin-bottom: 4px; }
+.ev-item { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
+.ev-item.missing { border-left: 4px solid var(--berry); padding-left: 8px; background: var(--berry-soft); }
+.ev-label { font-weight: 700; }
+.ev-value { font-weight: 800; color: var(--clay); }
+.ev-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ev-toggle label { position: relative; display: block; }
+.ev-toggle input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.ev-toggle span { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 8px; border: 1.5px solid var(--field); border-radius: 12px; background: var(--paper); font-weight: 800; text-align: center; }
+.ev-toggle input:checked + span { background: var(--clay); border-color: var(--clay); color: var(--paper); }
+.ev-toggle input:focus-visible + span { outline: 3px solid var(--sky); outline-offset: 2px; }
+.ev-check { display: flex; align-items: center; gap: 10px; min-height: var(--tap); font-weight: 700; }
+.ev-check input { width: 24px; height: 24px; }
+.ev-nolevel { color: var(--berry); font-weight: 700; }
+.ev-nav { margin-top: 12px; }
+.ev-actions .btn { min-height: var(--tap); }
+@media (min-width: 640px) {
+  .ev-item { flex-direction: row; align-items: center; justify-content: space-between; }
+  .ev-toggle { flex: none; width: 300px; }
+}
+.sig-preview { margin-top: 6px; }
+.sig-preview img { display: block; max-width: 240px; max-height: 80px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 4px; }
+.sig-preview.big img { max-width: 100%; max-height: 160px; }
+
+.evr { background: var(--paper); color: var(--ink); max-width: 794px; margin: 0 auto; padding: 24px 28px; border: 1px solid var(--line); border-radius: var(--radius); position: relative; font-size: .9rem; }
+.evr .stamp { display: block; width: fit-content; max-width: 100%; margin: 0 auto 10px; transform: rotate(-2deg); border: 3px solid var(--berry); color: var(--berry); font-weight: 900; padding: 6px 10px; border-radius: 8px; font-size: .78rem; letter-spacing: .04em; text-align: center; }
+.evr-head { text-align: center; margin-bottom: 10px; }
+.evr-school { font-family: var(--font-display); font-size: 1.15rem; }
+.evr-level { font-weight: 900; font-size: 1.1rem; letter-spacing: .06em; margin-top: 6px; }
+.evr-title { font-weight: 900; letter-spacing: .12em; }
+.evr-year { font-weight: 800; }
+.evr table { width: 100%; min-width: 0; border-collapse: collapse; margin: 0 0 10px; font-size: .86rem; }
+.evr th, .evr td { border: 1px solid var(--ink); padding: 4px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; white-space: normal; letter-spacing: 0; background: transparent; color: var(--ink); text-transform: none; font-size: inherit; }
+.evr-id th { width: 34%; font-weight: 800; }
+.evr-t .grp th { text-align: center; text-transform: uppercase; font-weight: 900; letter-spacing: .04em; }
+.evr-t .sec th { font-weight: 900; }
+.evr-t .sc { width: 34%; text-align: center; overflow-wrap: normal; }
+.evr-note { font-size: .78rem; margin: -6px 0 10px; font-style: italic; }
+.evr-remarks { border: 1px solid var(--ink); padding: 6px 8px; min-height: 90px; margin-bottom: 10px; }
+.evr-rh { font-weight: 900; margin-bottom: 4px; }
+.evr-remarks p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.evr-sign { display: grid; grid-template-columns: repeat(3, 1fr); align-items: end; gap: 12px; margin-top: 18px; text-align: center; font-size: .8rem; font-weight: 700; }
+.evr-sigimgs { min-height: 56px; display: flex; align-items: flex-end; justify-content: center; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--ink); margin-bottom: 4px; padding-bottom: 2px; }
+.evr-sigimgs img { max-height: 52px; max-width: 100%; }
+.evr-foot { margin-top: 16px; padding-top: 6px; border-top: 1px solid var(--ink); text-align: center; font-size: .76rem; }
+.evr-demo { font-size: .72rem; text-align: center; margin: 8px 0 0; }
+@media (max-width: 480px) { .evr { padding: 12px; } .evr-sign { gap: 6px; font-size: .7rem; } }

@@ -145,7 +145,7 @@ async function drawAdmin(ctx, host) {
         <dt class="muted">Academic year</dt><dd style="margin:0">${esc(ay?.label || DASH)} ${ay ? `(${fdate(ay.startDate)} to ${fdate(ay.endDate)})` : ''}</dd>
         <dt class="muted">Late fee rule</dt><dd style="margin:0">${rule ? `${esc(rule.graceDays)} grace days, ${rule.mode === 'perDay' ? `${money(rule.amountPaise)} per day${rule.capPaise != null ? `, capped at ${money(rule.capPaise)}` : ''}` : `${money(rule.amountPaise)} flat`}` : DASH}</dd>
       </dl>
-      <div class="row"><a class="btn" href="#/invites">Invite codes</a><a class="btn" href="#/import">Import data</a><a class="btn" href="#/reports/settlements">Online settlements</a><a class="btn" href="#/admin?tab=requests">Data requests</a></div></div>
+      <div class="row"><a class="btn primary" href="#/settings/school">School details</a><a class="btn" href="#/invites">Invite codes</a><a class="btn" href="#/import">Import data</a><a class="btn" href="#/reports/settlements">Online settlements</a><a class="btn" href="#/admin?tab=requests">Data requests</a></div></div>
     <div id="st-retention"></div></div>`;
   await drawRetention(ctx, host.querySelector('#st-retention'));
 }

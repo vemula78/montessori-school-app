@@ -4,6 +4,7 @@
 import { todayISO } from '../../domain/dates.js';
 import { esc, fdate, badge, banner, empty, pageHead, options, formModal, attempt, toast, DASH } from '../components.js';
 import { healthBadge, healthCardHtml, editHealth, wireHealthBadges } from '../health-alerts.js';
+import { LEVEL_OPTIONS, LEVEL_LABEL } from '../eval-labels.js';
 
 const STATUS_FILTERS = [['active', 'Attending'], ['left', 'Left'], ['nodate', 'Left, no leaving date'], ['all', 'All']];
 const openOnly = (list, keepId) => list.filter((x) => x.active !== false || x.id === keepId);
@@ -34,14 +35,14 @@ export async function render(ctx) {
     .filter((s) => !query.guardian || (s.guardianIds || []).includes(query.guardian))
     .filter((s) => !q || `${s.name} ${s.admissionNo} ${s.programName} ${parentsOf(s).map((g) => g.name).join(' ')}`.toLowerCase().includes(q));
   const noDate = students.filter((s) => s.status === 'left' && !s.leftOn).length;
-  ctx.el.innerHTML = `${pageHead('Children & families', 'Class, bus stop, leaving and parents’ details', '<button class="btn primary" id="pp-add">Add a child</button>')}
+  ctx.el.innerHTML = `${pageHead('Children & families', 'Class, bus stop, leaving and parents’ details', `<a class="btn" href="${esc(ctx.href('/evaluations/promote'))}">Promote levels</a><button class="btn primary" id="pp-add">Add a child</button>`)}
     ${noDate ? banner('warn', `<strong>${esc(noDate)} ${noDate === 1 ? 'child has' : 'children have'} left without a leaving date.</strong> Their records can never come due for deletion until the date is set. <a href="${esc(ctx.href('/people', { status: 'nodate' }))}">Show them</a>`) : ''}
     <div class="row" style="margin-bottom:12px"><input id="pp-q" type="search" placeholder="Search child, admission number, class or parent" value="${esc(query.q || '')}" style="width:auto;min-width:260px" aria-label="Search children">
       <div class="seg">${STATUS_FILTERS.map(([k, l]) => `<a href="${esc(ctx.href('/people', { ...query, status: k }))}"${k === status ? ' aria-current="page"' : ''}>${esc(l)}</a>`).join('')}</div>
       ${query.guardian ? `<a class="btn sm" href="${esc(ctx.href('/people', { status }))}">All families</a>` : ''}
       <span class="muted">${esc(shown.length)} shown</span></div>
-    ${shown.length ? `<div class="tablewrap"><table><thead><tr><th>Child</th><th>Adm. no</th><th>Class</th><th>Status</th><th>School bus</th><th>Parents</th></tr></thead><tbody>
-      ${shown.map((s) => `<tr><td><a href="${esc(ctx.href(`/people/${s.id}`))}">${esc(s.name)}</a></td><td>${esc(s.admissionNo || DASH)}</td><td>${esc(s.programName)}</td><td>${statusBadge(s)}</td>
+    ${shown.length ? `<div class="tablewrap"><table><thead><tr><th>Child</th><th>Adm. no</th><th>Class</th><th>Level</th><th>Status</th><th>School bus</th><th>Parents</th></tr></thead><tbody>
+      ${shown.map((s) => `<tr><td><a href="${esc(ctx.href(`/people/${s.id}`))}">${esc(s.name)}</a></td><td>${esc(s.admissionNo || DASH)}</td><td>${esc(s.programName)}</td><td>${s.level ? esc(LEVEL_LABEL[s.level] || s.level) : s.status === 'active' ? badge('Not set', 'warn') : DASH}</td><td>${statusBadge(s)}</td>
         <td>${esc(busText(routes, s))}</td><td>${esc(parentsOf(s).map((g) => g.name).join(', ') || DASH)}</td></tr>`).join('')}
     </tbody></table></div>` : empty('No children match')}`;
   ctx.el.querySelector('#pp-q').addEventListener('change', (e) => ctx.setQuery({ q: e.target.value }));
@@ -58,8 +59,9 @@ async function child(ctx) {
   const today = todayISO();
   ctx.el.innerHTML = `${pageHead(s.name, `Admission ${s.admissionNo || DASH} · born ${fdate(s.dob)} · ${s.programName}`, `<a class="btn" href="${esc(ctx.href('/people'))}">All children</a>`)}
     <div class="grid cols-2">
-      <form class="card stack" id="pp-form" novalidate><h2>Class, bus stop and status</h2>
+      <form class="card stack" id="pp-form" novalidate><h2>Class, level, bus stop and status</h2>
         <label class="field"><span class="lbl">Class</span><select name="programId">${options(openOnly(programs, s.programId).map((p) => ({ value: p.id, label: p.name })), s.programId)}</select></label>
+        <label class="field"><span class="lbl">Level (the annual Progress Report form)</span><select name="level">${options(LEVEL_OPTIONS, s.level || '', { blank: 'Not set' })}</select></label>
         <label class="field"><span class="lbl">School bus</span><select name="bus">${busOptions(routes, s.routeId, s.stopId)}</select></label>
         <label class="field"><span class="lbl">Status</span><select name="status">${options([{ value: 'active', label: 'Attending' }, { value: 'left', label: 'Has left the school' }], s.status)}</select></label>
         <label class="field"><span class="lbl">Leaving date (when the child has left)</span><input type="date" name="leftOn" max="${esc(today)}" value="${esc(s.leftOn || '')}"></label>
@@ -83,6 +85,7 @@ async function child(ctx) {
     const v = Object.fromEntries(new FormData(form).entries());
     const patch = {};
     if (v.programId && v.programId !== s.programId) patch.programId = v.programId;
+    if ((v.level || null) !== (s.level || null)) patch.level = v.level || null;
     const [routeId, stopId] = v.bus ? String(v.bus).split('|') : [null, null];
     if ((routeId || null) !== (s.routeId || null) || (stopId || null) !== (s.stopId || null)) Object.assign(patch, { routeId: routeId || null, stopId: stopId || null });
     if (v.status === 'left') {

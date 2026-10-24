@@ -9,6 +9,7 @@ import { photoImg, loadPhotos } from '../photo-view.js';
 import { preparePhoto, sizeText } from '../photo-prep.js';
 import { renderCurriculum } from './learning-curriculum.js';
 import { isRealMode } from '../mode.js';
+import { yearText } from '../eval-labels.js';
 
 const TABS = [['observations', 'Observations'], ['progress', 'Progress'], ['reports', 'Reports'], ['curriculum', 'Curriculum']];
 
@@ -423,7 +424,8 @@ async function staffView(ctx) {
   ctx.el.innerHTML = `${pageHead('Learning', progs.find((p) => p.id === programId).name)}
     <div class="row" style="margin-bottom:12px">
       ${progs.length > 1 ? `<select id="l-prog" style="width:auto" aria-label="Programme">${options(progs.map((p) => ({ value: p.id, label: p.name })), programId)}</select>` : ''}
-      <div class="seg" role="tablist" aria-label="Learning sections">${tabs}</div></div>
+      <div class="seg" role="tablist" aria-label="Learning sections">${tabs}</div>
+      <a class="btn" href="${esc(ctx.href('/evaluations', { program: programId }))}">Annual progress reports</a></div>
     <div id="l-body"></div>`;
   ctx.el.querySelector('#l-prog')?.addEventListener('change', (e) => ctx.setQuery({ tab, program: e.target.value, student: '', report: '' }));
   const host = ctx.el.querySelector('#l-body');
@@ -439,13 +441,15 @@ async function parentView(ctx) {
   const kids = await api.people.childrenOf(persona.guardianId);
   if (!kids.length) { ctx.el.innerHTML = `${pageHead('Learning')}${empty('No children linked to this account')}`; return; }
   const kid = kids.find((k) => k.id === query.student) || kids[0];
-  const [all, reports, consent] = await Promise.all([api.observations.list({ studentId: kid.id }), api.reports.list({ studentId: kid.id }),
-    Promise.resolve().then(() => api.photos.consentStatus({ studentIds: [kid.id] })).catch((e) => { console.error(e); return null; })]);
+  const [all, reports, consent, annual] = await Promise.all([api.observations.list({ studentId: kid.id }), api.reports.list({ studentId: kid.id }),
+    Promise.resolve().then(() => api.photos.consentStatus({ studentIds: [kid.id] })).catch((e) => { console.error(e); return null; }),
+    api.evaluations.list({ studentId: kid.id })]); // published annual Progress Reports only (the api's rule for parents)
   const hidden = consent && consent[kid.id] === false; // strict rule: until every guardian using the app has agreed
   const obs = (query.all ? all : all.slice(0, 10)).map((o) => (hidden ? { ...o, photoIds: [] } : o)); // newest first; older on request
   ctx.el.innerHTML = `${pageHead('Learning', fullName(kid))}
     ${kids.length > 1 ? `<div class="row" style="margin-bottom:12px"><div class="seg" role="tablist">${kids.map((k) => `<button role="tab" aria-pressed="${k.id === kid.id}" data-kid="${esc(k.id)}">${esc(k.firstName)}</button>`).join('')}</div></div>` : ''}
     <div class="stack">
+      ${annual.length ? `<h2>Annual Progress Report</h2><ul class="list card-list">${annual.map((e) => `<li class="link"><a href="${esc(ctx.href('/print/evaluation/' + e.id))}"><div class="row between"><div><div class="item-title">Progress Report ${esc(yearText((ctx.db.academicYears || []).find((a) => a.id === e.academicYearId)) || e.academicYearId)}</div><small>${esc(e.levelLabel)} &middot; published ${fdate(String(e.publishedAt || '').slice(0, 10))}</small></div>${badge('Read and print', 'clay')}</div></a></li>`).join('')}</ul>` : ''}
       <h2>Termly reports</h2>
       ${reports.length ? `<ul class="list card-list">${reports.map((r) => `<li class="link"><a href="${esc(ctx.href('/print/report/' + r.id))}"><div class="row between"><div><div class="item-title">${esc(r.termName)}</div><small>${fdate(r.fromDate)} to ${fdate(r.toDate)}</small></div>${badge('Read and print', 'clay')}</div></a></li>`).join('')}</ul>`
         : empty('No termly report yet', 'Your child’s teacher and the principal publish a report at the end of each term.')}

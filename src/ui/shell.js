@@ -9,6 +9,7 @@ const N = {
   attendance: { path: '/attendance', label: 'Attendance', icon: 'check', short: 'Register' },
   diary: { path: '/diary', label: 'Daily diary', icon: 'book', short: 'Diary' },
   learning: { path: '/learning', label: 'Learning', icon: 'learn', short: 'Learn' },
+  evaluations: { path: '/evaluations', label: 'Progress Reports', icon: 'print', short: 'Reports' },
   pickup: { path: '/pickup', label: 'Going home', icon: 'door', short: 'Pick-up' },
   bus: { path: '/bus', label: 'Bus', icon: 'bus' },
   trip: { path: '/bus', label: 'Trip', icon: 'bus' },
@@ -26,8 +27,8 @@ const N = {
 };
 
 export const NAV = {
-  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'children', 'setup', 'administration', 'settings'],
-  teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning'],
+  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning', 'evaluations', 'bus', 'fees', 'structures', 'reports', 'audit', 'children', 'setup', 'administration', 'settings'],
+  teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning', 'evaluations'],
   accountant: ['home', 'fees', 'messages', 'structures', 'reports', 'calendar', 'audit'],
   parent: ['home', 'notices', 'messages', 'diary', 'learning', 'bus', 'fees'],
   driver: ['home', 'trip', 'calendar'],
@@ -41,9 +42,9 @@ const REAL_EXTRA = {
 
 export const isTouchRole = (role) => role === 'parent' || role === 'driver';
 // Teachers keep the rail on a wide screen but get the bottom tab bar on a phone: seven tabs fit in one row, so the
-// calendar stays in the rail and on the home page (Coming up).
+// calendar stays in the rail and on the home page (Coming up), and Progress Reports in the rail and on Learning.
 const PHONE_TABS = (role) => role === 'teacher';
-const PHONE_TAB_SKIP = new Set(['/calendar']);
+const PHONE_TAB_SKIP = new Set(['/calendar', '/evaluations']);
 export function navFor(role, real = false, { noBus = false } = {}) {
   const keys = [...(NAV[role] || ['home'])];
   if (role === 'parent' && noBus) keys.splice(keys.indexOf('bus'), 1, 'calendar'); // no child on a route: the calendar every family needs

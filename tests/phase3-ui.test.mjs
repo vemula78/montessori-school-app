@@ -145,7 +145,8 @@ test('parents: shared observations and published reports of their own children o
   assert.match(html, /Termly reports/);
   assert.match(html, /Term 1/);
   assert.match(html, /#\/print\/report\//);
-  assert.ok(!/progress/i.test(html) && !/Mastered|Practising|Introduced/.test(html), 'no progress anywhere on the parent learning page');
+  // the published annual "Progress Report" (wave 2) is listed by name; no progress grid or status words appear
+  assert.ok(!/progress(?! report)/i.test(html) && !/Mastered|Practising|Introduced/.test(html), 'no progress anywhere on the parent learning page');
   assert.ok(!/Share with family|Unshare|Add photo|Remove/.test(html), 'no staff controls');
   assert.ok(!html.includes('Submitted') && !html.includes('Draft'), 'only published reports are listed');
   await assert.rejects(api.progress.state({ studentId: neel.id }), { code: 'NOT_ALLOWED' });

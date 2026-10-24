@@ -51,7 +51,8 @@ export async function render(ctx) {
         <dt class="muted">Academic year</dt><dd style="margin:0">${esc(ay?.label || DASH)} ${ay ? `(${fdate(ay.startDate)} to ${fdate(ay.endDate)})` : ''}</dd>
         <dt class="muted">Weekly offs</dt><dd style="margin:0">${(db.school.weeklyOffs || []).map((d) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d]).join(', ') || DASH}</dd>
         <dt class="muted">Late fee rule</dt><dd style="margin:0">${rule ? `${esc(rule.graceDays)} grace days, ${rule.mode === 'perDay' ? `${money(rule.amountPaise)} per day${rule.capPaise != null ? `, capped at ${money(rule.capPaise)}` : ''}` : `${money(rule.amountPaise)} flat`}${rule.shiftDueToWorkingDay ? ', due date moves to the next working day' : ''}` : DASH}</dd>
-      </dl></div>
+      </dl>
+      <div class="row"><a class="btn" href="#/settings/school">Report footer, director, privacy contact, office hours, UPI</a></div></div>
     <div class="card stack"><h2>About this prototype</h2>
       <ul style="margin:0;padding-left:18px">
         <li>All people, schools and amounts are fake demo data.</li>
