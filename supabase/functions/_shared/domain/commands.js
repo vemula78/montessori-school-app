@@ -343,6 +343,21 @@ export const COMMANDS = {
     run: (db, [args], ctx) => G.recordGatewayRefund(db, args, ctx),
   },
 
+  /** cron-trips: end a forgotten trip whose route is finished (T.autoEndReason) — system only; anything else is left running. */
+  'transport.autoEndIfFinished': {
+    slice: 'transport', serverOnly: true, load: ([tripId]) => ({ tripId }),
+    authorize: p => allow(p, 'system'),
+    run(db, [tripId], ctx) {
+      const t = byId(db.trips, tripId);
+      if (!t || t.status !== 'active') return { ended: false, reason: null, unmarked: 0 };
+      const reason = T.autoEndReason(db, t, ctx.now);
+      const unmarked = T.unmarkedChildren(db, t).length;
+      if (!reason) return { ended: false, reason: null, unmarked };
+      T.endTrip(db, tripId, ctx, { auto: true });
+      t.autoEnded = reason;
+      return { ended: true, reason, unmarked };
+    },
+  },
   /** cron-daily housekeeping: end a trip left running (> 3 h) — system only. */
   'transport.autoEndTrip': {
     slice: 'transport', serverOnly: true, load: ([tripId]) => ({ tripId }),

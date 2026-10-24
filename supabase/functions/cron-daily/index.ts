@@ -6,7 +6,10 @@
 //      — or failed, and retried by the next run; the in-app list reads reminders_sent
 //   2. late fees due today (computed only: never applied automatically)
 //   3. retry gateway events with result error/pending, and events left 'received' by an interrupted run
-//   4. end trips still active after 3 hours; count active trips with no fix for 20 minutes (stale)
+//   4. end trips still active after 3 hours; end a forgotten trip whose route is finished (last stop left, every child
+//      marked: a drop 30 minutes after its last stop or with no fix for 20 minutes, a pickup 60 minutes after its last
+//      stop) so it stops publishing the driver's location; count active trips with no fix for 20 minutes (stale), and
+//      those of them with children not marked (staleWithUnmarked: a child may still be on the bus)
 //   5. prune trip positions older than 30 days
 //   6. count expired, unredeemed invites (they already fail redemption on expiry)
 //   7. prune command request ids (7 days) and order attempts (2 days)
@@ -122,17 +125,19 @@ Deno.serve(async (req) => {
 
     await step(report, only, 'trips', async () => {
       const active = await restAll('trips?status=eq.active&select=id,doc&order=id');
-      let ended = 0, stale = 0;
+      let ended = 0, finished = 0, stale = 0, staleWithUnmarked = 0;
       for (const t of active) {
         if (nowMs - Date.parse(t.doc.startedAt) > TRIP_MAX_MS) {
           await runCommand('transport.autoEndTrip', [t.id, 'still running 3 hours after it started'], system('cron-daily'));
           ended++;
           continue;
         }
+        const r = (await runCommand('transport.autoEndIfFinished', [t.id], system('cron-daily'))).result;
+        if (r.ended) { finished++; continue; }
         const last = await rest(`trip_positions?trip_id=eq.${encodeURIComponent(t.id)}&select=ts&order=ts.desc&limit=1`);
-        if (!last.length || nowMs - Date.parse(last[0].ts) > STALE_MS) stale++;
+        if (!last.length || nowMs - Date.parse(last[0].ts) > STALE_MS) { stale++; if (r.unmarked) staleWithUnmarked++; }
       }
-      return { active: active.length, ended, stale };
+      return { active: active.length, ended, finished, stale, staleWithUnmarked };
     });
 
     await step(report, only, 'positionsPruned', async () => {

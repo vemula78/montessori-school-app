@@ -489,3 +489,29 @@ test('#57 #72 real app: a GPS fix or a backlog does not re-download the school s
   assert.ok(!tables.includes('trips') && !tables.includes('trip_child_events'), 'a stop event no longer makes every signed-in user re-download the snapshot');
   assert.ok(tables.includes('messages'));
 });
+
+// ---------------------------------------------------------------- #69 forgotten trips
+test('#69 the system ends a finished route soon after its last stop, never one with a child unaccounted for', () => {
+  const db = loopFixture();
+  const r = db.routes[0];
+  const sys = ms => ({ actor: { role: 'system', id: 'cron-daily' }, now: iso(ms), today: '2026-10-02' });
+  const run = (tripId, ms) => COMMANDS['transport.autoEndIfFinished'].run(db, [tripId], sys(ms));
+  assert.equal(COMMANDS['transport.autoEndIfFinished'].serverOnly, true);
+  const trip = T.startTrip(db, { routeId: 'R1', direction: 'drop' }, ctx());
+  const fixes = drive([r.stops[0], r.stops[1], r.stops[2], r.stops[3], r.stops[4], { lat: 12.955, lng: 77.745 }]);
+  for (const f of fixes) T.recordPosition(db, trip.id, f);
+  const leftLast = T.tripChecklist(db, trip).lastStopLeftAt;
+  assert.ok(leftLast, 'the last stop was left');
+  const lastFixMs = Date.parse(fixes.at(-1).ts);
+  assert.equal(run(trip.id, Date.parse(leftLast) + 45 * 60000).ended, false, 'children not marked: it keeps running (a child may be on board)');
+  for (const k of ['K1', 'K2', 'K5']) T.markChild(db, trip.id, { studentId: k, type: 'dropped' }, ctx(lastFixMs));
+  assert.equal(run(trip.id, Date.parse(leftLast) + 10 * 60000).ended, false, 'too soon after the last stop');
+  const out = run(trip.id, Date.parse(leftLast) + 31 * 60000);
+  assert.equal(out.ended, true);
+  assert.equal(trip.status, 'ended');
+  assert.match(trip.autoEnded, /route finished/);
+
+  const pick = T.startTrip(db, { routeId: 'R1', direction: 'pickup' }, ctx(lastFixMs + 60000));
+  for (const k of ['K1', 'K2', 'K5']) T.markChild(db, pick.id, { studentId: k, type: 'boarded' }, ctx(lastFixMs + 70000));
+  assert.equal(run(pick.id, lastFixMs + 3 * 3600000 - 60000).ended, false, 'a pickup whose last stop was never left waits for the driver (or the 3-hour limit)');
+});

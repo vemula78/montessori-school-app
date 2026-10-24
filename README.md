@@ -113,7 +113,9 @@ an iPhone — is **[docs/GO-LIVE.md](docs/GO-LIVE.md)**. This section is the tec
 - **Reads**: `public.my_snapshot()` (SECURITY INVOKER) returns the Phase 1 `Db` shape built under the caller's RLS —
   it cannot contain more than RLS allows. Windows: attendance 60 days, diary 30, trips 7 (events only, no positions).
   The same read functions as the demo run over it, so screens are unchanged. The snapshot is refetched after each
-  own write, on realtime nudges (messages, notices, invoices, payments, trips; debounced 500 ms) and on tab focus.
+  own write (not after a GPS fix), on realtime nudges (messages, notices, invoices, payments, observations, reports;
+  debounced 500 ms) and on tab focus. Trips are not nudges: the bus screens follow the trip feed and read the route's
+  trips fresh (`activeTrip`, `parentView`, `trips`).
 - **Schema**: each entity is a JSONB `doc` (the Phase 1 shape) plus GENERATED key columns for RLS/indexes/uniqueness.
   Kept apart from the docs: health notes (`student_health`), staff phone/email (`staff_contacts`, admin only),
   guardian links (`student_guardians`, the RLS truth), trip hysteresis state (`trip_state`) and positions
@@ -220,8 +222,11 @@ The payment functions refuse to work if the key prefix (`rzp_test_` / `rzp_live_
 
 ### Live bus, alerts, daily job
 
-- The driver's phone posts each GPS fix as `transport.recordPosition`; events (nearing/arrived/departed) are derived
-  **on the server** by the Phase 1 hysteresis code. Parents receive positions and trip events through Realtime
+- The driver's phone posts each GPS fix as `transport.recordPosition` (a backlog after a dead zone as
+  `transport.recordPositions`, up to 50 per request); events (nearing/arrived/departed) are derived **on the server**
+  by the hysteresis code, only for stops in visiting order (pickup: seq; drop: scheduled drop times when every stop
+  has one). Leaving a stop tells the next stop's families it is next. A drop trip ends only with every child marked
+  and the driver's "bus checked: no child on board" tick (recorded on the trip). Parents receive positions and trip events through Realtime
   `postgres_changes`, authorized by RLS per subscriber (tested: a parent of another route, or one who withdrew
   `bus_live`, receives nothing).
 - **Web Push** (VAPID, aes128gcm) after each commit to guardians with `push` consent **for the child concerned, at
@@ -234,7 +239,9 @@ The payment functions refuse to work if the key prefix (`rzp_test_` / `rzp_live_
   list = `api.reminders.list()`), the late-fees-due list (computed, **never applied automatically**; the accountant
   applies them in one batch with `api.fees.applyLateFees`), retries of gateway events that errored, are pending or were
   left unprocessed, ending trips left running > 3 h (also every 15 minutes: job `cron-trips`, body
-  `{"steps":["trips"]}`), counting trips with no fix for 20 min, pruning positions older than 30 days, counting expired
+  `{"steps":["trips"]}`), ending a forgotten trip whose route is finished (last stop left and every child marked: a
+  drop 30 min after its last stop or with no fix for 20 min, a pickup 60 min after its last stop), counting trips with
+  no fix for 20 min (and those with children not marked), pruning positions older than 30 days, counting expired
   invites, and pruning request ids (7 days). Every list is read page by page (no 1000-row cap).
 - Phone limits: a web app cannot track in the background and iOS pauses it when the screen locks — keep the screen
   on (Wake Lock), dashboard-mounted phone, app installed. A native Android driver app or a ₹2–3k GPS tracker is a
