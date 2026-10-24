@@ -264,6 +264,11 @@ export const COMMANDS = {
 
   // ---- fees (ledger)
   'fees.saveStructure': { slice: 'ledger', authorize: fin, run: (db, [s], ctx) => F.saveStructure(db, s, ctx) },
+  /** startAcademicYear({startDate, endDate, label?, copyFrom?}) — idempotent: the id comes from startDate (AY2027-28). */
+  'fees.startAcademicYear': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => F.startAcademicYear(db, a || {}, ctx) },
+  'fees.setCurrentAcademicYear': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [id], ctx) => F.setCurrentAcademicYear(db, id, ctx) },
+  /** setLateFeeRule({graceDays, mode, amountPaise, capPaise, shiftDueToWorkingDay} | null) */
+  'fees.setLateFeeRule': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [rule], ctx) => F.setLateFeeRule(db, rule, ctx) },
   'fees.generateInvoices': { slice: 'ledger', authorize: fin, run: (db, [a], ctx) => F.generateInvoices(db, a, ctx) },
   'fees.addConcession': { slice: 'ledger', authorize: fin, run: (db, [invoiceId, c], ctx) => F.addConcession(db, invoiceId, c || {}, ctx) },
   'fees.removeConcession': { slice: 'ledger', authorize: fin, run: (db, [invoiceId, concessionId, reason], ctx) => F.removeConcession(db, invoiceId, concessionId, reason, ctx) },
@@ -1064,7 +1069,7 @@ const LEARNING = ['presentations', 'observations', 'photos', 'progressEvents', '
 const CARE = ['leaveRequests', 'pickupContacts', 'pickups'];
 export const SLICES = {
   ledger: { reads: [...BASE, 'calendarEvents', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'importRows', 'erasureRequests'],
-    writes: ['school', 'counters', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests'] },
+    writes: ['school', 'counters', 'academicYears', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests'] },
   messaging: { reads: [...BASE, 'notices', 'noticeReceipts', 'threads', 'messages'], writes: ['notices', 'noticeReceipts', 'threads', 'messages'] },
   calendar: { reads: [...BASE, 'calendarEvents'], writes: ['calendarEvents'] },
   transport: { reads: [...BASE, 'calendarEvents', 'trips'], writes: ['trips'] },

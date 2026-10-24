@@ -3,8 +3,8 @@
 // numbers come from the freshly re-read counters.
 
 import { fail, newId, nextNumber } from './ids.js';
-import { assertPaise, sumPaise, percentOf, amountInWords } from './money.js';
-import { isISODate, compareISO, diffDays, formatDate, tsToLocalDate } from './dates.js';
+import { assertPaise, sumPaise, percentOf, amountInWords, formatPaise } from './money.js';
+import { isISODate, compareISO, diffDays, formatDate, tsToLocalDate, daysInMonth } from './dates.js';
 import { byId, mustGet, activeStudents, fullName, isEldestSibling } from './people.js';
 import { academicYearFor } from './calendar.js';
 import { effectiveDueDate, computeLateFee } from './late-fee.js';
@@ -196,6 +196,105 @@ export function saveStructure(db, s, ctx) {
   if (idx >= 0) db.feeStructures[idx] = clean; else db.feeStructures.push(clean);
   appendAudit(db, ctx, { entity: 'feeStructure', entityId: clean.id, action: idx >= 0 ? 'update' : 'create', summary: `${s.programId} ${s.academicYearId}, ${clean.installments.length} installments` });
   return clean;
+}
+
+// ---------------- academic years and the late-fee rule (principal) ----------------
+
+/** The id of the academic year starting on startDate: '2027-06-01' → 'AY2027-28'. */
+export function academicYearIdFor(startDate) {
+  const y = Number(String(startDate).slice(0, 4));
+  return `AY${y}-${String((y + 1) % 100).padStart(2, '0')}`;
+}
+
+/** Same day `years` later; 29-Feb falls on 28-Feb in a year without one. */
+function shiftYears(iso, years) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const ny = y + years;
+  const day = Math.min(d, daysInMonth(ny, m));
+  return `${ny}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Start an academic year: {startDate, endDate, label?, copyFrom?}. The id comes from the start date (AY2027-28), so
+ * running it again never makes a second year: an existing year with the same dates is reused, with other dates refused.
+ * copyFrom (an academic year id) copies each of its fee structures whose programme has none in the new year yet, due
+ * dates moved by whole years; copied + skippedExisting = the structures of copyFrom. Holidays are not copied (their
+ * dates change every year: import the new list). The current year is changed separately (setCurrentAcademicYear).
+ */
+export function startAcademicYear(db, { startDate, endDate, label, copyFrom = null } = {}, ctx) {
+  if (!isISODate(startDate) || !isISODate(endDate)) fail('VALIDATION', 'Enter the first and last day of the year');
+  if (compareISO(endDate, startDate) <= 0) fail('VALIDATION', 'The last day must be after the first day');
+  if (diffDays(startDate, endDate) > 366) fail('VALIDATION', 'An academic year can be at most one year long');
+  const id = academicYearIdFor(startDate);
+  let ay = byId(db.academicYears, id);
+  if (ay && (ay.startDate !== startDate || ay.endDate !== endDate)) {
+    fail('VALIDATION', `${ay.label || id} already exists (${formatDate(ay.startDate)} – ${formatDate(ay.endDate)})`);
+  }
+  const clash = db.academicYears.find(x => x.id !== id && compareISO(startDate, x.endDate) <= 0 && compareISO(endDate, x.startDate) >= 0);
+  if (clash) fail('VALIDATION', `These dates overlap ${clash.label || clash.id} (${formatDate(clash.startDate)} – ${formatDate(clash.endDate)})`);
+  const yearCreated = !ay;
+  if (!ay) {
+    ay = { id, label: String(label || '').trim() || id.slice(2), startDate, endDate };
+    db.academicYears.push(ay);
+    appendAudit(db, ctx, { entity: 'academicYear', entityId: id, action: 'create', summary: `${ay.label}: ${formatDate(startDate)} – ${formatDate(endDate)}` });
+  }
+  let sourceStructures = 0, structuresCopied = 0, structuresSkippedExisting = 0;
+  if (copyFrom) {
+    const src = mustGet(db, 'academicYears', copyFrom, 'Academic year');
+    if (src.id === id) fail('VALIDATION', 'Copy fee structures from another year');
+    const years = Number(startDate.slice(0, 4)) - Number(src.startDate.slice(0, 4));
+    for (const st of db.feeStructures.filter(x => x.academicYearId === src.id)) {
+      sourceStructures++;
+      if (db.feeStructures.some(x => x.academicYearId === id && x.programId === st.programId)) { structuresSkippedExisting++; continue; }
+      saveStructure(db, { academicYearId: id, programId: st.programId, siblingDiscountBp: st.siblingDiscountBp, staffWardDiscountBp: st.staffWardDiscountBp ?? null,
+        installments: st.installments.map(i => ({ name: i.name, dueDate: shiftYears(i.dueDate, years), lines: i.lines })) }, ctx);
+      structuresCopied++;
+    }
+    appendAudit(db, ctx, { entity: 'academicYear', entityId: id, action: 'copyStructures', summary: `from ${src.id}: ${sourceStructures} structure(s), copied ${structuresCopied}, already there ${structuresSkippedExisting}` });
+  }
+  return { academicYear: { ...ay }, yearCreated, sourceStructures, structuresCopied, structuresSkippedExisting };
+}
+
+export function setCurrentAcademicYear(db, academicYearId, ctx) {
+  const ay = mustGet(db, 'academicYears', academicYearId, 'Academic year');
+  const before = db.school.currentAcademicYearId;
+  db.school.currentAcademicYearId = ay.id;
+  appendAudit(db, ctx, { entity: 'school', entityId: 'school', action: 'setCurrentAcademicYear', summary: `${before || '-'} → ${ay.id}` });
+  return { ...ay, current: true };
+}
+
+/** rule = {graceDays, mode:'flat'|'perDay', amountPaise, capPaise|null, shiftDueToWorkingDay}, or null (no late fees). */
+export function setLateFeeRule(db, rule, ctx) {
+  let clean = null;
+  if (rule !== null) {
+    const r = rule || {};
+    if (!Number.isInteger(r.graceDays) || r.graceDays < 0 || r.graceDays > 365) fail('VALIDATION', 'Grace days must be a whole number from 0 to 365');
+    if (!['flat', 'perDay'].includes(r.mode)) fail('VALIDATION', `Unknown late-fee mode: ${r.mode}`);
+    positive(r.amountPaise);
+    const cap = r.capPaise ?? null;
+    if (cap !== null) { assertPaise(cap); if (cap < r.amountPaise) fail('VALIDATION', 'The cap must be at least the late-fee amount'); }
+    clean = { graceDays: r.graceDays, mode: r.mode, amountPaise: r.amountPaise, capPaise: cap, shiftDueToWorkingDay: r.shiftDueToWorkingDay === true };
+  }
+  db.school.lateFeeRule = clean;
+  const text = clean ? `${clean.graceDays} grace day(s), ${formatPaise(clean.amountPaise)} ${clean.mode === 'perDay' ? 'per day' : 'flat'}${clean.capPaise !== null ? `, cap ${formatPaise(clean.capPaise)}` : ''}${clean.shiftDueToWorkingDay ? ', due date moves to a working day' : ''}` : 'no late fees';
+  appendAudit(db, ctx, { entity: 'school', entityId: 'school', action: 'setLateFeeRule', summary: text });
+  return clean;
+}
+
+/**
+ * What the home page should say about the year change on `today`: {kind:'startNext', currentId, endDate, daysLeft} from
+ * 60 days before the current year ends while no later year exists; {kind:'switch', currentId, nextId, nextLabel} once
+ * the next year has begun but is not current; else null.
+ */
+export function yearRolloverNotice(db, today) {
+  const cur = byId(db.academicYears, db.school.currentAcademicYearId);
+  if (!cur) return null;
+  const next = db.academicYears.filter(a => compareISO(a.startDate, cur.endDate) > 0).sort((a, b) => compareISO(a.startDate, b.startDate))[0];
+  if (!next) {
+    const daysLeft = diffDays(today, cur.endDate);
+    return daysLeft <= 60 ? { kind: 'startNext', currentId: cur.id, endDate: cur.endDate, daysLeft } : null;
+  }
+  return compareISO(today, next.startDate) >= 0 ? { kind: 'switch', currentId: cur.id, nextId: next.id, nextLabel: next.label || next.id } : null;
 }
 
 // ---------------- invoices ----------------

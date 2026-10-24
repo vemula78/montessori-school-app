@@ -1,5 +1,5 @@
 // Role-specific landing page. A failed read is shown as "unavailable" (a dash), never as an empty or healthy result.
-import { todayISO } from '../../domain/dates.js';
+import { todayISO, addDays } from '../../domain/dates.js';
 import { esc, icon, money, fdate, fdatetime, badge, empty, fullName, indexBy, errMessage, DASH } from '../components.js';
 import { mountInstall } from '../install.js';
 import { openRequestCount } from './admin.js';
@@ -194,6 +194,7 @@ async function adminHome(ctx) {
     : empty('All clear', 'Nothing is waiting for you right now.')}`;
   return `
     <div class="page-head"><div><h1>School overview</h1><div class="sub">${fdate(today)} &middot; ${esc(db.academicYears.find((a) => a.id === ayId)?.label || DASH)}</div></div></div>
+    ${await yearBanner(ctx)}
     ${attFail || busFail ? unavailable(`${attFail ? 'Some attendance registers' : ''}${attFail && busFail ? ' and ' : ''}${busFail ? 'Some bus data' : ''}`) : ''}
     <div class="grid cols-4">
       ${kpi('active children', esc(students.filter((s) => s.status === 'active').length))}
@@ -207,6 +208,19 @@ async function adminHome(ctx) {
     <div class="grid cols-3">${tile('#/notices', 'bell', 'Notices', 'Send and track acknowledgements')}${tile('#/calendar', 'calendar', 'Calendar', 'Holidays, events, CSV import')}${tile('#/attendance', 'check', 'Attendance')}${tile('#/learning', 'learn', 'Learning', 'Observations, progress, reports, curriculum')}${tile('#/bus', 'bus', 'Bus fleet')}${tile('#/fees', 'rupee', 'Fees')}${tile('#/reports', 'chart', 'Reports')}</div>`;
 }
 
+// The year change (fees): from 60 days before the current year ends; payments dated after it fail until the next year exists.
+async function yearBanner(ctx) {
+  let n = null;
+  try { n = await ctx.api.fees.yearNotice(); } catch { return ''; }
+  if (!n) return '';
+  const admin = ctx.persona.role === 'admin';
+  if (n.kind === 'switch') {
+    return `<div class="banner warn" role="status"><strong>${esc(n.nextLabel)} has begun.</strong> ${admin ? `<a href="${esc(ctx.href('/fees/structures', { ay: n.nextId }))}">Make it the current year</a>` : 'Ask the principal to make it the current year'} so the fee lists and reports show it.</div>`;
+  }
+  const when = n.daysLeft >= 0 ? `ends on ${fdate(n.endDate)} (${n.daysLeft === 0 ? 'today' : `in ${n.daysLeft} day${n.daysLeft === 1 ? '' : 's'}`})` : `ended on ${fdate(n.endDate)}`;
+  return `<div class="banner ${n.daysLeft >= 0 ? 'warn' : 'bad'}" role="status"><strong>The academic year ${esc(when)}.</strong> No payment dated after that can be recorded until the next year is started. ${admin ? '<a href="#/fees/structures">Start the next academic year</a>' : 'Ask the principal to start the next academic year (Fee structures).'}</div>`;
+}
+
 async function accountantHome(ctx) {
   const { api, db } = ctx;
   const today = todayISO();
@@ -218,12 +232,34 @@ async function accountantHome(ctx) {
   // collected = money actually received today; applying existing credit is an internal transfer, not new money
   let collected = null;
   try { collected = (await api.fees.payments({ from: today, to: today })).filter((p) => p.status === 'valid' && p.mode !== 'credit').reduce((s, p) => s + p.amountPaise, 0); } catch { /* unavailable */ }
+  // what needs doing, from figures the app already works out; a check that cannot be made is listed as such
+  const real = api.mode !== 'demo';
+  const todo = [], failed = [];
+  try {
+    const lf = await api.fees.lateFeesDueList();
+    if (lf.length) todo.push([real ? '#/fees/late-fees' : ctx.href('/fees', { status: 'overdue' }), 'rupee', `${lf.length} invoice${lf.length === 1 ? '' : 's'} with a late fee to apply (${money(lf.reduce((s, x) => s + x.lateFeePaise, 0))})`]);
+  } catch { failed.push('late fees'); }
+  try {
+    const bad = (await api.fees.reconcile()).checks.filter((c) => !c.ok).length;
+    if (bad) todo.push([ctx.href('/reports', { tab: 'reconcile' }), 'shield', `${bad} reconciliation check${bad === 1 ? '' : 's'} failing`]);
+  } catch { failed.push('reconciliation'); }
+  if (real && api.fees.settlementReport) {
+    try {
+      const n = (await api.fees.settlementReport({ from: addDays(today, -60), to: today })).unmatchedLedger.length;
+      if (n) todo.push(['#/reports/settlements', 'chart', `${n} online payment${n === 1 ? '' : 's'} or refund${n === 1 ? '' : 's'} of the last 60 days not in an imported settlement`]);
+    } catch { failed.push('online settlements'); }
+  }
+  const attention = `<h2 style="margin-top:20px">Needs attention</h2>${failed.length ? unavailable(`The ${failed.join(', ')} check`) : ''}${todo.length
+    ? `<ul class="list card-list">${todo.map(([h, ic, t]) => `<li><a class="row" href="${esc(h)}" style="text-decoration:none;color:inherit">${icon(ic)}<span class="grow">${esc(t)}</span><span aria-hidden="true">&rarr;</span></a></li>`).join('')}</ul>`
+    : failed.length ? '' : empty('All clear', 'No late fees to apply and every reconciliation check passes.')}`;
   return `
     <div class="page-head"><div><h1>Accounts</h1><div class="sub">${fdate(today)}</div></div></div>
+    ${await yearBanner(ctx)}
     ${rows === null || collected === null ? unavailable('Some fee figures') : ''}
-    <div class="grid cols-3">${kpi('outstanding', money(outstanding), outstanding ? 'bad' : '')}${kpi('children with overdue fees', overdue ?? DASH, overdue ? 'bad' : '')}${kpi('collected today', money(collected), 'good')}</div>
+    <div class="grid cols-3">${kpi('outstanding', money(outstanding), outstanding ? 'bad' : '')}${kpi('children with overdue fees', overdue ?? DASH, overdue ? 'bad' : '')}<a class="kpi good" href="${esc(ctx.href('/reports', { tab: 'collection', from: today, to: today }))}" style="text-decoration:none;color:inherit"><div class="v">${money(collected)}</div><div class="l">collected today</div></a></div>
+    ${attention}
     <h2 style="margin-top:20px">Go to</h2>
-    <div class="grid cols-2">${tile('#/fees', 'rupee', 'Invoices & payments', 'Record payments, print receipts')}${tile('#/fees/structures', 'receipt', 'Fee structures', 'Generate invoices by term')}${tile('#/reports', 'chart', 'Reports', 'Outstanding, day book, reconciliation')}${tile('#/audit', 'shield', 'Audit log')}</div>`;
+    <div class="grid cols-2">${tile('#/fees', 'rupee', 'Invoices & payments', 'Record payments, print receipts')}${tile('#/fees/structures', 'receipt', 'Fee structures', 'Generate invoices by term')}${tile('#/reports', 'chart', 'Reports', 'Outstanding, day book, summary, reconciliation')}${tile('#/audit', 'shield', 'Audit log')}${real ? `${tile('#/fees/late-fees', 'rupee', 'Late fees due')}${tile('#/reminders', 'bell', 'Reminders sent')}${tile('#/reports/settlements', 'chart', 'Online settlements')}` : ''}</div>`;
 }
 
 async function driverHome(ctx) {

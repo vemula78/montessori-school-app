@@ -269,6 +269,13 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     heads: op(() => { allow('admin', 'accountant', 'parent'); return db().feeHeads; }),
     structures: op(({ academicYearId } = {}) => { fin(); return db().feeStructures.filter(s => !academicYearId || s.academicYearId === academicYearId); }),
     saveStructure: cmd('fees.saveStructure'),
+    /** startAcademicYear({startDate, endDate, label?, copyFrom?}) → {academicYear, yearCreated, sourceStructures, structuresCopied, structuresSkippedExisting} — principal; safe to repeat. */
+    startAcademicYear: cmd('fees.startAcademicYear'),
+    setCurrentAcademicYear: cmd('fees.setCurrentAcademicYear'),
+    /** setLateFeeRule({graceDays, mode:'flat'|'perDay', amountPaise, capPaise|null, shiftDueToWorkingDay} | null) — principal. */
+    setLateFeeRule: cmd('fees.setLateFeeRule'),
+    /** yearNotice() → {kind:'startNext', …} | {kind:'switch', …} | null: the year change the home page reminds staff of. */
+    yearNotice: op(() => { fin(); return F.yearRolloverNotice(db(), today()); }),
     generateInvoices: cmd('fees.generateInvoices'),
     invoices: op(({ studentId, status, academicYearId, programId } = {}) => {
       const p = allow('admin', 'accountant', 'parent'); const d = db(); const asOf = today();
