@@ -129,6 +129,20 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     updateStudent: cmd('people.updateStudent'),
     /** updateGuardian({guardianId, firstName?, lastName?, phone?, relation?}) — principal only; the way a correction request is carried out. */
     updateGuardian: cmd('people.updateGuardian'),
+    /** addStudent({admissionNo, firstName, lastName, dob, program, route?, stop?, guardian1Name, guardian1Phone, …}) — principal; one new admission. */
+    addStudent: cmd('people.addStudent'),
+  };
+  /** School set-up (principal; setStopPosition also the route's driver): classes, staff, bus routes and stops. */
+  const setup = {
+    saveProgram: cmd('setup.saveProgram'),
+    setProgramActive: cmd('setup.setProgramActive'),
+    saveStaff: cmd('setup.saveStaff'),
+    setStaffActive: cmd('setup.setStaffActive'),
+    saveRoute: cmd('setup.saveRoute'),
+    setRouteActive: cmd('setup.setRouteActive'),
+    saveStop: cmd('setup.saveStop'),
+    removeStop: cmd('setup.removeStop'),
+    setStopPosition: cmd('setup.setStopPosition'),
   };
 
   const withStats = (d, n) => ({ ...n, ...M.noticeStats(d, n.id) });
@@ -489,7 +503,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     suggestMapping: op((kind, headers) => { allow('admin', 'accountant'); return I.suggestMapping(kind, headers || []); }),
   };
 
-  return { people, notices, threads, calendar, transport, fees, attendance, diary, care, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
+  return { people, setup, notices, threads, calendar, transport, fees, attendance, diary, care, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
 }
 
 /**
@@ -974,7 +988,7 @@ export function createApi(opts = {}) {
     getDb() { return storage ? storage.db : null; },
     /** Real app: refetch the server snapshot. Demo: nothing to fetch. */
     refresh: op(() => undefined),
-    session, people, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
+    session, people, setup: surface.setup, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     curriculum, observations, progress, reports, photos, rights: surface.rights, oversight: surface.oversight,
     auth, consent, push, import: imports, reminders,
     /** test hook */

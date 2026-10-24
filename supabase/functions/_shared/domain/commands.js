@@ -5,7 +5,7 @@
 //
 // Entry shape:
 //   slice      which revision-guarded slice the command writes ('ledger'|'messaging'|'calendar'|'transport'|
-//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'|'care'); the server
+//              'classroom'|'people'|'account'|'settlement'|'export'|'erasure'|'learning'|'retention'|'rights'|'care'|'setup'); the server
 //              loads that slice's collections.
 //   authorize(p, db, args)   throws DomainError NOT_ALLOWED / NOT_FOUND; p = persona (see personaFor)
 //   run(db, args, ctx, p)    mutates db and returns the api result (same shape in both modes)
@@ -45,6 +45,7 @@ import { previewCurriculumCsv } from './curriculum.js';
 import { isISODate, compareISO } from './dates.js';
 import * as AD from './admin.js';
 import * as CA from './care.js';
+import * as SU from './setup.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
@@ -58,6 +59,7 @@ export const ERASED_MESSAGE = '[message erased at the guardian\'s request]';
 // ---------------------------------------------------------------- personas
 
 function staffPersona(db, s) {
+  if (s.active === false) return null; // taken off the staff (setup.setStaffActive): no persona, so no command runs as them
   const allPrograms = db.programs.map(p => p.id);
   const allStudents = activeStudents(db).map(x => x.id);
   const progName = id => byId(db.programs, id)?.name ?? id;
@@ -68,7 +70,7 @@ function staffPersona(db, s) {
     return { ...base, label: `${base.label} (${programIds.map(progName).join(', ')})`, programIds, studentIds: activeStudents(db).filter(x => programIds.includes(x.programId)).map(x => x.id) };
   }
   if (s.role === 'driver') {
-    const routeIds = db.routes.filter(r => r.driverId === s.id || r.attendantId === s.id).map(r => r.id);
+    const routeIds = db.routes.filter(r => r.active !== false && (r.driverId === s.id || r.attendantId === s.id)).map(r => r.id);
     return { ...base, routeIds, programIds: [], studentIds: activeStudents(db).filter(x => routeIds.includes(x.routeId)).map(x => x.id) };
   }
   return null;
@@ -731,6 +733,7 @@ export const COMMANDS = {
       };
       if ('programId' in patch && patch.programId !== s.programId) {
         if (!byId(db.programs, patch.programId)) fail('NOT_FOUND', 'Program not found');
+        if (!SU.isOpen(byId(db.programs, patch.programId))) fail('VALIDATION', 'That class is closed');
         changes.push(`program ${s.programId} → ${patch.programId}`);
         s.programId = patch.programId;
       }
@@ -739,6 +742,7 @@ export const COMMANDS = {
         if (routeId) {
           const r = byId(db.routes, routeId);
           if (!r) fail('NOT_FOUND', 'Route not found');
+          if (routeId !== s.routeId && !SU.isOpen(r)) fail('VALIDATION', 'That route is closed');
           if (!r.stops.some(x => x.id === stopId)) fail('VALIDATION', 'Choose a stop on that route');
         } else if (stopId) fail('VALIDATION', 'A stop needs a route');
         if (routeId !== s.routeId || stopId !== s.stopId) changes.push(`route ${s.routeId || '-'}/${s.stopId || '-'} → ${routeId || '-'}/${stopId || '-'}`);
@@ -789,6 +793,25 @@ export const COMMANDS = {
   'admin.clearAnnouncement': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, args, ctx) => AD.clearAnnouncement(db, ctx) },
   /** updateGuardian({guardianId, firstName?, lastName?, phone?, relation?}) → guardian (the correction desk). */
   'people.updateGuardian': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => AD.updateGuardian(db, a || {}, ctx) },
+  /** addStudent({admissionNo, firstName, dob, program, guardian1Name, …}) — one new admission, by the import's own rules. */
+  'people.addStudent': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.admitChild(db, a || {}, ctx) },
+
+  // ---- school set-up: classes, staff, bus routes and stops (src/domain/setup.js). Route commands load the route's running
+  // trip (hint routeId) so a stop or driver never changes under a bus; removing a stop loads every trip (its history).
+  'setup.saveProgram': { slice: 'setup', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.saveProgram(db, a || {}, ctx) },
+  'setup.setProgramActive': { slice: 'setup', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.setProgramActive(db, a || {}, ctx) },
+  'setup.saveStaff': { slice: 'setup', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.saveStaff(db, a || {}, ctx) },
+  'setup.setStaffActive': { slice: 'setup', authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.setStaffActive(db, a || {}, ctx) },
+  'setup.saveRoute': { slice: 'setup', load: ([a]) => ({ routeId: String(a?.id ?? '') }), authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.saveRoute(db, a || {}, ctx) },
+  'setup.setRouteActive': { slice: 'setup', load: ([a]) => ({ routeId: String(a?.routeId ?? '') }), authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.setRouteActive(db, a || {}, ctx) },
+  'setup.saveStop': { slice: 'setup', load: ([a]) => ({ routeId: String(a?.routeId ?? '') }), authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.saveStop(db, a || {}, ctx) },
+  'setup.removeStop': { slice: 'setup', load: () => ({ tripsAll: true }), authorize: p => allow(p, 'admin'), run: (db, [a], ctx) => SU.removeStop(db, a || {}, ctx) },
+  /** setStopPosition({routeId, stopId, lat, lng, accuracy}) — the principal, or a driver/attendant of the route, at the stop. */
+  'setup.setStopPosition': {
+    slice: 'setup', load: ([a]) => ({ routeId: String(a?.routeId ?? '') }),
+    authorize: (p, db, [a]) => { allow(p, 'admin', 'driver'); mustRoute(p, db, a?.routeId); },
+    run: (db, [a], ctx) => SU.setStopPosition(db, a || {}, ctx),
+  },
 
   // ---- administration: sign-in accounts (server only; the admin-accounts function pairs each with the auth server)
   /** blockUser(userId) → {userId, status:'blocked'} — never yourself, never the last active principal. */
@@ -1064,6 +1087,8 @@ export const SLICES = {
   retention: { reads: [...BASE, ...LEARNING, 'diaryEntries', 'attendance', 'threads', 'messages', ...CARE], writes: RT.PURGEABLE },
   // schema v4: absences reported in advance, pick-up people and the pick-up log (small tables: loaded whole)
   care: { reads: [...BASE, ...CARE], writes: CARE },
+  // school set-up (classes, staff, routes and stops); trips are read only to refuse changes under a running bus
+  setup: { reads: [...BASE, 'trips'], writes: ['programs', 'staff', 'routes'] },
 };
 /** Server-only collections (not part of the Db document; consents joined it in schema v2). */
 export const SERVER_COLLECTIONS = ['invites', 'appUsers', 'erasureRequests', 'importBatches', 'importRows', 'settlementLines', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents'];
