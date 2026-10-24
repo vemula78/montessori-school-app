@@ -1,7 +1,7 @@
 // Student fee ledger: record payments (cash/UPI/cheque/bank), apply credit, cancel, refund. Staff write; parents read.
 import { todayISO } from '../../domain/dates.js';
 import { rupeesToPaise, formatPaise } from '../../domain/money.js';
-import { esc, money, fdate, badge, empty, options, invoiceStatusBadge, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH } from '../components.js';
+import { esc, money, fdate, badge, empty, options, invoiceStatusBadge, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH, PAYMENT_MODE_LABEL } from '../components.js';
 
 const STAFF = ['admin', 'accountant'];
 const MODES = [['cash', 'Cash'], ['upi', 'UPI'], ['cheque', 'Cheque'], ['bank', 'Bank transfer']];
@@ -56,13 +56,13 @@ export async function render(ctx) {
   const studentRefunds = db.refunds.filter((r) => payById.get(r.paymentId)?.studentId === student.id);
 
   ctx.el.innerHTML = `<p><a href="#/fees">&larr; Fees</a></p>
-    <div class="page-head"><div><h1>${esc(fullName(student))} ${student.status === 'left' ? badge('Left', 'mute') : ''}</h1><div class="sub">${esc(db.programs.find((p) => p.id === student.programId)?.name || DASH)} &middot; Adm. ${esc(student.admissionNo)} &middot; ${guardians.map((g) => esc(fullName(g))).join(', ') || DASH}</div></div></div>
+    <div class="page-head"><div><h1>${esc(fullName(student))} ${student.status === 'left' ? badge('Left', 'mute') : ''}</h1><div class="sub">${esc(db.programs.find((p) => p.id === student.programId)?.name || DASH)} &middot; Adm. ${esc(student.admissionNo)} &middot; ${guardians.map((g) => esc(fullName(g))).join(', ') || DASH}${staff ? ` &middot; fee category: ${student.feeCategory === 'staffWard' ? 'staff ward' : 'regular'}${persona.role === 'admin' ? ' <button class="btn sm ghost" id="fp-feecat">Change</button>' : ''}` : ''}</div></div></div>
     <div id="fp-flash"></div>
     <div class="grid cols-3" style="margin-bottom:14px">
       <div class="kpi ${outstanding ? 'bad' : 'good'}"><div class="v">${money(outstanding)}</div><div class="l">outstanding</div></div>
       <div class="kpi"><div class="v">${money(credit)}</div><div class="l">credit on account</div></div>
       <div class="kpi"><div class="v">${open.length}</div><div class="l">open invoices</div></div></div>
-    <h2>Invoices</h2>
+    <div class="row between"><h2>Invoices</h2>${staff ? '<button class="btn sm" id="fp-newinv">New invoice</button>' : ''}</div>
     ${invoices.length ? `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Instalment</th><th>Due</th><th class="r">Total</th><th class="r">Paid</th><th class="r">Balance</th><th>Status</th></tr></thead><tbody>
       ${invoices.map((i) => `<tr class="${i.status === 'cancelled' ? 'row-mute' : ''}"><td class="nowrap"><a href="#/fees/invoice/${esc(i.id)}">${esc(i.number)}</a></td><td>${esc(i.installmentName)}</td><td class="nowrap">${fdate(i.dueDate)}</td><td class="r num">${money(i.totalPaise)}</td><td class="r num">${money(i.paidPaise)}</td><td class="r num">${i.status === 'cancelled' ? DASH : money(i.balancePaise)}</td><td>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</td></tr>`).join('')}
       </tbody></table></div>` : empty('No invoices for this child')}
@@ -85,7 +85,7 @@ export async function render(ctx) {
     </form>` : ''}` : ''}
     <h2 style="margin-top:20px">Payments</h2>
     ${payments.length ? `<div class="tablewrap"><table><thead><tr><th>Receipt</th><th>Date</th><th>Mode</th><th class="r">Amount</th><th>Applied to</th><th>Status</th><th></th></tr></thead><tbody>
-      ${payments.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td class="nowrap"><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td class="nowrap">${fdate(p.paidOn)}</td><td>${esc(p.mode)}${p.mode === 'online-mock' ? ' ' + badge('MOCK', 'warn') : ''}${p.mode === 'online' && p.gatewayMode === 'test' ? ' ' + badge('TEST', 'warn') : ''}</td>
+      ${payments.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td class="nowrap"><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td class="nowrap">${fdate(p.paidOn)}</td><td>${esc(PAYMENT_MODE_LABEL[p.mode] || p.mode)}${p.mode === 'online-mock' ? ' ' + badge('MOCK', 'warn') : ''}${p.mode === 'online' && p.gatewayMode === 'test' ? ' ' + badge('TEST', 'warn') : ''}</td>
         <td class="r num">${money(p.amountPaise)}</td><td><small>${p.allocations.map((a) => esc(invNum.get(a.invoiceId) || a.invoiceId) + ' ' + money(a.amountPaise)).join('<br>') || DASH}${p.creditPaise ? `<br>credit ${money(p.creditPaise)}` : ''}</small></td>
         <td>${p.status === 'valid' ? badge('Valid', 'ok') : badge('Cancelled', 'mute')}${p.status === 'cancelled' && p.cancelReason ? `<br><small>${esc(p.cancelReason)}</small>` : ''}</td>
         <td class="nowrap"><a class="btn sm" href="#/print/receipt/${esc(p.id)}">Receipt</a>${staff && p.status === 'valid' ? ` <button class="btn sm" data-refund="${esc(p.id)}">Refund</button> ${p.gatewayPaymentId || p.mode === 'online' ? '<br><small class="muted">Online payment: it cannot be cancelled, only refunded (from the payment provider).</small>' : `<button class="btn sm ghost" data-cancel="${esc(p.id)}">Cancel</button>`}` : ''}</td></tr>`).join('')}
@@ -142,6 +142,17 @@ export async function render(ctx) {
       out.textContent = `Goes to the oldest dues first (${money(outstanding)} due)${amount > outstanding ? `: ${money(amount - outstanding)} more than is due` : ''}.`;
     }
   });
+  ctx.el.querySelector('#fp-newinv')?.addEventListener('click', async () => {
+    const made = await newInvoice(ctx, student);
+    if (made) { await ctx.rerender(); flash(`<div class="banner ok"><strong>Invoice ${esc(made.number)} issued</strong> - ${esc(made.installmentName)}, ${money(made.lines.reduce((s, l) => s + l.amountPaise, 0))}, due ${fdate(made.dueDate)}. <a href="#/fees/invoice/${esc(made.id)}">Open it</a></div>`); }
+  });
+  ctx.el.querySelector('#fp-feecat')?.addEventListener('click', async () => {
+    const next = student.feeCategory === 'staffWard' ? 'regular' : 'staffWard';
+    if (!(await confirmDialog('Fee category', next === 'staffWard'
+      ? `Mark ${fullName(student)} as a staff ward? The fee structure's staff-ward discount then applies to invoices generated from now on (instead of the sibling discount). Invoices already issued do not change.`
+      : `Mark ${fullName(student)} as regular? Invoices generated from now on get no staff-ward discount. Invoices already issued do not change.`, { okLabel: next === 'staffWard' ? 'Mark staff ward' : 'Mark regular' }))) return;
+    if ((await attempt(() => api.people.updateStudent({ studentId: student.id, feeCategory: next }), 'Fee category changed')).ok) ctx.rerender();
+  });
   ctx.el.querySelector('#fp-credit')?.addEventListener('click', async () => {
     if (!(await confirmDialog('Apply credit', `Apply the full credit of ${money(credit)} to the oldest open invoice(s)?`, { okLabel: 'Apply credit' }))) return;
     // allowCredit stays true: when credit exceeds the debt, the remainder is kept as credit instead of being refused
@@ -160,4 +171,35 @@ export async function render(ctx) {
       if (await refundForm(ctx, pay, invoices)) ctx.rerender();
     }
   });
+}
+
+/** A one-off invoice for this child (uniform, books, a trip, a returned-cheque charge, a joiner's term). Resolves the invoice, or null. */
+async function newInvoice(ctx, student) {
+  const [years, heads] = await Promise.all([ctx.api.calendar.academicYears(), ctx.api.fees.heads()]);
+  const usable = heads.filter((h) => h.kind !== 'lateFee' && h.kind !== 'openingBalance');
+  const today = todayISO();
+  const cur = years.find((y) => y.current) || years.at(-1);
+  const row = (i) => `<div class="row" style="margin-top:6px;flex-wrap:nowrap"><select name="head_${i}" aria-label="Fee head ${i + 1}" style="flex:1;min-width:0">${options(usable.map((h) => ({ value: h.id, label: h.name })), usable[0]?.id)}</select>
+    <input name="amt_${i}" inputmode="decimal" placeholder="&#8377;" aria-label="Amount ${i + 1} in rupees" style="width:110px"><input name="note_${i}" placeholder="note (optional)" aria-label="Note ${i + 1}" style="flex:1;min-width:0"></div>`;
+  let made = null;
+  const ok = await formModal({
+    title: `New invoice: ${fullName(student)}`, submitLabel: 'Issue invoice',
+    fieldsHtml: `<label class="field"><span class="lbl">Title</span><input name="title" maxlength="80" required placeholder="e.g. Uniform, Field trip, Cheque return charge"></label>
+      <div class="grid cols-2"><label class="field"><span class="lbl">Academic year</span><select name="ay">${options(years.map((y) => ({ value: y.id, label: y.label || y.id })), cur?.id)}</select></label>
+      <label class="field"><span class="lbl">Due date</span><input type="date" name="due" value="${esc(today)}" required></label></div>
+      <fieldset style="border:1px solid var(--line);border-radius:12px;padding:10px 12px"><legend style="font-weight:800;font-size:.82rem">Fee lines (leave unused rows empty)</legend>${[0, 1, 2].map(row).join('')}</fieldset>
+      <p class="help">The invoice takes the next number. No discount is applied automatically; add a concession on the invoice if one is due. Term fees are generated from Fee structures, not here.</p>`,
+    onSubmit: async (v) => {
+      const lines = [];
+      for (const i of [0, 1, 2]) {
+        if (!String(v[`amt_${i}`] || '').trim()) continue;
+        const p = rupeesToPaise(v[`amt_${i}`]);
+        if (p === null || p <= 0) throw new Error(`Line ${i + 1}: enter an amount greater than zero`);
+        lines.push({ headId: v[`head_${i}`], amountPaise: p, description: String(v[`note_${i}`] || '').trim() || undefined });
+      }
+      if (!lines.length) throw new Error('Enter at least one amount');
+      made = await ctx.api.fees.createInvoice({ studentId: student.id, academicYearId: v.ay, title: v.title, dueDate: v.due, lines });
+    },
+  });
+  return ok ? made : null;
 }

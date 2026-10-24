@@ -270,6 +270,8 @@ export const COMMANDS = {
   /** setLateFeeRule({graceDays, mode, amountPaise, capPaise, shiftDueToWorkingDay} | null) */
   'fees.setLateFeeRule': { slice: 'ledger', authorize: p => allow(p, 'admin'), run: (db, [rule], ctx) => F.setLateFeeRule(db, rule, ctx) },
   'fees.generateInvoices': { slice: 'ledger', authorize: fin, run: (db, [a], ctx) => F.generateInvoices(db, a, ctx) },
+  /** createInvoice({studentId, academicYearId, title, dueDate, lines:[{headId, amountPaise, description?}]}) — one child, one-off charge. */
+  'fees.createInvoice': { slice: 'ledger', authorize: fin, run: (db, [a], ctx) => F.createInvoice(db, a || {}, ctx) },
   'fees.addConcession': { slice: 'ledger', authorize: fin, run: (db, [invoiceId, c], ctx) => F.addConcession(db, invoiceId, c || {}, ctx) },
   'fees.removeConcession': { slice: 'ledger', authorize: fin, run: (db, [invoiceId, concessionId, reason], ctx) => F.removeConcession(db, invoiceId, concessionId, reason, ctx) },
   'fees.applyLateFee': { slice: 'ledger', authorize: fin, run: (db, [invoiceId, asOfDate], ctx) => F.applyLateFee(db, invoiceId, asOfDate || ctx.today, ctx) },
@@ -720,7 +722,7 @@ export const COMMANDS = {
 
   // ---- enrolment and retention
   /**
-   * updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?}) — the only way a child changes class
+   * updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?, feeCategory?}) — the only way a child changes class
    * or leaves. status 'left' sets leftOn (given, else today); back to 'active' clears it; leftOn alone corrects the
    * date of a child who has left.
    */
@@ -729,7 +731,7 @@ export const COMMANDS = {
     run(db, [{ studentId, ...patch } = {}], ctx) {
       const s = byId(db.students, studentId);
       if (!s) fail('NOT_FOUND', 'Student not found');
-      for (const k of Object.keys(patch)) if (!['programId', 'status', 'leftOn', 'routeId', 'stopId'].includes(k)) fail('VALIDATION', `Unknown field: ${k}`);
+      for (const k of Object.keys(patch)) if (!['programId', 'status', 'leftOn', 'routeId', 'stopId', 'feeCategory'].includes(k)) fail('VALIDATION', `Unknown field: ${k}`);
       const changes = [];
       const leftDate = d => {
         if (!isISODate(d)) fail('VALIDATION', `Invalid leaving date: ${d}`);
@@ -763,6 +765,11 @@ export const COMMANDS = {
         const d = leftDate(patch.leftOn);
         if (d !== s.leftOn) changes.push(`leaving date ${s.leftOn || 'unknown'} → ${d}`);
         s.leftOn = d;
+      }
+      if ('feeCategory' in patch) { // decides the structure's staff-ward discount on invoices generated from now on
+        if (!['regular', 'staffWard'].includes(patch.feeCategory)) fail('VALIDATION', `Unknown fee category: ${patch.feeCategory}`);
+        if (patch.feeCategory !== (s.feeCategory || 'regular')) changes.push(`fee category ${s.feeCategory || 'regular'} → ${patch.feeCategory}`);
+        s.feeCategory = patch.feeCategory;
       }
       appendAudit(db, ctx, { entity: 'student', entityId: s.id, action: 'update', summary: changes.join('; ') || 'no change' });
       return { ...s, name: fullName(s) };

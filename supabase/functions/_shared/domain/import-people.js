@@ -6,7 +6,7 @@
 
 import { fail, newId, nextNumber } from './ids.js';
 import { parseDate, compareISO, diffDays } from './dates.js';
-import { rupeesToPaise, sumPaise } from './money.js';
+import { rupeesToPaise, sumPaise, formatPaise } from './money.js';
 import { byId } from './people.js';
 import { academicYearFor } from './calendar.js';
 import { appendAudit } from './audit.js';
@@ -346,7 +346,7 @@ export function applyRows(db, { kind, mapping, rows }, batchId, ctx) {
     created, merged, updated, openingBalancePaise, sourceOutstandingPaise: v.sourceOutstandingPaise,
     rows: v.rows.map(r => ({ rowNo: r.rowNo, line: r.line, status: r.status, reason: r.reason })) };
   appendAudit(db, ctx, { entity: 'import', entityId: batchId || '-', action: 'commit',
-    summary: `${kind}: input ${result.inputRows}, ok ${result.ok}, quarantined ${result.quarantined}, duplicate ${result.duplicate}; created students ${created.students}, guardians ${created.guardians}, invoices ${created.invoices}; merged guardians ${merged.guardians} (contacts added ${updated.guardianContacts}); opening balances ${openingBalancePaise} paise` });
+    summary: `${kind}: input ${result.inputRows}, ok ${result.ok}, quarantined ${result.quarantined}, duplicate ${result.duplicate}; created students ${created.students}, guardians ${created.guardians}, invoices ${created.invoices}; merged guardians ${merged.guardians} (contacts added ${updated.guardianContacts}); opening balances ${formatPaise(openingBalancePaise)}` });
   return result;
 }
 

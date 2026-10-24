@@ -83,7 +83,7 @@ function refreshStatus(db, inv) {
   if (inv.status !== 'cancelled') inv.status = derivedStatus(db, inv);
 }
 
-/** Lines and concessions are immutable once any valid allocation exists. */
+/** Lines are immutable and concessions cannot be removed once any valid allocation exists (one up to the balance may be added). */
 export function isLocked(db, inv) {
   return db.payments.some(p => p.status === 'valid' && p.allocations.some(a => a.invoiceId === inv.id && a.amountPaise > 0));
 }
@@ -351,6 +351,46 @@ export function generateInvoices(db, { academicYearId, programId, installmentNam
   return { created, skippedExisting, eligibleStudents: students.length, invoiceIds };
 }
 
+/**
+ * One invoice for one child outside the fee structures (uniform, books, a trip, a bounced-cheque charge, a joiner's
+ * term): {studentId, academicYearId, title, dueDate, lines:[{headId, amountPaise, description?}]}. The title is its
+ * instalment name. It may not be an instalment of the child's structure for that year (generateInvoices would then
+ * skip the child) nor repeat a live invoice of the child with that title, so a repeated request never bills twice.
+ * No automatic discounts; numbered from the same contiguous sequence.
+ */
+export function createInvoice(db, { studentId, academicYearId, title, dueDate, lines } = {}, ctx) {
+  const s = mustGet(db, 'students', studentId, 'Student');
+  const ay = mustGet(db, 'academicYears', academicYearId, 'Academic year');
+  const name = String(title ?? '').trim();
+  if (!name || name.length > 80) fail('VALIDATION', 'Give the invoice a title of at most 80 characters (e.g. Uniform)');
+  if (!isISODate(dueDate)) fail('VALIDATION', 'Enter a due date');
+  if (compareISO(dueDate, ay.startDate) < 0 || compareISO(dueDate, ay.endDate) > 0) {
+    fail('VALIDATION', `Due ${formatDate(dueDate)} is outside ${ay.label || ay.id} (${formatDate(ay.startDate)} – ${formatDate(ay.endDate)})`);
+  }
+  const same = x => String(x).trim().toLowerCase() === name.toLowerCase();
+  const st = db.feeStructures.find(x => x.academicYearId === ay.id && x.programId === s.programId);
+  if (st && st.installments.some(i => same(i.name))) fail('VALIDATION', `"${name}" is an instalment of the fee structure; generate it from Fee structures`);
+  if (db.invoices.some(i => i.studentId === s.id && i.academicYearId === ay.id && i.status !== 'cancelled' && same(i.installmentName))) {
+    fail('VALIDATION', `${fullName(s)} already has a "${name}" invoice for ${ay.label || ay.id}`);
+  }
+  if (!Array.isArray(lines) || !lines.length) fail('VALIDATION', 'Add at least one fee line');
+  const out = lines.map(l => {
+    const head = mustGet(db, 'feeHeads', l.headId, 'Fee head');
+    if (head.kind === 'lateFee' || head.kind === 'openingBalance') fail('VALIDATION', `${head.name} lines are not added by hand`);
+    positive(l.amountPaise);
+    const note = String(l.description ?? '').trim().slice(0, 120);
+    return { id: newId('iln'), headId: head.id, description: note ? `${head.name} — ${note}` : head.name, amountPaise: l.amountPaise };
+  });
+  const inv = {
+    id: newId('inv'), number: nextNumber(db, 'invoice', ay.id), studentId: s.id, academicYearId: ay.id, installmentName: name,
+    issueDate: ctx.today, dueDate, lines: out, concessions: [], status: 'issued', cancelReason: null, createdAt: ctx.now,
+  };
+  db.invoices.push(inv);
+  refreshStatus(db, inv);
+  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'create', summary: `${inv.number}: ${name} for ${s.id}, ${formatPaise(sumPaise(out.map(l => l.amountPaise)))}` });
+  return inv;
+}
+
 function editableInvoice(db, invoiceId) {
   const inv = mustGet(db, 'invoices', invoiceId, 'Invoice');
   if (inv.status === 'cancelled') fail('VALIDATION', 'Invoice is cancelled');
@@ -358,15 +398,23 @@ function editableInvoice(db, invoiceId) {
   return inv;
 }
 
+/**
+ * A concession lowers what is left to pay. On a part-paid invoice it may be at most the balance, so paid + concessions
+ * never exceed the lines; removing a concession stays locked once anything is paid (it would raise a paid invoice).
+ */
 export function addConcession(db, invoiceId, { type, description, amountPaise }, ctx) {
-  const inv = editableInvoice(db, invoiceId);
+  const inv = mustGet(db, 'invoices', invoiceId, 'Invoice');
+  if (inv.status === 'cancelled') fail('VALIDATION', 'Invoice is cancelled');
   if (!CONCESSION_TYPES.includes(type)) fail('VALIDATION', `Unknown concession type: ${type}`);
   positive(amountPaise);
-  if (amountPaise > invoiceAmounts(db, inv).totalPaise) fail('INVALID_AMOUNT', 'Concession exceeds the invoice total');
+  const a = invoiceAmounts(db, inv);
+  if (isLocked(db, inv)) {
+    if (amountPaise > a.balancePaise) fail('INVOICE_LOCKED', `Invoice has payments; a concession can be at most its balance (${formatPaise(Math.max(0, a.balancePaise))})`);
+  } else if (amountPaise > a.totalPaise) fail('INVALID_AMOUNT', 'Concession exceeds the invoice total');
   const c = { id: newId('con'), type, description: String(description || '').trim() || type, amountPaise, approvedBy: ctx.actor.id, createdAt: ctx.now };
   inv.concessions.push(c);
   refreshStatus(db, inv);
-  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'addConcession', summary: `${inv.number}: ${type} ${amountPaise} paise` });
+  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'addConcession', summary: `${inv.number}: ${type} ${formatPaise(amountPaise)}` });
   return c;
 }
 
@@ -377,7 +425,7 @@ export function removeConcession(db, invoiceId, concessionId, reason, ctx) {
   if (!c) fail('NOT_FOUND', 'Concession not found');
   inv.concessions = inv.concessions.filter(x => x.id !== concessionId);
   refreshStatus(db, inv);
-  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'removeConcession', summary: `${inv.number}: ${c.type} ${c.amountPaise} paise removed — ${why}` });
+  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'removeConcession', summary: `${inv.number}: ${c.type} ${formatPaise(c.amountPaise)} removed — ${why}` });
   return inv;
 }
 
@@ -393,7 +441,7 @@ export function applyLateFee(db, invoiceId, asOf, ctx) {
   const line = { id: newId('iln'), headId: head.id, description: `${head.name} — ${due.days} day(s) after ${formatDate(due.effectiveDueDate)} (as of ${formatDate(asOf)})`, amountPaise: due.amountPaise, appliedOn: ctx.today };
   inv.lines.push(line);
   refreshStatus(db, inv);
-  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'applyLateFee', summary: `${inv.number}: +${due.amountPaise} paise (${due.days} days)` });
+  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'applyLateFee', summary: `${inv.number}: +${formatPaise(due.amountPaise)} (${due.days} days)` });
   return line;
 }
 
@@ -420,7 +468,7 @@ export function waiveLateFee(db, invoiceId, reason, ctx) {
   }
   (inv.lateFeeWaivers || (inv.lateFeeWaivers = [])).push({ waivedPaise, waivedUpTo: ctx.today, reason: why, by: ctx.actor.id, at: ctx.now });
   refreshStatus(db, inv);
-  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'waiveLateFee', summary: `${inv.number}: −${waivedPaise} paise waived up to ${ctx.today} (${removed} paise of applied lines removed) — ${why}` });
+  appendAudit(db, ctx, { entity: 'invoice', entityId: inv.id, action: 'waiveLateFee', summary: `${inv.number}: −${formatPaise(waivedPaise)} waived up to ${ctx.today} (${formatPaise(removed)} of applied lines removed) — ${why}` });
   return inv;
 }
 
@@ -430,7 +478,7 @@ export function cancelInvoice(db, invoiceId, reason, ctx) {
   if (inv.status === 'cancelled') fail('VALIDATION', 'Invoice is already cancelled');
   const why = requireReason(reason);
   const a = invoiceAmounts(db, inv);
-  if (a.paidPaise !== 0) fail('VALIDATION', `Invoice has ${a.paidPaise} paise paid; refund or cancel those payments first`);
+  if (a.paidPaise !== 0) fail('VALIDATION', `Invoice has ${formatPaise(a.paidPaise)} paid; refund or cancel those payments first`);
   inv.status = 'cancelled';
   inv.cancelReason = why;
   inv.cancelledOn = ctx.today;
@@ -520,7 +568,7 @@ export function recordPayment(db, { studentId, amountPaise, mode, reference = nu
   if (mode === 'credit') consumeCredits(db, creditRows, amountPaise, c => { c.consumedByPaymentId = pay.id; });
   if (creditPaise > 0) db.credits.push({ id: newId('crd'), studentId, amountPaise: creditPaise, sourcePaymentId: pay.id, consumedByPaymentId: null });
   for (const a of allocs) refreshStatus(db, byId(db.invoices, a.invoiceId));
-  appendAudit(db, ctx, { entity: 'payment', entityId: pay.id, action: 'record', summary: `${pay.receiptNumber}: ${mode} ${amountPaise} paise, allocated ${amountPaise - creditPaise}, credit ${creditPaise}` });
+  appendAudit(db, ctx, { entity: 'payment', entityId: pay.id, action: 'record', summary: `${pay.receiptNumber}: ${mode} ${formatPaise(amountPaise)}, allocated ${formatPaise(amountPaise - creditPaise)}, credit ${formatPaise(creditPaise)}` });
   return pay;
 }
 
@@ -593,7 +641,7 @@ export function refund(db, args, ctx, { gatewayRefundId = null } = {}) {
   tieToGateway(r, gatewayRefundId);
   db.refunds.push(r);
   refreshStatus(db, inv);
-  appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${amountPaise} paise against ${pay.receiptNumber} / ${inv.number} — ${why}` });
+  appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${formatPaise(amountPaise)} against ${pay.receiptNumber} / ${inv.number} — ${why}` });
   return r;
 }
 
@@ -631,7 +679,7 @@ function refundCredit(db, { creditId, paymentId, amountPaise, mode, reference = 
   r.creditIds = consumeCredits(db, rows, amountPaise, c => { c.consumedByRefundId = r.id; }).map(c => c.id);
   tieToGateway(r, gatewayRefundId);
   db.refunds.push(r);
-  appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${amountPaise} paise of unused credit from ${pay.receiptNumber} — ${why}` });
+  appendAudit(db, ctx, { entity: 'refund', entityId: r.id, action: 'record', summary: `${r.voucherNumber}: ${formatPaise(amountPaise)} of unused credit from ${pay.receiptNumber} — ${why}` });
   return r;
 }
 

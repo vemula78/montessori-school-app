@@ -6,7 +6,7 @@
 // a capture already recorded (same gatewayPaymentId) is returned, never recorded twice.
 
 import { fail } from './ids.js';
-import { assertPaise, sumPaise, rupeesToPaise } from './money.js';
+import { assertPaise, sumPaise, rupeesToPaise, formatPaise } from './money.js';
 import { compareISO, dateInZone, IST_OFFSET_MIN, parseDate, isISODate } from './dates.js';
 import { byId, fullName } from './people.js';
 import { invoiceBalance, recordPayment, refund } from './fees.js';
@@ -88,7 +88,7 @@ export function recordGatewayPayment(db, { order, payment: rp, gatewayMode }, ct
   const status = statusOf(pay);
   if (status === 'amount_mismatch') {
     // Money is real: it is recorded anyway and flagged for the accountant (failure mode in plan (d)4).
-    appendAudit(db, ctx, { entity: 'payment', entityId: pay.id, action: 'amountMismatch', summary: `${pay.receiptNumber}: captured ${rp.amount} paise, order ${order.id} was for ${order.amountPaise} paise` });
+    appendAudit(db, ctx, { entity: 'payment', entityId: pay.id, action: 'amountMismatch', summary: `${pay.receiptNumber}: captured ${formatPaise(rp.amount)}, order ${order.id} was for ${formatPaise(order.amountPaise)}` });
   }
   return { payment: pay, created: true, status };
 }
@@ -115,8 +115,8 @@ export function recordGatewayRefund(db, { refund: rr }, ctx) {
   const manual = prior.filter(r => r.paymentId === pay.id);
   const manualPaise = sumPaise(manual.map(r => r.amountPaise));
   if (manualPaise > rr.amount) {
-    appendAudit(db, ctx, { entity: 'refund', entityId: rr.id, action: 'gatewayRefundMismatch', summary: `${rr.id}: ${manualPaise} paise recorded by hand, gateway refunded ${rr.amount} paise; nothing booked` });
-    return { pending: false, created: false, refunds: manual, mismatch: `${manualPaise} paise recorded by hand is more than the ${rr.amount} paise the gateway refunded` };
+    appendAudit(db, ctx, { entity: 'refund', entityId: rr.id, action: 'gatewayRefundMismatch', summary: `${rr.id}: ${formatPaise(manualPaise)} recorded by hand, gateway refunded ${formatPaise(rr.amount)}; nothing booked` });
+    return { pending: false, created: false, refunds: manual, mismatch: `${formatPaise(manualPaise)} recorded by hand is more than the ${formatPaise(rr.amount)} the gateway refunded` };
   }
   if (manualPaise === rr.amount) return { pending: false, created: false, refunds: manual };
   const amount = rr.amount - manualPaise;
@@ -151,7 +151,7 @@ export function recordGatewayRefund(db, { refund: rr }, ctx) {
     }
   }
   const room = sumPaise(parts.map(x => x.room)) + unusedCredit + sumPaise(viaCredit.map(x => x.room));
-  if (amount > room) fail('INVALID_AMOUNT', `Gateway refund ${amount} paise exceeds what ${pay.receiptNumber} can still return (${room} paise); record it manually after checking`);
+  if (amount > room) fail('INVALID_AMOUNT', `Gateway refund ${formatPaise(amount)} exceeds what ${pay.receiptNumber} can still return (${formatPaise(room)}); record it manually after checking`);
   let left = amount;
   const out = [];
   const take = (paymentId, invoiceId, amt) => {

@@ -197,6 +197,10 @@ export function readFileText(file) {
   });
 }
 
+// Plain words for stored codes (fee tables, reports, exports).
+export const PAYMENT_MODE_LABEL = { cash: 'Cash', upi: 'UPI', cheque: 'Cheque', bank: 'Bank transfer', online: 'Online', 'online-mock': 'Online (mock)', credit: 'Credit applied' };
+export const CONCESSION_LABEL = { sibling: 'Sibling', staffWard: 'Staff ward', scholarship: 'Scholarship', adhoc: 'Ad-hoc' };
+
 export const invoiceStatusBadge = (status, overdue = false) => {
   if (status === 'paid') return badge('Paid', 'ok');
   if (status === 'cancelled') return badge('Cancelled', 'mute');

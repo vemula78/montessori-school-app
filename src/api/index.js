@@ -125,7 +125,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
       if (!visibleGuardianIds(d, p).includes(guardianId)) throw new ApiError('NOT_ALLOWED', 'Not visible to you');
       return childrenOf(d, guardianId).filter(s => p.role !== 'teacher' || p.studentIds.includes(s.id)).map(s => studentView(d, s, p));
     }),
-    /** updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?}) — principal only; the one way a child changes class or leaves. */
+    /** updateStudent({studentId, programId?, status?, leftOn?, routeId?, stopId?, feeCategory?}) — principal only; the one way a child changes class or leaves. */
     updateStudent: cmd('people.updateStudent'),
     /** updateGuardian({guardianId, firstName?, lastName?, phone?, relation?}) — principal only; the way a correction request is carried out. */
     updateGuardian: cmd('people.updateGuardian'),
@@ -277,6 +277,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     /** yearNotice() → {kind:'startNext', …} | {kind:'switch', …} | null: the year change the home page reminds staff of. */
     yearNotice: op(() => { fin(); return F.yearRolloverNotice(db(), today()); }),
     generateInvoices: cmd('fees.generateInvoices'),
+    /** createInvoice({studentId, academicYearId, title, dueDate, lines:[{headId, amountPaise, description?}]}) — a one-off invoice for one child. */
+    createInvoice: cmd('fees.createInvoice'),
     invoices: op(({ studentId, status, academicYearId, programId } = {}) => {
       const p = allow('admin', 'accountant', 'parent'); const d = db(); const asOf = today();
       return d.invoices

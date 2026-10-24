@@ -127,6 +127,77 @@ test('#41 home notice: 60 days before the year ends without a next year; after i
   assert.deepEqual(F.yearRolloverNotice(db, '2027-06-01'), { kind: 'switch', currentId: 'AY2026-27', nextId: 'AY2027-28', nextLabel: '2027-28' });
 });
 
+// ---------------------------------------------------------------- #51 concession on a part-paid invoice
+
+test('#51 a concession can be added to a part-paid invoice up to its balance; paid + concessions never exceed the total; removal stays locked', () => {
+  const db = withInvoices();
+  const a1 = inv(db, 'A', 'Term 1');
+  F.recordPayment(db, { studentId: 'A', amountPaise: 1000000, mode: 'cash', paidOn: '2026-06-10', allocations: [{ invoiceId: a1.id, amountPaise: 1000000 }] }, ctx());
+  const before = F.invoiceAmounts(db, a1);
+  assert.equal(before.balancePaise, 1800000);
+  assert.throws(() => F.addConcession(db, a1.id, { type: 'scholarship', description: 'too much', amountPaise: 1800001 }, ctx()), { code: 'INVOICE_LOCKED' });
+  const c = execute('fees.addConcession', db, [a1.id, { type: 'scholarship', description: 'Hardship', amountPaise: 500000 }], ctx(), ACCOUNTANT);
+  const after = F.invoiceAmounts(db, a1);
+  assert.equal(after.balancePaise, 1300000);
+  assert.ok(after.paidPaise + after.concessionPaise <= after.linesPaise);
+  assert.equal(db.invoices.find(i => i.id === a1.id).status, 'partiallyPaid');
+  // the whole remaining balance as a concession settles it; nothing more can be conceded
+  execute('fees.addConcession', db, [a1.id, { type: 'adhoc', description: 'Rest waived', amountPaise: 1300000 }], ctx(), ACCOUNTANT);
+  const end = F.invoiceAmounts(db, a1);
+  assert.equal(end.balancePaise, 0);
+  assert.equal(end.paidPaise + end.concessionPaise, end.linesPaise);
+  assert.equal(db.invoices.find(i => i.id === a1.id).status, 'paid');
+  assert.throws(() => F.addConcession(db, a1.id, { type: 'adhoc', description: 'x', amountPaise: 1 }, ctx()), { code: 'INVOICE_LOCKED' });
+  assert.throws(() => F.removeConcession(db, a1.id, c.id, 'changed mind', ctx()), { code: 'INVOICE_LOCKED' });
+  assert.ok(reconcile(db).checks.every(x => x.ok));
+  assert.match(db.auditLog.at(-1).summary, /₹13,000\.00/, 'audit summaries show rupees (#53)');
+});
+
+// ---------------------------------------------------------------- #43 one-off invoice for one child
+
+test('#43 a one-off invoice for one child takes the next number; numbering stays contiguous; it cannot shadow a structure instalment or repeat', () => {
+  const db = fixture();
+  F.generateInvoices(db, { academicYearId: 'AY2026-27', programId: 'P1', installmentName: 'Term 1' }, ctx('2026-06-01'));
+  const args = { studentId: 'B', academicYearId: 'AY2026-27', title: 'Uniform', dueDate: '2026-07-10', lines: [{ headId: 'H-MAT', amountPaise: 150000, description: 'two sets' }, { headId: 'H-ADM', amountPaise: 500000 }] };
+  assert.throws(() => execute('fees.createInvoice', db, [args], ctx(), persona('teacher', 'stf-t')), { code: 'NOT_ALLOWED' });
+  const one = execute('fees.createInvoice', db, [args], ctx('2026-07-01'), ACCOUNTANT);
+  assert.equal(one.number, 'INV/26-27/0003', 'after the two Term 1 invoices');
+  assert.equal(one.installmentName, 'Uniform');
+  assert.deepEqual(one.lines.map(l => [l.description, l.amountPaise]), [['Materials — two sets', 150000], ['Admission', 500000]]);
+  assert.equal(F.invoiceAmounts(db, one).balancePaise, 650000);
+  assert.deepEqual(one.concessions, [], 'no automatic discounts on a one-off charge');
+  F.generateInvoices(db, { academicYearId: 'AY2026-27', programId: 'P2', installmentName: 'Term 1' }, ctx('2026-07-02'));
+  const numbers = db.invoices.map(i => Number(i.number.slice(-4))).sort((a, b) => a - b);
+  assert.deepEqual(numbers, numbers.map((_, i) => i + 1), 'contiguous: 1..n with no gap or repeat');
+  assert.throws(() => execute('fees.createInvoice', db, [args], ctx(), ACCOUNTANT), /already has a "Uniform" invoice/, 'a repeat (double tap) is refused');
+  assert.throws(() => execute('fees.createInvoice', db, [{ ...args, title: 'term 2' }], ctx(), ACCOUNTANT), /instalment of the fee structure/);
+  assert.throws(() => execute('fees.createInvoice', db, [{ ...args, title: 'Trip', lines: [{ headId: 'H-LATE', amountPaise: 100 }] }], ctx(), ACCOUNTANT), /not added by hand/);
+  assert.throws(() => execute('fees.createInvoice', db, [{ ...args, title: 'Trip', lines: [] }], ctx(), ACCOUNTANT), /at least one fee line/);
+  assert.throws(() => execute('fees.createInvoice', db, [{ ...args, title: 'Trip', lines: [{ headId: 'H-MAT', amountPaise: 0 }] }], ctx(), ACCOUNTANT), { code: 'INVALID_AMOUNT' });
+  assert.throws(() => execute('fees.createInvoice', db, [{ ...args, title: 'Trip', dueDate: '2027-07-01' }], ctx(), ACCOUNTANT), /outside/);
+  // it is paid like any other invoice
+  F.recordPayment(db, { studentId: 'B', amountPaise: 650000, mode: 'upi', paidOn: '2026-07-05', allocations: [{ invoiceId: one.id, amountPaise: 650000 }] }, ctx('2026-07-05'));
+  assert.equal(db.invoices.find(i => i.id === one.id).status, 'paid');
+  assert.ok(reconcile(db).checks.every(x => x.ok));
+  assert.match(db.auditLog.find(a => a.action === 'create' && a.entity === 'invoice').summary, /Uniform.*₹6,500\.00/);
+});
+
+// ---------------------------------------------------------------- #50 staff-ward fee category
+
+test('#50 the principal can mark a child staff-ward (audited); the structure\'s staff-ward discount then applies to new invoices', () => {
+  const db = fixture();
+  const c = ctx('2026-06-01', 'admin', 'stf-p');
+  assert.throws(() => execute('people.updateStudent', db, [{ studentId: 'C', feeCategory: 'vip' }], c, PRINCIPAL), /Unknown fee category/);
+  assert.throws(() => execute('people.updateStudent', db, [{ studentId: 'C', feeCategory: 'staffWard' }], c, ACCOUNTANT), { code: 'NOT_ALLOWED' });
+  execute('people.updateStudent', db, [{ studentId: 'C', feeCategory: 'staffWard' }], c, PRINCIPAL);
+  assert.equal(db.students.find(s => s.id === 'C').feeCategory, 'staffWard');
+  assert.match(db.auditLog.at(-1).summary, /fee category regular → staffWard/);
+  F.generateInvoices(db, { academicYearId: 'AY2026-27', programId: 'P1', installmentName: 'Term 2' }, c);
+  const cons = inv(db, 'C', 'Term 2').concessions;
+  assert.deepEqual(cons.map(x => [x.type, x.amountPaise]), [['staffWard', 1250000]], '50% of tuition from FS1');
+  assert.deepEqual(inv(db, 'A', 'Term 2').concessions, [], 'a regular child gets none');
+});
+
 // ---------------------------------------------------------------- screens (demo api over the seed; fake DOM as in tests/care-ui.test.mjs)
 
 const NOW = new Date();
@@ -253,6 +324,46 @@ test('#46 an amount within what is due records at once, with no dialog', async (
   const seen = await answeringDialogs(false, () => submitPayment(last, { amount: '100' }));
   assert.equal(seen.length, 0);
   assert.equal((await api.fees.payments({ studentId: sid })).length, n0 + 1);
+});
+
+const Invoices = await import('../src/ui/screens/fees-invoices.js');
+
+test('#43 #50 #54 ledger: New invoice for staff; fee category shown, changeable by the principal only; payment modes in words', async () => {
+  const api = await mkApi();
+  api.session.set(ACCOUNTANT_P);
+  const pays = await api.fees.payments({});
+  const sid = pays.find((p) => p.mode === 'cash').studentId;
+  const acc = await draw(api, ACCOUNTANT_P, Payment, {}, { studentId: sid });
+  assert.match(acc, /id="fp-newinv"/);
+  assert.match(acc, /fee category: (regular|staff ward)/);
+  assert.ok(!acc.includes('id="fp-feecat"'), 'the accountant cannot change it');
+  assert.match(acc, /<td>Cash/);
+  assert.ok(!acc.includes('<td>cash'), 'no raw mode code');
+  assert.match(await draw(api, PRINCIPAL_P, Payment, {}, { studentId: sid }), /id="fp-feecat"/);
+  const kid = (await api.people.childrenOf('grd-01'))[0].id;
+  const parent = await draw(api, PARENT_P, Payment, {}, { studentId: kid });
+  assert.ok(!parent.includes('fp-newinv') && !parent.includes('fee category'), 'parents see neither');
+  api.session.set(ACCOUNTANT_P);
+  const made = await api.fees.createInvoice({ studentId: sid, academicYearId: 'AY2026-27', title: 'Field trip', dueDate: todayISO(), lines: [{ headId: 'fh-materials', amountPaise: 75000 }] });
+  assert.match(await draw(api, ACCOUNTANT_P, Payment, {}, { studentId: sid }), new RegExp(`${made.number.replace(/\//g, '\\/')}<\\/a><\\/td><td>Field trip`));
+});
+
+test('#51 #54 invoice detail: a part-paid invoice still offers Add concession (up to the balance); concession types in words; a child who left with dues can be picked', async () => {
+  const api = await mkApi();
+  api.session.set(ACCOUNTANT_P);
+  const part = (await api.fees.invoices({})).find((i) => i.status === 'partiallyPaid');
+  const html = await draw(api, ACCOUNTANT_P, Invoices, {}, { id: part.id });
+  assert.match(html, /id="fi-con"/);
+  assert.match(html, /A concession of up to the balance/);
+  const withCon = (await api.fees.invoices({})).find((i) => i.concessions.length);
+  const h2 = await draw(api, ACCOUNTANT_P, Invoices, {}, { id: withCon.id });
+  assert.ok(!/badge info">(sibling|staffWard|adhoc|scholarship)</.test(h2), 'no raw concession code');
+  assert.match(h2, /badge info">(Sibling|Staff ward|Ad-hoc|Scholarship)</);
+  api.session.set(PRINCIPAL_P);
+  await api.people.updateStudent({ studentId: part.studentId, status: 'left' });
+  const list = await draw(api, ACCOUNTANT_P, Invoices);
+  const name = (await api.people.student(part.studentId)).name;
+  assert.match(list, new RegExp(`<optgroup label="Left, with dues"><option value="${part.studentId}">${name}</option>`));
 });
 
 test('#42 a programme without a structure offers Create; the editor can add instalments and heads (blank rows dropped)', async () => {

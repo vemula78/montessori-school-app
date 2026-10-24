@@ -2,7 +2,7 @@
 // (a mock in the demo, the real payment provider in the real app).
 import { todayISO } from '../../domain/dates.js';
 import { rupeesToPaise } from '../../domain/money.js';
-import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, dueHint, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH } from '../components.js';
+import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, dueHint, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH, PAYMENT_MODE_LABEL, CONCESSION_LABEL } from '../components.js';
 import { isRealMode } from '../mode.js';
 import { payOnline, resumePending } from './pay-online.js';
 
@@ -30,6 +30,10 @@ async function staffList(ctx) {
   const live = all.filter((i) => i.status !== 'cancelled');
   const sum = (arr, k) => arr.reduce((s, i) => s + i[k], 0);
   const students = db.students.filter((s) => s.status === 'active');
+  // a child who has left can still owe fees (any year): offered separately so the office can record the payment
+  const leftIds = new Set(db.students.filter((s) => s.status !== 'active').map((s) => s.id));
+  const owing = new Set(leftIds.size ? (await api.fees.invoices({})).filter((i) => leftIds.has(i.studentId) && isOpen(i)).map((i) => i.studentId) : []);
+  const leftWithDues = db.students.filter((s) => owing.has(s.id));
 
   const extra = REAL ? '<a class="btn" href="#/fees/late-fees">Late fees due</a><a class="btn" href="#/reminders">Reminders sent</a>' : '';
   ctx.el.innerHTML = `${pageHead('Fees', 'Invoices for the current academic year', `${extra}<a class="btn" href="#/fees/structures">Fee structures</a>`)}
@@ -39,7 +43,7 @@ async function staffList(ctx) {
       <div class="kpi ${sum(live, 'balancePaise') ? 'bad' : ''}"><div class="v">${money(sum(live, 'balancePaise'))}</div><div class="l">outstanding</div></div>
     </div>
     <div class="card" style="margin-bottom:14px"><div class="inline-form">
-      <label class="field"><span class="lbl">Record a payment for</span><select id="fi-student" style="min-width:220px">${options(students.map((s) => ({ value: s.id, label: fullName(s) })), '', { blank: 'Choose a child' })}</select></label>
+      <label class="field"><span class="lbl">Record a payment for</span><select id="fi-student" style="min-width:220px">${options(students.map((s) => ({ value: s.id, label: fullName(s) })), '', { blank: 'Choose a child' })}${leftWithDues.length ? `<optgroup label="Left, with dues">${options(leftWithDues.map((s) => ({ value: s.id, label: fullName(s) })), '')}</optgroup>` : ''}</select></label>
       <button class="btn primary" id="fi-open">Open ledger</button></div></div>
     <div class="row" style="margin-bottom:10px">
       <input id="fi-q" type="search" placeholder="Search child or invoice no." value="${esc(query.q || '')}" style="width:auto;min-width:200px" aria-label="Search">
@@ -130,10 +134,10 @@ async function detail(ctx) {
       <div class="kpi ${inv.balancePaise ? 'bad' : ''}"><div class="v">${inv.status === 'cancelled' ? DASH : money(inv.balancePaise)}</div><div class="l">balance</div></div>
       <div class="kpi"><div class="v" style="font-size:1.1rem">${fdate(inv.dueDate)}</div><div class="l">due${inv.effectiveDueDate !== inv.dueDate ? ` (effective ${fdate(inv.effectiveDueDate)})` : ''}</div></div></div>
     ${inv.status === 'cancelled' ? `<div class="banner">Cancelled: ${esc(inv.cancelReason || DASH)}</div>` : ''}
-    ${inv.locked && staff ? '<div class="banner">Payments exist, so lines and concessions are locked. To correct: refund or cancel the payment, cancel the invoice, then reissue.</div>' : ''}
+    ${inv.locked && staff ? `<div class="banner">Payments exist, so the lines are locked and concessions cannot be removed.${open ? ` A concession of up to the balance (${money(inv.balancePaise)}) can still be added.` : ''} To change a line: refund or cancel the payment, cancel the invoice, then reissue.</div>` : ''}
     <div class="tablewrap"><table><thead><tr><th>Line</th><th class="r">Amount</th></tr></thead><tbody>
       ${inv.lines.map((l) => `<tr><td>${esc(l.description)}${l.kind === 'lateFee' ? ' ' + badge('late fee', 'bad') : ''}</td><td class="r num">${money(l.amountPaise)}</td></tr>`).join('')}
-      ${inv.concessions.map((c) => `<tr><td>${esc(c.description)} ${badge(c.type, 'info')}${staff && !inv.locked && inv.status !== 'cancelled' ? ` <button class="btn sm ghost" data-rmcon="${esc(c.id)}">Remove</button>` : ''}</td><td class="r num">&minus;${money(c.amountPaise)}</td></tr>`).join('')}
+      ${inv.concessions.map((c) => `<tr><td>${esc(c.description)} ${badge(CONCESSION_LABEL[c.type] || c.type, 'info')}${staff && !inv.locked && inv.status !== 'cancelled' ? ` <button class="btn sm ghost" data-rmcon="${esc(c.id)}">Remove</button>` : ''}</td><td class="r num">&minus;${money(c.amountPaise)}</td></tr>`).join('')}
       </tbody><tfoot><tr><td>Total</td><td class="r num">${money(inv.totalPaise)}</td></tr></tfoot></table></div>
     ${staff && inv.status !== 'cancelled' ? `
       <div class="card stack" style="margin-top:14px"><h3 style="margin:0">Late fee</h3>
@@ -144,12 +148,12 @@ async function detail(ctx) {
         <small>Late fees are never added automatically; applying one adds a line and an audit entry.</small></div>
       <div class="row" style="margin-top:14px">
         ${open ? `<a class="btn primary" href="#/fees/student/${esc(inv.studentId)}?invoice=${esc(inv.id)}">Record payment</a>` : ''}
-        ${!inv.locked ? '<button class="btn" id="fi-con">Add concession</button>' : ''}
+        ${!inv.locked || open ? '<button class="btn" id="fi-con">Add concession</button>' : ''}
         <button class="btn danger ghost" id="fi-cancel">Cancel invoice</button></div>` : ''}
     ${persona.role === 'parent' && open ? `<div class="row" style="margin-top:14px"><button class="btn primary" id="fi-mock">Pay ${money(inv.balancePaise)} online${REAL ? '' : ' (mock)'}</button></div>` : ''}
     <h2 style="margin-top:20px">Payments against this invoice</h2>
     ${pays.length ? `<div class="tablewrap"><table><thead><tr><th>Receipt</th><th>Date</th><th>Mode</th><th class="r">Applied</th><th>Status</th></tr></thead><tbody>
-      ${pays.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td>${fdate(p.paidOn)}</td><td>${esc(p.mode)}</td><td class="r num">${money(p.allocations.find((a) => a.invoiceId === inv.id).amountPaise)}</td><td>${p.status === 'valid' ? badge('Valid', 'ok') : badge('Cancelled', 'mute')}</td></tr>`).join('')}
+      ${pays.map((p) => `<tr class="${p.status === 'cancelled' ? 'row-mute' : ''}"><td><a href="#/print/receipt/${esc(p.id)}">${esc(p.receiptNumber)}</a></td><td>${fdate(p.paidOn)}</td><td>${esc(PAYMENT_MODE_LABEL[p.mode] || p.mode)}</td><td class="r num">${money(p.allocations.find((a) => a.invoiceId === inv.id).amountPaise)}</td><td>${p.status === 'valid' ? badge('Valid', 'ok') : badge('Cancelled', 'mute')}</td></tr>`).join('')}
       </tbody></table></div>` : empty('No payments yet')}
     ${refunds.length ? `<h2 style="margin-top:20px">Refunds</h2><div class="tablewrap"><table><thead><tr><th>Voucher</th><th>Date</th><th class="r">Amount</th><th>Reason</th></tr></thead><tbody>${refunds.map((r) => `<tr><td>${esc(r.voucherNumber)}</td><td>${fdate(r.date)}</td><td class="r num">${money(r.amountPaise)}</td><td>${esc(r.reason)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
 
@@ -166,9 +170,9 @@ async function detail(ctx) {
   ctx.el.querySelector('#fi-con')?.addEventListener('click', async () => {
     const ok = await formModal({
       title: 'Add concession', submitLabel: 'Add',
-      fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type">${options(['scholarship', 'adhoc', 'staffWard', 'sibling'].map((t) => ({ value: t, label: t })), 'adhoc')}</select></label>
+      fieldsHtml: `<label class="field"><span class="lbl">Type</span><select name="type">${options(['scholarship', 'adhoc', 'staffWard', 'sibling'].map((t) => ({ value: t, label: CONCESSION_LABEL[t] })), 'adhoc')}</select></label>
         <label class="field"><span class="lbl">Description</span><input name="description" required></label>
-        <label class="field"><span class="lbl">Amount (&#8377;)</span><input name="amount" inputmode="decimal" required></label>`,
+        <label class="field"><span class="lbl">Amount (&#8377;)</span><input name="amount" inputmode="decimal" required></label>${inv.locked ? `<p class="help">Part-paid: at most the balance, ${money(inv.balancePaise)}. A concession on a part-paid invoice cannot be removed later.</p>` : ''}`,
       onSubmit: (v) => {
         const p = rupeesToPaise(v.amount);
         if (p === null || p <= 0) throw new Error('Enter a valid amount greater than zero');
