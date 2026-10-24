@@ -293,3 +293,106 @@ test('#77 #71 on the server the set-up commands change only programs, staff and 
   assert.equal(COMMANDS['setup.removeStop'].load([{}]).tripsAll, true);
   assert.equal(COMMANDS['setup.saveStop'].load([{ routeId: 'route-2' }]).routeId, 'route-2');
 });
+
+// ---------------------------------------------------------------- #95 leaving dates come in with the import
+test('#95 the children import takes an optional leaving date for children who left; refused for an active child or a future date', async () => {
+  const I = await import('../src/domain/import-people.js');
+  assert.ok(I.TARGET_FIELDS.children.includes('leftOn'));
+  assert.equal(I.suggestMapping('children', ['Date of leaving']).leftOn, 'Date of leaving');
+  const db = buildSeed(NOW);
+  const today = todayISO(NOW);
+  const map = { admissionNo: 'adm', firstName: 'fn', dob: 'dob', program: 'prog', status: 'st', leftOn: 'left', guardian1Name: 'g1', guardian1Phone: 'g1p' };
+  const row = (adm, st, left, phone) => ({ values: { adm, fn: 'Old', dob: addDays(today, -2000), prog: 'Primary A', st, left, g1: 'Past Fictionwala', g1p: phone } });
+  const v = I.validateRows(db, { kind: 'children', mapping: map, rows: [
+    row('OLD-1', 'left', '31/03/2026', '9000000331'), row('OLD-2', 'active', '31/03/2026', '9000000332'),
+    row('OLD-3', 'left', addDays(today, 5), '9000000333'), row('OLD-4', 'left', '', '9000000334')] }, { today });
+  assert.deepEqual(v.rows.map((r) => r.status), ['ok', 'quarantined', 'quarantined', 'ok']);
+  assert.match(v.rows[1].reason, /leaving date/);
+  assert.match(v.rows[2].reason, /future/);
+  const r = I.applyRows(db, { kind: 'children', mapping: map, rows: [row('OLD-1', 'left', '31/03/2026', '9000000331'), row('OLD-4', 'left', '', '9000000334')] }, null,
+    { actor: { role: 'admin', id: 'stf-principal' }, now: NOW.toISOString(), today });
+  assert.equal(r.ok, 2);
+  assert.equal(db.students.find((s) => s.admissionNo === 'OLD-1').leftOn, '2026-03-31');
+  assert.equal(db.students.find((s) => s.admissionNo === 'OLD-4').leftOn, null);
+  // re-importing the same file is a duplicate; a file without the column does not clash with a date set since
+  const again = I.validateRows(db, { kind: 'children', mapping: map, rows: [row('OLD-1', 'left', '31/03/2026', '9000000331')] }, { today });
+  assert.equal(again.rows[0].status, 'duplicate');
+  const { leftOn: _drop, ...noCol } = map;
+  assert.equal(I.validateRows(db, { kind: 'children', mapping: noCol, rows: [row('OLD-1', 'left', '', '9000000331')] }, { today }).rows[0].status, 'duplicate');
+});
+
+const UNDECIDED = { photos: { months: null }, observations: { months: 12 }, diary: { months: null }, attendance: { months: 12 }, messages: { months: 12 } };
+test('#95 the principal\'s home page warns until every retention period is set (real app) and while children left without a leaving date', async () => {
+  const api = await mkApi();
+  api.admin.retentionPreview = async () => ({ asOf: todayISO(), leftWithoutDate: ['stu-01', 'stu-02'], categories: UNDECIDED });
+  const demo = await draw(api, ADMIN, Home);
+  assert.match(demo, /2 children left without a leaving date/);
+  assert.match(demo, /#\/people\?status=nodate/);
+  assert.ok(!/retention period/.test(demo), 'the demo has no retention settings to send the principal to');
+  api.mode = 'supabase';
+  const real = await draw(api, ADMIN, Home);
+  assert.match(real, /2 kinds of record have no retention period yet/);
+  assert.match(real, /href="#\/settings"/);
+  api.admin.retentionPreview = async () => ({ asOf: todayISO(), leftWithoutDate: [], categories: Object.fromEntries(Object.keys(UNDECIDED).map((k) => [k, { months: 12 }])) });
+  const clear = await draw(api, ADMIN, Home);
+  assert.ok(!/retention period|leaving date/.test(clear));
+});
+
+// ---------------------------------------------------------------- screens: Children & families, Staff, classes & routes
+const People = await import('../src/ui/screens/people.js');
+const Setup = await import('../src/ui/screens/setup.js');
+
+test('#40 Children & families: the list filters by status and family; a child page offers class, bus stop, status with leaving date, and parents to correct; names are escaped', async () => {
+  const api = as(await mkApi(), ADMIN);
+  await api.people.updateGuardian({ guardianId: 'grd-01', lastName: EVIL.slice(0, 60) });
+  const list = await draw(api, ADMIN, People);
+  assert.match(list, /Add a child/);
+  assert.match(list, /href="#\/people\/stu-01"/);
+  noRaw(list);
+  const left = await draw(api, ADMIN, People, { status: 'left' });
+  assert.ok(!left.includes('#/people/stu-01"'), 'an attending child is not in the Left list');
+  const fam = await draw(api, ADMIN, People, { status: 'all', guardian: 'grd-01' });
+  const kids = api.getDb().students.filter((s) => s.guardianIds.includes('grd-01'));
+  for (const k of kids) assert.ok(fam.includes(`#/people/${k.id}"`));
+  const page = await draw(api, ADMIN, People, {}, { id: 'stu-01' });
+  assert.match(page, /name="programId"/);
+  assert.match(page, /name="bus"/);
+  assert.match(page, /name="leftOn"/);
+  assert.match(page, /data-edit-g="grd-01"/);
+  assert.match(page, /<optgroup label="Route 1/);
+  noRaw(page);
+  // the principal's Data requests desk links a correction request to the family
+  const html = await draw(api, ADMIN, People, {}, { id: 'stu-nope' });
+  assert.match(html, /Child not found/);
+  assert.match(read('src/ui/screens/admin.js'), /Correct the details<\/a> in Children &amp; families/);
+});
+
+test('#77 #71 Staff, classes & routes: each tab lists what exists with its actions; closed items offer reopen; the routes tab points to setting stops from the bus', async () => {
+  const api = as(await mkApi(), ADMIN);
+  await api.setup.saveStaff({ firstName: EVIL.slice(0, 70), lastName: 'Trialsen', role: 'teacher', email: 'evil@example.com', programIds: [] });
+  const st = await draw(api, ADMIN, Setup, { tab: 'staff' });
+  assert.match(st, /Add a staff member/);
+  assert.match(st, /data-act="staff-off" data-id="stf-teacher-pa"/);
+  assert.ok(!st.includes('data-act="staff-off" data-id="stf-principal"'), 'never yourself');
+  noRaw(st);
+  await api.setup.setStaffActive({ staffId: 'stf-teacher-float', active: false });
+  assert.match(await draw(api, ADMIN, Setup, { tab: 'staff' }), /data-act="staff-on" data-id="stf-teacher-float"/);
+  const cl = await draw(api, ADMIN, Setup, { tab: 'classes' });
+  assert.match(cl, /Add a class/);
+  assert.match(cl, /data-act="class-edit" data-id="prog-primary-a"/);
+  const rt = await draw(api, ADMIN, Setup, { tab: 'routes' });
+  assert.match(rt, /Set this stop’s position here/);
+  assert.match(rt, /data-act="stop-edit" data-route="route-1"/);
+  assert.match(rt, /data-act="stop-remove"/);
+  noRaw(rt);
+});
+
+test('#40 #77 wiring: the two screens are principal-only routes in both apps and sit in the principal\'s menu; the driver screen offers "Set this stop\'s position here"', async () => {
+  const app = read('src/ui/app.js');
+  for (const p of ["'/people'", "'/people/:id'", "'/setup'"]) assert.match(app, new RegExp(`pattern: ${p}, roles: \\['admin'\\], load`));
+  const { NAV, navFor } = await import('../src/ui/shell.js');
+  assert.ok(NAV.admin.includes('children') && NAV.admin.includes('setup'));
+  for (const r of ['teacher', 'accountant', 'parent', 'driver']) assert.ok(!NAV[r].includes('children') && !NAV[r].includes('setup'), r);
+  assert.equal(navFor('admin').find((i) => i.path === '/setup').label, 'Staff, classes & routes');
+  assert.match(read('src/ui/screens/bus-driver.js'), /api\.setup\.setStopPosition\(/);
+});

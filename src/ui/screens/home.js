@@ -153,6 +153,13 @@ async function adminHome(ctx) {
   } catch { /* unavailable: shown as a dash */ }
   let openRequests = null;
   try { openRequests = await openRequestCount(api); } catch { /* unavailable */ }
+  // retention: nothing is ever deleted for a kind of record with no period, nor for a child who left without a date
+  let undecided = 0, leftNoDate = 0;
+  try {
+    const rp = await api.admin.retentionPreview();
+    undecided = api.mode === 'demo' ? 0 : Object.values(rp.categories || {}).filter((c) => !c.months).length; // the demo has no retention settings
+    leftNoDate = (rp.leftWithoutDate || []).length;
+  } catch { /* unavailable */ }
   let active = 0, busFail = 0;
   try {
     for (const r of await api.transport.routes()) { try { if (await api.transport.activeTrip(r.id)) active += 1; } catch { busFail += 1; } }
@@ -179,6 +186,8 @@ async function adminHome(ctx) {
     awaitingNotices && ['#/notices', 'bell', `${plural(awaitingNotices, 'notice', 'notices')} awaiting acknowledgement (${plural(awaiting.length, 'parent', 'parents')})`],
     overdueKids && ['#/reports', 'rupee', `${plural(overdueKids, 'child', 'children')} with overdue fees`],
     openRequests && [ctx.href('/admin', { tab: 'requests' }), 'shield', `${plural(openRequests, 'open data request', 'open data requests')} (privacy law: answer promptly)`],
+    undecided && ['#/settings', 'shield', `${plural(undecided, 'kind of record has', 'kinds of record have')} no retention period yet, so nothing of that kind is ever deleted`],
+    leftNoDate && [ctx.href('/people', { status: 'nodate' }), 'users', `${plural(leftNoDate, 'child', 'children')} left without a leaving date (needed for deleting their records on time)`],
   ].filter(Boolean);
   const attention = `<h2 style="margin-top:20px">Needs attention</h2>${todo.length
     ? `<ul class="list card-list">${todo.map(([h, ic, t]) => `<li><a class="row" href="${esc(h)}" style="text-decoration:none;color:inherit">${icon(ic)}<span class="grow">${esc(t)}</span><span aria-hidden="true">&rarr;</span></a></li>`).join('')}</ul>`

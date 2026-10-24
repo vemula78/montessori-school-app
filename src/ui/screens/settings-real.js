@@ -178,7 +178,7 @@ export async function drawRetention(ctx, host) {
       <div class="err" id="ret-err" role="alert"></div>
       <div><button class="btn primary" type="submit">Save retention periods</button></div></form>
     ${previewErr ? banner('warn', `Due counts could not be loaded: ${esc(errMessage(previewErr))}`) : ''}
-    ${preview?.leftWithoutDate?.length ? banner('warn', `${esc(preview.leftWithoutDate.length)} child(ren) left without a recorded leaving date, so nothing about them can be due until the date is set.`) : ''}
+    ${preview?.leftWithoutDate?.length ? banner('warn', `${esc(preview.leftWithoutDate.length)} child(ren) left without a recorded leaving date, so nothing about them can be due until the date is set. <a href="#/people?status=nodate">Set the dates</a>`) : ''}
     <small>Photos stored (from the last 120 days of observations): ${esc(ready.length)}, about ${MB(ready.reduce((n, p) => n + (p.bytes || 0), 0))} MB. Estimate: ${esc(active)} children &times; 40 photos a year &times; about 250 KB &approx; ${MB(perYear)} MB a year. Each child can have up to 100 photos.</small></div>`;
   host.querySelector('#ret-form').addEventListener('submit', async (e) => {
     e.preventDefault();

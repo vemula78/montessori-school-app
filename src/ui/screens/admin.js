@@ -203,7 +203,7 @@ async function requests(ctx, host) {
             ${(r.kind === 'erasure' || !desk) && isOpen(r) ? `<button class="btn sm danger" data-act="erase" data-guardian="${esc(r.guardianId)}">Erase personal details</button>` : ''}
             ${desk && isOpen(r) ? `<button class="btn sm" data-act="declined" data-id="${esc(r.id)}">Decline</button>` : ''}
             ${r.kind === 'export' || !desk ? `<button class="btn sm" data-act="export" data-guardian="${esc(r.guardianId)}">Download data</button>` : ''}
-            ${r.kind === 'correction' && isOpen(r) ? `<small>Correct the details in the people records, then mark done.</small>` : ''}
+            ${r.kind === 'correction' && isOpen(r) ? `<small><a href="${esc(ctx.href('/people', { status: 'all', guardian: r.guardianId }))}">Correct the details</a> in Children &amp; families, then mark done.</small>` : ''}
           </div></td></tr>`;
       }).join('')}
     </tbody></table></div>` : empty(showClosed ? 'No requests' : 'No open requests')}

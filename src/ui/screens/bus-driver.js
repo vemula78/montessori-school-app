@@ -117,14 +117,27 @@ export async function render(ctx) {
           const l = ce[ce.length - 1];
           const state = l ? badge(`${l.type === 'boarded' ? 'Boarded' : l.type === 'dropped' ? 'Dropped' : 'Absent'} ${ftime(l.ts)}`, l.type === 'absent' ? 'bad' : 'ok') : '';
           return `<li><div class="row between"><span>${esc(fullName(k))}</span><span class="row">${state}${trip && !l ? `<button class="btn sm sage" data-child="${esc(k.id)}" data-stop="${esc(st.id)}" data-type="${pickup ? 'boarded' : 'dropped'}">${pickup ? 'Boarded' : 'Dropped'}</button><button class="btn sm" data-child="${esc(k.id)}" data-stop="${esc(st.id)}" data-type="absent">Absent</button>` : ''}</span></div></li>`;
-        }).join('')}</ul>` : '<small class="muted">No children assigned to this stop.</small>'}</div>`;
+        }).join('')}</ul>` : '<small class="muted">No children assigned to this stop.</small>'}
+        ${geo.ok ? `<div style="margin-top:8px"><button class="btn sm ghost" data-setpos="${esc(st.id)}" data-name="${esc(st.name)}">Set this stop's position here</button></div>` : ''}</div>`;
     }).join('');
+  }
+
+  // the stop's pin from the bus's own GPS, standing at the stop ("arrived" fires within 60 m of the pin)
+  const hereNow = () => new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(
+    (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
+    (err) => reject(new Error(err.message || 'No position')), { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }));
+  async function setStopHere(stopId, name) {
+    if (!(await confirmDialog('Set the stop position', `Use where the bus is now as the position of ${name}? Do this only when the bus is standing at the stop. It needs a GPS reading accurate to 25 m or better.`, { okLabel: 'Use this position' }))) return;
+    let fix;
+    try { fix = await hereNow(); } catch (err) { toast(`Could not read the position: ${err.message}`, 'bad'); return; }
+    await attempt(() => api.setup.setStopPosition({ routeId: route.id, stopId, ...fix }), `Position of ${name} saved (accuracy ${Math.round(fix.accuracy)} m)`);
   }
 
   ctx.el.addEventListener('click', async (e) => {
     const t = e.target.closest('button');
     if (!t) return;
     if (t.dataset.dir) { direction = t.dataset.dir; paintControls(true); return; }
+    if (t.dataset.setpos) { await setStopHere(t.dataset.setpos, t.dataset.name); return; }
     if (t.id === 'd-start-gps' || t.id === 'd-start-sim') {
       const simulated = t.id === 'd-start-sim';
       const speed = Number(ctx.el.querySelector('#d-speed')?.value || 5);

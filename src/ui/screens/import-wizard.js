@@ -11,6 +11,7 @@ const LABEL = {
   dob: ['Date of birth', 'Day first: DD/MM/YYYY or DD-MM-YYYY, or YYYY-MM-DD.'],
   program: ['Programme / class', 'Must match one of the school’s programmes exactly.'],
   status: ['Status', 'active or left. Empty means active.'],
+  leftOn: ['Leaving date', 'Optional, for children who left: DD/MM/YYYY or YYYY-MM-DD. Records are deleted on the retention schedule counted from it.'],
   route: ['Bus route', 'Optional. Needed only if a stop name appears on more than one route.'], stop: ['Bus stop', 'Optional.'],
   guardian1Name: ['Parent 1 name'], guardian1Relation: ['Parent 1 relation'], guardian1Phone: ['Parent 1 phone', '10-digit Indian mobile.'], guardian1Email: ['Parent 1 email'],
   guardian2Name: ['Parent 2 name'], guardian2Relation: ['Parent 2 relation'], guardian2Phone: ['Parent 2 phone'], guardian2Email: ['Parent 2 email'],

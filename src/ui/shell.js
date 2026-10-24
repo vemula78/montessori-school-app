@@ -16,6 +16,8 @@ const N = {
   structures: { path: '/fees/structures', label: 'Fee structures', icon: 'receipt' },
   reports: { path: '/reports', label: 'Reports', icon: 'chart' },
   audit: { path: '/audit', label: 'Audit log', icon: 'shield' },
+  children: { path: '/people', label: 'Children & families', icon: 'users', short: 'Children' },
+  setup: { path: '/setup', label: 'Staff, classes & routes', icon: 'gear', short: 'Set-up' },
   administration: { path: '/admin', label: 'Administration', icon: 'users', short: 'Admin' },
   settings: { path: '/settings', label: 'Settings', icon: 'gear' },
   // real app only (see REAL_EXTRA)
@@ -24,7 +26,7 @@ const N = {
 };
 
 export const NAV = {
-  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'administration', 'settings'],
+  admin: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning', 'bus', 'fees', 'structures', 'reports', 'audit', 'children', 'setup', 'administration', 'settings'],
   teacher: ['home', 'notices', 'messages', 'calendar', 'attendance', 'diary', 'pickup', 'learning'],
   accountant: ['home', 'fees', 'structures', 'reports', 'calendar', 'audit'],
   parent: ['home', 'notices', 'messages', 'diary', 'learning', 'bus', 'fees'],

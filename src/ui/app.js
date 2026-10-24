@@ -45,6 +45,9 @@ const ROUTES = [
   { pattern: '/audit', roles: ['admin', 'accountant'], load: () => import('./screens/audit.js') },
   { pattern: '/settings', roles: ALL, demoRoles: ['admin'], load: () => import('./screens/settings.js') },
   { pattern: '/admin', roles: ['admin'], load: () => import('./screens/admin.js') },
+  { pattern: '/people', roles: ['admin'], load: () => import('./screens/people.js') },
+  { pattern: '/people/:id', roles: ['admin'], load: () => import('./screens/people.js') },
+  { pattern: '/setup', roles: ['admin'], load: () => import('./screens/setup.js') },
   { pattern: '/account', roles: ALL, demoRoles: ALL, load: () => import('./screens/account.js') },
   // ---- real app only (the demo has no such routes) ----
   { pattern: '/privacy', roles: ALL, realOnly: true, load: () => import('./privacy.js') },

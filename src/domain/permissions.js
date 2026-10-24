@@ -109,6 +109,8 @@ export const PERMISSIONS = {
       js: { kind: 'command', name: 'attendance.mark', args: [TODAY, [{ studentId: 'stu-04', status: 'present' }]] }, sql: null },
     { key: 'change_staff_role', label: "Change a staff member's role", allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'command', name: 'people.setStaffRole', args: [{ staffId: 'stf-driver-2', role: 'driver' }] }, sql: null },
+    { key: 'school_setup', label: 'Set up classes, staff and bus routes', allow: row(Y, N, N, N, N, N, N),
+      js: { kind: 'command', name: 'setup.saveProgram', args: [{ name: 'Matrix class' }] }, sql: null },
     { key: 'block_account', label: 'Block a sign-in', allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'command', name: 'admin.blockUser', args: ['00000000-0000-4000-8000-000000000006'] }, sql: null },
     { key: 'file_data_request', label: 'File a data request (own data)', allow: row(N, N, N, N, N, Y, Y),

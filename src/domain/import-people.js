@@ -14,7 +14,7 @@ import { normHeader } from './csv.js';
 
 export const IMPORT_KINDS = ['children', 'fees'];
 export const TARGET_FIELDS = {
-  children: ['admissionNo', 'firstName', 'lastName', 'dob', 'program', 'status', 'route', 'stop',
+  children: ['admissionNo', 'firstName', 'lastName', 'dob', 'program', 'status', 'leftOn', 'route', 'stop',
     'guardian1Name', 'guardian1Relation', 'guardian1Phone', 'guardian1Email',
     'guardian2Name', 'guardian2Relation', 'guardian2Phone', 'guardian2Email'],
   fees: ['admissionNo', 'installment', 'dueDate', 'outstandingPaise'],
@@ -31,6 +31,7 @@ const ALIASES = {
   dob: ['dob', 'dateofbirth', 'birthdate', 'birthday'],
   program: ['program', 'programme', 'class', 'classname', 'grade', 'section', 'group'],
   status: ['status', 'studentstatus'],
+  leftOn: ['leftOn', 'leavingdate', 'dateofleaving', 'leftdate', 'dateleft', 'withdrawaldate'],
   route: ['route', 'busroute', 'routename'],
   stop: ['stop', 'busstop', 'pickuppoint', 'stopname'],
   guardian1Name: ['guardian1name', 'parent1name', 'mothername', 'parentname', 'guardianname'],
@@ -120,6 +121,12 @@ function childTarget(db, get, today) {
   const st = get('status');
   t.status = st ? STATUS_ALIASES[normHeader(st)] : 'active';
   if (!t.status) return { reason: `unknown status "${st}" (use active or left)` };
+  // optional leaving date of a child who left (retention counts from it); empty = not known, set it in the app later
+  const leftRaw = get('leftOn');
+  t.leftOn = leftRaw ? parseDate(leftRaw) : null;
+  if (leftRaw && !t.leftOn) return { reason: `invalid leaving date "${leftRaw}" (use DD/MM/YYYY or YYYY-MM-DD)` };
+  if (t.leftOn && t.status !== 'left') return { reason: 'a leaving date is given but the status is not left' };
+  if (t.leftOn && compareISO(t.leftOn, today) > 0) return { reason: 'the leaving date is in the future' };
   t.routeId = null; t.stopId = null;
   if (get('stop') || get('route')) {
     if (!get('stop')) return { reason: 'route given without a stop' };
@@ -145,7 +152,7 @@ function childTarget(db, get, today) {
 }
 
 const sameChild = (a, b) => a.firstName === b.firstName && a.lastName === b.lastName && a.dob === b.dob && a.programId === b.programId;
-const childSig = t => JSON.stringify([t.firstName, t.lastName, t.dob, t.programId, t.status, t.routeId, t.stopId, t.guardians]);
+const childSig = t => JSON.stringify([t.firstName, t.lastName, t.dob, t.programId, t.status, t.leftOn, t.routeId, t.stopId, t.guardians]);
 const guardianKeys = g => [g.phone && `p:${g.phone}`, g.email && `e:${g.email}`].filter(Boolean);
 const existingGuardianKeys = g => [normalisePhone(g.phone) && `p:${normalisePhone(g.phone)}`, g.email && `e:${String(g.email).toLowerCase()}`].filter(Boolean);
 const sameName = (a, b) => normHeader(`${a.firstName}${a.lastName}`) === normHeader(`${b.firstName}${b.lastName}`);
@@ -154,6 +161,7 @@ const sameName = (a, b) => normHeader(`${a.firstName}${a.lastName}`) === normHea
 function childDifferences(db, s, t) {
   const out = [];
   if (s.status !== t.status) out.push('status');
+  if (t.leftOn && t.leftOn !== (s.leftOn ?? null)) out.push('leaving date'); // a file without dates never clashes with one set in the app
   if ((s.routeId || null) !== t.routeId || (s.stopId || null) !== t.stopId) out.push('transport (route/stop)');
   const have = (s.guardianIds || []).map(id => byId(db.guardians, id)).filter(Boolean);
   const matches = g => have.some(e => sameName(e, g) && guardianKeys(g).some(k => existingGuardianKeys(e).includes(k)));
@@ -313,7 +321,7 @@ export function applyRows(db, { kind, mapping, rows }, batchId, ctx) {
         if (!gids.includes(gid)) gids.push(gid);
       }
       db.students.push({ id: sid, firstName: t.firstName, lastName: t.lastName, dob: t.dob, programId: t.programId, admissionNo: t.admissionNo, status: t.status,
-        guardianIds: gids, routeId: t.routeId, stopId: t.stopId, feeCategory: 'regular', healthNotes: null, leftOn: null, source: 'import', importBatchId: batchId }); // leftOn: unknown (the principal sets it)
+        guardianIds: gids, routeId: t.routeId, stopId: t.stopId, feeCategory: 'regular', healthNotes: null, leftOn: t.leftOn ?? null, source: 'import', importBatchId: batchId }); // leftOn null: unknown (the principal sets it)
       for (const gid of gids) { const g = byId(db.guardians, gid); if (!g.studentIds.includes(sid)) g.studentIds.push(sid); }
       created.students++;
     }
