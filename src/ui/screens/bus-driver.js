@@ -4,7 +4,7 @@
 // tick; a page that was reloaded or killed resumes GPS by itself when location permission is already granted, and
 // otherwise shows a red "Tracking is OFF" banner.
 import { secondsSince, nowHHMM } from '../../domain/dates.js';
-import { esc, badge, empty, pageHead, ftime, fullName, options, attempt, toast, ago, openModal, formModal, DASH } from '../components.js';
+import { esc, badge, empty, pageHead, ftime, fullName, options, attempt, toast, ago, openModal, formModal, confirmDialog, DASH } from '../components.js';
 import { createRouteMap } from '../map.js';
 import * as runner from '../sim-runner.js';
 import { isRealMode } from '../mode.js';
@@ -139,7 +139,8 @@ export async function render(ctx) {
     const here = kids.filter((k) => k.stopId === st.id);
     const stBadge = lastEv ? badge(lastEv.type === 'nearing' ? 'Nearing' : lastEv.type === 'arrived' ? 'Arrived' : 'Departed', lastEv.type === 'departed' ? 'mute' : lastEv.type === 'arrived' ? 'ok' : 'warn') : '';
     return `<div class="card">${title}<div class="row between"><div><div class="item-title">${esc(st.seq)}. ${esc(st.name)}</div><small>${pickup ? `Scheduled pickup ${esc(st.scheduledPickup)}` : `Scheduled drop ${esc(st.scheduledDrop)}`}</small></div>${stBadge}</div>
-      ${here.length ? `<ul class="list" style="margin-top:8px">${here.map((k) => childRow(k, st, pickup)).join('')}</ul>` : '<small class="muted">No children assigned to this stop.</small>'}</div>`;
+      ${here.length ? `<ul class="list" style="margin-top:8px">${here.map((k) => childRow(k, st, pickup)).join('')}</ul>` : '<small class="muted">No children assigned to this stop.</small>'}
+      ${geo.ok ? `<div style="margin-top:8px"><button class="btn ghost" data-setpos="${esc(st.id)}" data-name="${esc(st.name)}">Set this stop's position here</button></div>` : ''}</div>`;
   }
   function paintStops() {
     const pickup = (trip?.direction || direction) === 'pickup';
@@ -187,9 +188,21 @@ export async function render(ctx) {
     await refresh();
   }
 
+  // the stop's pin from the bus's own GPS, standing at the stop ("arrived" fires within 60 m of the pin)
+  const hereNow = () => new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(
+    (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
+    (err) => reject(new Error(err.message || 'No position')), { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }));
+  async function setStopHere(stopId, name) {
+    if (!(await confirmDialog('Set the stop position', `Use where the bus is now as the position of ${name}? Do this only when the bus is standing at the stop. It needs a GPS reading accurate to 25 m or better.`, { okLabel: 'Use this position' }))) return;
+    let fix;
+    try { fix = await hereNow(); } catch (err) { toast(`Could not read the position: ${err.message}`, 'bad'); return; }
+    await attempt(() => api.setup.setStopPosition({ routeId: route.id, stopId, ...fix }), `Position of ${name} saved (accuracy ${Math.round(fix.accuracy)} m)`);
+  }
+
   ctx.el.addEventListener('click', async (e) => {
     const t = e.target.closest('button');
     if (!t) return;
+    if (t.dataset.setpos) { await setStopHere(t.dataset.setpos, t.dataset.name); return; }
     if (t.dataset.dir) { direction = t.dataset.dir; paintControls(true); await loadCheck(); paintStops(); return; }
     if (t.id === 'd-map-toggle') {
       const el = ctx.el.querySelector('#d-map');
