@@ -368,7 +368,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
      * receivers(routeId) → {studentId: [{id, name, relation, phone}]}: the people each child's family listed as allowed to collect
      * them (active), for "who received the child" on a drop. Principal and the route's driver/attendant.
      */
-    /** runningLate({routeId, kind}) — kind one of runningLateKinds(): an important notice to the route's families. Driver of the route, principal. */
+    /** runningLate({routeId, kind, reason?}) — kind one of runningLateKinds(), reason ≤ 120 chars: an important notice to the route's families. Driver of the route, principal. */
     runningLate: cmd('transport.runningLate'),
     runningLateKinds: op(() => [...RUNNING_LATE_KINDS]),
     receivers: op(routeId => {

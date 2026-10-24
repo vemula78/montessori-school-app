@@ -276,8 +276,9 @@ export const COMMANDS = {
     run: (db, [a = {}], ctx) => NF.finishNoticeFileDelete(db, Array.isArray(a?.fileIds) ? a.fileIds : [], ctx),
   },
   /**
-   * runningLate({routeId, kind:'late10'|'late20'|'late30'|'breakdown'}) — the route's driver or the principal: an important
-   * notice to the families of the children on that route (push to those who agreed).
+   * runningLate({routeId, kind:'late10'|'late20'|'late30'|'breakdown', reason?}) — the route's driver or the principal: an
+   * important notice to the families of the children on that route (push to those who agreed). reason: optional, ≤ 120
+   * characters, added to the message.
    */
   'transport.runningLate': {
     slice: 'messaging',
@@ -286,7 +287,10 @@ export const COMMANDS = {
       const r = byId(db.routes, a.routeId);
       const text = LATE_TEXT[a.kind];
       if (!text) fail('VALIDATION', `Unknown message: ${a.kind}`);
-      return M.sendNotice(db, { title: `${r.name}: ${text.title}`, body: text.body, audience: { scope: 'route', routeIds: [r.id] }, requiresAck: false, important: true }, ctx);
+      const reason = String(a.reason ?? '').trim().replace(/\s+/g, ' ');
+      if (reason.length > 120) fail('VALIDATION', 'The reason must be at most 120 characters');
+      const body = reason ? `${text.body} Reason: ${reason}` : text.body;
+      return M.sendNotice(db, { title: `${r.name}: ${text.title}`, body, audience: { scope: 'route', routeIds: [r.id] }, requiresAck: false, important: true }, ctx);
     },
   },
   'notices.markRead': { slice: 'messaging', authorize: p => allow(p, 'parent'), run: (db, [noticeId], ctx, p) => M.markNoticeRead(db, noticeId, p.guardianId, ctx) },

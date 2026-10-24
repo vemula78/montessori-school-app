@@ -20,12 +20,23 @@ function collectedName(p, who) {
 const firstName = (n) => String(n || '').split(' ')[0];
 const telOf = (phone) => String(phone || '').replace(/[^\d+]/g, '');
 
-async function record(ctx, s, who, date, current, routeName) {
+// a trip's marks still standing: an "Undo" (corrected) cancels that child's latest mark
+function standingMarks(t) {
+  const out = [];
+  for (const e of t.childEvents || []) {
+    if (e.type !== 'corrected') { out.push(e); continue; }
+    const i = out.map((x) => x.studentId).lastIndexOf(e.studentId);
+    if (i >= 0) out.splice(i, 1);
+  }
+  return out;
+}
+
+async function record(ctx, s, who, date, current, routeName, onBus = false) {
   const opt = (value, title, sub, checked) => `<label class="check" style="align-items:flex-start"><input type="radio" name="by" value="${esc(value)}"${checked ? ' checked' : ''} required>
     <span><strong>${esc(title)}</strong><br><small>${esc(sub)}</small></span></label>`;
   const cur = current ? `${current.kind}:${current.personId || ''}` : '';
   const people = [
-    ...(s.routeId ? [opt('bus:', 'On the school bus', routeName || 'The drop trip', current?.kind === 'bus')] : []),
+    ...(s.routeId ? [opt('bus:', 'On the school bus', routeName || 'The drop trip', current ? current.kind === 'bus' : onBus)] : []),
     ...who.guardians.map((g) => opt(`guardian:${g.id}`, g.name, `${g.relation || 'Guardian'}${g.phone ? ` · ${g.phone}` : ''}`, cur === `guardian:${g.id}`)),
     ...who.contacts.map((c) => opt(`contact:${c.id}`, c.name, `${c.relation} · ${c.phone}`, cur === `contact:${c.id}`)),
     opt('other:', 'Someone not on the list', 'Only after the family has confirmed it', current?.kind === 'other'),
@@ -63,12 +74,16 @@ export async function render(ctx) {
   const earliest = addDays(today, -LATE_DAYS);
   const date = isISODate(query.date) && query.date <= today && query.date >= earliest ? query.date : today;
   const students = (await api.people.students({ programId })).filter((s) => s.status === 'active');
-  const [att, recent, leave, alerts] = await Promise.all([
+  const [att, recent, leave, trips, alerts] = await Promise.all([
     api.attendance.forDate(date, programId).catch(() => null),
     api.care.pickups({ programId, from: addDays(date, -30) }), // newest first: who collected each child last time
     api.care.leave({ programId, from: date }),
+    api.transport.trips({ date }).catch(() => []), // the day's drop trip: who boarded or was dropped (pre-fills the bus)
     loadAlerts(api, programId),
   ]);
+  const onBus = new Map(); // studentId → the child's latest standing mark on a drop trip of the day, when boarded or dropped
+  for (const t of trips) if (t.direction === 'drop') for (const e of standingMarks(t)) onBus.set(e.studentId, e);
+  for (const [id, e] of onBus) if (e.type !== 'boarded' && e.type !== 'dropped') onBus.delete(id);
   const log = recent.filter((p) => p.date === date);
   const routes = new Map((ctx.db.routes || []).map((r) => [r.id, r.name]));
   const who = new Map();
@@ -99,9 +114,12 @@ export async function render(ctx) {
       const quick = [...w.guardians.map((g) => [`guardian:${g.id}`, `${firstName(g.name)} (${g.relation || 'Guardian'})`]), ...w.contacts.map((c) => [`contact:${c.id}`, `${firstName(c.name)} (${c.relation})`])]
         .sort((a, b) => (b[0] === lastKey) - (a[0] === lastKey));
       if (s.routeId) quick.unshift(['bus:', `On the bus (${routes.get(s.routeId) || 'route'})`]);
-      const taps = date === today && quick.length ? `<div class="row">${quick.map(([k, label]) => `<button class="chip" data-quick="${esc(s.id)}" data-by="${esc(k)}">${esc(label)}</button>`).join('')}<button class="btn sm" data-rec="${esc(s.id)}">Someone else</button></div>` : '';
+      // the drop trip's boarded/dropped mark pre-fills the bus (highlighted; recorded only when the teacher taps it)
+      const bus = onBus.get(s.id);
+      const taps = date === today && quick.length ? `<div class="row">${quick.map(([k, label]) => `<button class="chip${bus && k === 'bus:' ? ' on' : ''}" data-quick="${esc(s.id)}" data-by="${esc(k)}">${esc(label)}</button>`).join('')}<button class="btn sm" data-rec="${esc(s.id)}">Someone else</button></div>` : '';
       return `<div class="card stack"><div class="row between"><div class="item-title">${esc(fullName(s))} ${healthBadge(alerts.map.get(s.id))}</div>${head}</div>
-        ${p ? `<div class="row between"><span>Collected by <strong>${esc(collectedName(p, w))}</strong> at ${whenOf(p)}${p.note ? `<br><small>${esc(p.note)}</small>` : ''}</span><button class="btn sm" data-rec="${esc(s.id)}">Change</button></div>`
+        ${bus && !p ? `<small><strong>On the drop bus</strong>: ${bus.type === 'dropped' ? 'dropped' : 'boarded'} at ${ftime(bus.ts)}.${taps ? ' Tap "On the bus" to record it.' : ''}</small>` : ''}
+        ${p ?`<div class="row between"><span>Collected by <strong>${esc(collectedName(p, w))}</strong> at ${whenOf(p)}${p.note ? `<br><small>${esc(p.note)}</small>` : ''}</span><button class="btn sm" data-rec="${esc(s.id)}">Change</button></div>`
           : away(s.id) ? '<small class="muted">Not in school today.</small>'
           : taps || `<div class="row between"><small class="muted">${esc(w.guardians.length + w.otherGuardians)} guardian${w.guardians.length + w.otherGuardians === 1 ? '' : 's'}, ${esc(w.contacts.length)} other${w.contacts.length === 1 ? '' : 's'} on the list</small><button class="btn sm primary" data-rec="${esc(s.id)}">Record pick-up</button></div>`}
       </div>`;
@@ -126,6 +144,6 @@ export async function render(ctx) {
     const b = e.target.closest('[data-rec]');
     if (!b) return;
     const s = students.find((x) => x.id === b.dataset.rec);
-    if (await record(ctx, s, who.get(s.id), date, byKid.get(s.id), routes.get(s.routeId))) ctx.rerender();
+    if (await record(ctx, s, who.get(s.id), date, byKid.get(s.id), routes.get(s.routeId), onBus.has(s.id))) ctx.rerender();
   });
 }

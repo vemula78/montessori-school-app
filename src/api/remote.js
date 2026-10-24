@@ -223,6 +223,14 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     const { data, error } = await q.gte('date', addDays(todayISO(clock()), -7));
     if (error) throw new ApiError('OFFLINE', `Could not load the trips (${error.message})`);
     const known = new Map(d.trips.map(t => [t.id, t]));
+    // one day's trips (the register's "Came by bus", Going home): their marks as the server has them now, since the
+    // snapshot may be older than this morning's boarding; a handful of trips, so the extra query stays small
+    const ids = date ? (data || []).filter(r => r.doc.date === date).map(r => r.doc.id) : [];
+    if (ids.length) {
+      const ev = await sb.from('trip_child_events').select('trip_id,seq,doc').in('trip_id', ids).order('seq');
+      if (ev.error) throw new ApiError('OFFLINE', `Could not load the trips (${ev.error.message})`);
+      for (const id of ids) known.set(id, { childEvents: (ev.data || []).filter(e => e.trip_id === id).map(e => e.doc) });
+    }
     return (data || []).map(r => ({ ...r.doc, positions: [], childEvents: known.get(r.doc.id)?.childEvents || [] }))
       .filter(t => routeIds.has(t.routeId) && (!date || t.date === date))
       .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1)).map(t => tripOut(d, t, p));

@@ -18,7 +18,18 @@ function saveDraft(key, marks, today) {
   try { localStorage.setItem(DRAFT_KEY, JSON.stringify(all)); } catch { /* not kept: worst case the marks are tapped again */ }
 }
 
-const unsavedText = (n) => (n ? `${n} unsaved mark${n === 1 ? '' : 's'}` : '');
+// a trip's boarding marks still standing: an "Undo" (corrected) cancels that child's latest mark
+function standingMarks(t) {
+  const out = [];
+  for (const e of t.childEvents || []) {
+    if (e.type !== 'corrected') { out.push(e); continue; }
+    const i = out.map((x) => x.studentId).lastIndexOf(e.studentId);
+    if (i >= 0) out.splice(i, 1);
+  }
+  return out;
+}
+
+const unsavedText = (n) =>(n ? `${n} unsaved mark${n === 1 ? '' : 's'}` : '');
 
 export async function render(ctx) {
   const { api, db, persona, query } = ctx;
@@ -43,7 +54,7 @@ export async function render(ctx) {
   const leaveToday = new Map(reported.filter((r) => r.fromDate <= date && date <= r.toDate).map((r) => [r.studentId, r]));
   const stu = indexBy(db.students);
   const boarded = new Map();
-  for (const t of trips) if (t.direction === 'pickup') for (const e of t.childEvents || []) if (e.type === 'boarded' && !boarded.has(e.studentId)) boarded.set(e.studentId, e.ts);
+  for (const t of trips) if (t.direction === 'pickup') for (const e of standingMarks(t)) if (e.type === 'boarded' && !boarded.has(e.studentId)) boarded.set(e.studentId, e.ts);
   const draftKey = `${programId}|${date}`;
   const draft = readDrafts()[draftKey] || {};
 

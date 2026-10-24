@@ -29,9 +29,13 @@ export async function render(ctx) {
       if (last) buses.set(r.id, { id: r.id, lat: last.lat, lng: last.lng, label: r.busNo.slice(-2) });
       const kids = db.students.filter((s) => s.routeId === r.id && s.status === 'active').length;
       const age = last ? secondsSince(last.ts, new Date().toISOString()) : null;
+      // a running trip: the children not marked Boarded/Dropped or Absent yet
+      let unmarked = [];
+      if (t) { try { unmarked = (await api.transport.checklist(t)).unmarked; } catch { unmarked = []; } }
       cards.push(`<div class="card stack"><div class="row between"><h3 style="margin:0">${esc(r.name)}</h3>${t ? badge(t.simulated ? 'Active (simulated)' : 'Active', 'ok') : badge('Idle', 'mute')}</div>
         <small>Bus ${esc(r.busNo)} &middot; driver ${esc(fullName(staff.get(r.driverId)))} &middot; ${r.stops.length} stops &middot; ${kids} children</small>
-        ${t ? `<div>${t.direction === 'pickup' ? 'Morning pickup' : 'Afternoon drop'} since ${ftime(t.startedAt)} &middot; last position ${age == null ? DASH : ago(age)}</div>` : ''}
+        ${t ? `<div>${t.direction === 'pickup' ? 'Morning pickup' : 'Afternoon drop'} since ${ftime(t.startedAt)} &middot; last position ${age == null ? DASH : ago(age)}</div>
+          <div>${unmarked.length ? `<strong>Not marked yet:</strong> ${esc(unmarked.map((u) => u.name).join(', '))}` : 'Every child is marked.'}</div>` : ''}
         <ol style="margin:0;padding-left:20px;font-size:.88rem">${[...r.stops].sort((a, b) => a.seq - b.seq).map((s) => `<li>${esc(s.name)} <small>${esc(s.scheduledPickup)} / ${esc(s.scheduledDrop)}</small></li>`).join('')}</ol></div>`);
     }
     ctx.el.querySelector('#f-routes').innerHTML = cards.join('');

@@ -42,7 +42,10 @@ function audienceText(db, a, forParent = false) {
     const p = indexBy(db.programs);
     return 'Programme: ' + a.programIds.map((id) => p.get(id)?.name || id).join(', ');
   }
-  if (a.scope === 'route') return 'School bus families';
+  if (a.scope === 'route') {
+    const r = indexBy(db.routes || []);
+    return 'Bus route: ' + (a.routeIds || []).map((id) => r.get(id)?.name || 'your route').join(', ');
+  }
   if (forParent) return 'Selected children';
   const s = indexBy(db.students);
   const names = a.studentIds.map((id) => s.get(id)?.firstName || id);
@@ -69,6 +72,8 @@ async function composeModal(ctx) {
       <div id="n-progs" style="margin-left:30px">${progs.map((p) => `<label class="check sm"><input type="checkbox" name="programIds" value="${esc(p.id)}"${persona.role === 'teacher' && progs.length === 1 ? ' checked' : ''}> ${esc(p.name)}</label>`).join('')}</div>
       <label class="check"><input type="radio" name="scope" value="students"> Specific children</label>
       <div id="n-studs" style="margin-left:30px;max-height:150px;overflow:auto">${students.map((s) => `<label class="check sm"><input type="checkbox" name="studentIds" value="${esc(s.id)}"> ${esc(fullName(s))}</label>`).join('')}</div>
+      ${persona.role === 'admin' && (db.routes || []).length ? `<label class="check"><input type="radio" name="scope" value="route"> Bus route</label>
+      <div style="margin-left:30px">${db.routes.map((r) => `<label class="check sm"><input type="checkbox" name="routeIds" value="${esc(r.id)}"> ${esc(r.name)}</label>`).join('')}</div>` : ''}
     </fieldset>
     ${fileField('Attach files (optional)')}
     <label class="check"><input type="checkbox" name="requiresAck"> Requires acknowledgement</label>
@@ -86,6 +91,10 @@ async function composeModal(ctx) {
         const ids = [].concat(v.programIds || []);
         if (!ids.length) throw new Error('Tick at least one programme.');
         audience = { scope: 'program', programIds: ids };
+      } else if (scope === 'route') {
+        const ids = [].concat(v.routeIds || []);
+        if (!ids.length) throw new Error('Tick at least one bus route.');
+        audience = { scope: 'route', routeIds: ids };
       } else {
         const ids = [].concat(v.studentIds || []);
         if (!ids.length) throw new Error('Tick at least one child.');

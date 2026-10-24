@@ -2,7 +2,8 @@
 // While a trip runs it is laid out for driving: the next stop's children first with large buttons, the map behind a
 // button (no tile downloads until it is opened). Ending a trip needs every child marked (drop) and a "bus checked"
 // tick; a page that was reloaded or killed resumes GPS by itself when location permission is already granted, and
-// otherwise shows a red "Tracking is OFF" banner.
+// otherwise shows a red "Tracking is OFF" banner. Absences parents reported for today are listed and greyed until the
+// driver confirms them; a drop asks who received the child (the usual person first); "Running late" tells the families.
 import { secondsSince, nowHHMM } from '../../domain/dates.js';
 import { esc, badge, empty, pageHead, ftime, fullName, options, attempt, toast, ago, openModal, formModal, confirmDialog, DASH } from '../components.js';
 import { createRouteMap } from '../map.js';
@@ -11,6 +12,8 @@ import { isRealMode } from '../mode.js';
 
 const nowISO = () => new Date().toISOString();
 const UNDO_MS = 2 * 60000; // a wrong Boarded/Dropped/Absent tap can be undone this long
+const LATE_LABEL = { late10: 'About 10 minutes late', late20: 'About 20 minutes late', late30: '30 minutes late or more', breakdown: 'The bus has broken down' };
+const telOf = (phone) => String(phone || '').replace(/[^\d+]/g, '');
 
 export async function render(ctx) {
   const { api, db, persona } = ctx;
@@ -26,11 +29,27 @@ export async function render(ctx) {
   // stops in the order the bus visits them for this direction (a drop run may go the other way round)
   const stopsInVisitOrder = () => (check?.order ? check.order.map((id) => route.stops.find((s) => s.id === id)).filter(Boolean) : [...route.stops].sort((a, b) => a.seq - b.seq));
   const stopName = (id) => route.stops.find((s) => s.id === id)?.name || 'stop';
+  // today's absences reported by parents (dates only), each child's pick-up list, and who usually takes each child at the
+  // stop (the newest "received by" on this route's recent drop trips; a parent when there is none)
+  let absentIds = new Set();
+  const receivers = await api.transport.receivers(route.id).catch(() => ({}));
+  const usual = new Map();
+  for (const t of (await api.transport.trips({ routeId: route.id }).catch(() => [])).slice().reverse()) {
+    for (const e of t.childEvents || []) if (e.type === 'dropped' && e.receivedBy) usual.set(e.studentId, e.receivedBy);
+  }
+  const contactOf = (sid, id) => (receivers[sid] || []).find((c) => c.id === id);
+  const receiverText = (sid, r) => {
+    if (r.kind === 'guardian') return 'a parent';
+    if (r.kind === 'other') return `${r.name} (not on the list)`;
+    const c = contactOf(sid, r.contactId);
+    return c ? `${c.name} (${c.relation})` : 'a person on the list';
+  };
 
   ctx.el.innerHTML = `${pageHead(route.name, `Bus ${route.busNo} - ${route.stops.length} stops`)}
     <div id="d-status"></div>
     <div id="d-controls"></div>
     <div id="d-next" style="margin-top:12px"></div>
+    <div id="d-absent" style="margin-top:12px"></div>
     <button class="btn block" id="d-map-toggle" style="margin-top:12px" aria-expanded="false">Show map</button>
     <div class="map" id="d-map" style="margin:14px 0" hidden></div>
     <h2>All stops</h2>
@@ -62,6 +81,7 @@ export async function render(ctx) {
     trip = await api.transport.activeTrip(route.id);
     if (!trip) liveFix = null;
     await loadCheck();
+    try { absentIds = new Set((await api.transport.absences(route.id)).map((a) => a.studentId)); } catch { /* unavailable: no list */ }
     paintStatus();
     paintControls();
     paintStops();
@@ -117,10 +137,11 @@ export async function render(ctx) {
         <button class="btn primary block" id="d-start-gps"${geo.ok ? '' : ' disabled'}>Start ${esc(label)} (real GPS)</button>
         ${real ? `<small>${geo.ok ? 'Keep this screen open during the trip.' : 'Allow location for this site in the phone settings, then reload.'}</small>` : `<div class="row"><button class="btn block grow" id="d-start-sim">Start simulated ${esc(label)}</button>
           <label class="row" style="gap:6px"><span class="lbl" style="font-size:.8rem;font-weight:800">Speed</span><select id="d-speed" style="width:auto">${options([{ value: 1, label: '1x (real time)' }, { value: 5, label: '5x' }, { value: 20, label: '20x' }], 5)}</select></label></div>
-        <small>A simulated trip is clearly marked to parents. Faster speeds also shorten the ETA parents see.</small>`}</div>`;
+        <small>A simulated trip is clearly marked to parents. Faster speeds also shorten the ETA parents see.</small>`}
+        <button class="btn block" id="d-late">Running late</button></div>`;
       return;
     }
-    el.innerHTML = `<div class="row" style="margin-top:12px"><button class="btn danger" id="d-end">End trip</button></div>`;
+    el.innerHTML = `<div class="row" style="margin-top:12px"><button class="btn" id="d-late">Running late</button><button class="btn danger" id="d-end">End trip</button></div>`;
   }
 
   // one child row: the standing mark (with Undo for two minutes) or large Boarded/Dropped and Absent buttons
@@ -129,9 +150,15 @@ export async function render(ctx) {
   function childRow(k, st, pickup) {
     const l = check?.last?.[k.id] ?? null;
     const state = l ? badge(`${l.type === 'boarded' ? 'Boarded' : l.type === 'dropped' ? 'Dropped' : 'Absent'} ${ftime(l.ts)}`, l.type === 'absent' ? 'bad' : 'ok') : '';
-    const buttons = trip && !l ? `<button class="btn sage" data-child="${esc(k.id)}" data-stop="${esc(st.id)}" data-type="${pickup ? 'boarded' : 'dropped'}">${pickup ? 'Boarded' : 'Dropped'}</button><button class="btn" data-child="${esc(k.id)}" data-stop="${esc(st.id)}" data-type="absent">Absent</button>` : '';
+    // a reported absence: greyed with "Confirm absent" first; the usual button stays for a child who comes after all
+    const reported = !l && absentIds.has(k.id);
+    const btn = (type, label, cls = '') => `<button class="btn${cls}" data-child="${esc(k.id)}" data-stop="${esc(st.id)}" data-type="${type}">${label}</button>`;
+    const go = pickup ? ['boarded', 'Boarded'] : ['dropped', 'Dropped'];
+    const buttons = !trip || l ? '' : reported ? `${btn('absent', 'Confirm absent', ' sage')}${btn(...go)}` : `${btn(...go, ' sage')}${btn('absent', 'Absent')}`;
     const undo = trip && undoable(l) ? `<button class="btn" data-undo="${esc(k.id)}">Undo</button>` : '';
-    return `<li><div class="row between"><span>${esc(fullName(k))}</span><span class="row">${state}${undo}${buttons}</span></div></li>`;
+    const to = l?.type === 'dropped' && l.receivedBy ? `<br><small>Received by ${esc(receiverText(k.id, l.receivedBy))}</small>` : '';
+    return `<li><div class="row between"><span${reported ? ' class="muted"' : ''}>${esc(fullName(k))}${reported ? ` ${badge('Absent today (reported by parent)', 'mute')}` : ''}${to}</span>
+      <span class="row">${state}${undo}${buttons}<button class="btn ghost" data-people="${esc(k.id)}">Pick-up list</button></span></div></li>`;
   }
   function stopCard(st, pickup, title = '') {
     const se = (trip?.stopEvents || []).filter((e) => e.stopId === st.id);
@@ -152,6 +179,75 @@ export async function render(ctx) {
     else if (check?.finished) next.innerHTML = '<div class="card stack"><div class="banner ok" style="margin:0"><strong>Last stop done and every child marked.</strong> Check the bus, then end the trip.</div><button class="btn danger block" data-end>End trip</button></div>';
     else if (check) next.innerHTML = '<div class="card"><strong>Every child is marked.</strong> <small>End the trip after the last stop.</small></div>';
     ctx.el.querySelector('#d-stops').innerHTML = order.map((st) => stopCard(st, pickup)).join('');
+    paintAbsent();
+  }
+  // "Absent today (reported by parent)": the driver confirms each one (or all at once) during the trip
+  function paintAbsent() {
+    const away = kids.filter((k) => absentIds.has(k.id));
+    const open = away.filter((k) => !check?.last?.[k.id]);
+    const state = (l) => (!l ? badge('Not confirmed', 'warn') : l.type === 'absent' ? badge('Confirmed', 'mute') : badge('Came after all', 'ok'));
+    ctx.el.querySelector('#d-absent').innerHTML = away.length ? `<div class="card stack"><h2 style="margin:0">Absent today (reported by parent)</h2>
+      <ul class="list">${away.map((k) => `<li><div class="row between"><span>${esc(fullName(k))} <small>(${esc(stopName(k.stopId))})</small></span>${state(check?.last?.[k.id])}</div></li>`).join('')}</ul>
+      ${trip && open.length ? `<button class="btn block" data-confirm-absent>${open.length === 1 ? 'Confirm absent' : `Confirm all ${esc(open.length)} absent`}</button>` : ''}
+      <small>${trip ? 'If a child is at the stop after all, tap Boarded or Dropped on their row.' : 'Confirm them once the trip has started.'}</small></div>` : '';
+  }
+
+  // Who received the child at the stop: the usual person first (one tap), then the others on the list and a parent, then
+  // "Someone else" (with a name). Asked on every drop; "Not now" records the drop without it.
+  // → receivedBy, null for "Not now", undefined when the driver closed the question (nothing is recorded).
+  async function pickReceiver(k, stopId) {
+    const people = receivers[k.id] || [];
+    const u = usual.get(k.id);
+    const parent = { label: 'A parent', value: { kind: 'guardian' } };
+    const listed = people.map((c) => ({ label: `${c.name} (${c.relation})`, value: { kind: 'contact', id: c.id } }));
+    const first = (u?.kind === 'contact' && listed.find((x) => x.value.id === u.contactId)) || parent;
+    const choices = [first, ...[parent, ...listed].filter((x) => x !== first)].map((x, i) => ({ ...x, kind: i === 0 ? 'primary block' : 'block' }));
+    const v = await openModal({
+      title: `Who took ${k.firstName}?`,
+      body: `<p style="margin:0">${esc(fullName(k))} at ${esc(stopName(stopId))}.${people.length ? '' : " No one else is on the family's pick-up list."}</p>`,
+      actions: [...choices, { label: 'Someone else', kind: 'block', value: 'other' }, { label: 'Not now', kind: 'ghost block', value: 'skip' }],
+    });
+    if (v === null) return undefined;
+    if (v === 'skip') return null;
+    if (v !== 'other') return v;
+    let name = '';
+    const ok = await formModal({
+      title: `Who took ${k.firstName}?`, submitLabel: 'Record drop',
+      fieldsHtml: `<div class="banner warn"><strong>Not on the family's list.</strong> Hand the child over only after the school has confirmed it with a parent.</div>
+        <label class="field"><span class="lbl">Name of the person</span><input name="name" maxlength="80" required></label>`,
+      onSubmit: async (f) => {
+        name = String(f.name || '').trim();
+        if (name.length < 2) throw new Error('Write the name of the person who received the child');
+      },
+    });
+    return ok ? { kind: 'other', name } : undefined;
+  }
+  async function showPeople(k) {
+    const people = receivers[k.id] || [];
+    await openModal({
+      title: `Who may collect ${k.firstName}`,
+      body: `${people.length ? `<ul class="list">${people.map((c) => `<li class="stack"><div><strong>${esc(c.name)}</strong> <small>${esc(c.relation)}</small></div>
+        ${c.phone ? `<a class="btn block" href="tel:${esc(telOf(c.phone))}">Call ${esc(c.phone)}</a>` : ''}</li>`).join('')}</ul>` : "<p>No one else is on the family's list.</p>"}
+        <small>Besides a parent, only these people may take ${esc(k.firstName)}. Anyone else only after the school has confirmed it with a parent.</small>`,
+    });
+  }
+
+  // "Running late": an important notice to the families on this route (pushed to those who agreed)
+  async function runningLate() {
+    const kinds = await api.transport.runningLateKinds().catch(() => Object.keys(LATE_LABEL));
+    const sent = await formModal({
+      title: 'Tell the families', submitLabel: 'Send to the families',
+      fieldsHtml: `<fieldset class="field" style="border:0;padding:0;margin:0 0 12px"><legend class="lbl" style="font-size:.82rem;font-weight:800">${esc(route.name)}</legend>
+        ${kinds.map((k, i) => `<label class="check"><input type="radio" name="kind" value="${esc(k)}"${i === 0 ? ' checked' : ''}> ${esc(LATE_LABEL[k] || k)}</label>`).join('')}</fieldset>
+        <label class="field"><span class="lbl">Reason (optional)</span><input name="reason" maxlength="120" placeholder="For example: heavy traffic"></label>
+        <small>Every family on this route gets it as an important notice.</small>`,
+      onSubmit: async (v) => {
+        if (!v.kind) throw new Error('Choose how late the bus is');
+        const reason = String(v.reason || '').trim();
+        await api.transport.runningLate({ routeId: route.id, kind: v.kind, ...(reason ? { reason } : {}) });
+      },
+    });
+    if (sent) toast('The families on this route were told');
   }
 
   // Ending: a drop trip needs every child marked; every trip asks the driver to walk the bus and tick "no child on board"
@@ -203,6 +299,16 @@ export async function render(ctx) {
     const t = e.target.closest('button');
     if (!t) return;
     if (t.dataset.setpos) { await setStopHere(t.dataset.setpos, t.dataset.name); return; }
+    if (t.dataset.people) { await showPeople(kids.find((k) => k.id === t.dataset.people)); return; }
+    if (t.id === 'd-late') { await runningLate(); return; }
+    if (t.dataset.confirmAbsent != null) {
+      for (const k of kids.filter((x) => absentIds.has(x.id) && !check?.last?.[x.id])) {
+        const r = await attempt(() => api.transport.markChild(trip.id, { studentId: k.id, stopId: k.stopId, type: 'absent' }));
+        if (!r.ok) break;
+      }
+      await refresh();
+      return;
+    }
     if (t.dataset.dir) { direction = t.dataset.dir; paintControls(true); await loadCheck(); paintStops(); return; }
     if (t.id === 'd-map-toggle') {
       const el = ctx.el.querySelector('#d-map');
@@ -234,7 +340,15 @@ export async function render(ctx) {
       await attempt(() => api.transport.markChild(trip.id, { studentId: t.dataset.undo, type: 'corrected' }), 'Mark undone');
       await refresh();
     } else if (t.dataset.child) {
-      await attempt(() => api.transport.markChild(trip.id, { studentId: t.dataset.child, stopId: t.dataset.stop, type: t.dataset.type }));
+      const mark = { studentId: t.dataset.child, stopId: t.dataset.stop, type: t.dataset.type };
+      if (mark.type === 'dropped') {
+        const by = await pickReceiver(kids.find((k) => k.id === mark.studentId), mark.stopId);
+        if (by === undefined) return; // closed: nothing recorded, the buttons stay
+        if (by) mark.receivedBy = by;
+      }
+      const r = await attempt(() => api.transport.markChild(trip.id, mark));
+      if (r.ok && mark.receivedBy?.kind === 'contact') usual.set(mark.studentId, { kind: 'contact', contactId: mark.receivedBy.id });
+      else if (r.ok && mark.receivedBy) usual.set(mark.studentId, mark.receivedBy);
       await refresh();
     }
   });
