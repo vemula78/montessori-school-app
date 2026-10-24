@@ -440,3 +440,57 @@ test('#28 Add observation starts with no child chosen ("Choose the child") unles
   assert.match(d1.innerHTML, new RegExp(`<option value="${kid.id}" selected>`));
   assert.doesNotMatch(d1.innerHTML, /Choose the child/);
 });
+
+/** Submit a formModal built on a fake dialog with these [name, value] pairs (FormData is stubbed for the call). */
+async function submitModal(d, pairs) {
+  const PrevFD = globalThis.FormData;
+  globalThis.FormData = class { constructor() { this.e = pairs; } entries() { return this.e[Symbol.iterator](); } [Symbol.iterator]() { return this.e[Symbol.iterator](); } };
+  try {
+    const form = d.querySelector('form');
+    await form.handlers.submit[0]({ preventDefault() {} });
+    return d.querySelector('[data-err]').textContent;
+  } finally { globalThis.FormData = PrevFD; }
+}
+
+// ---------------------------------------------------------------- #29 / #30 learning for a group or a class
+test('#29 progress: a group lesson records the next step for each ticked child; a child who mastered it is skipped', async () => {
+  const Learning = await import('../src/ui/screens/learning.js');
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER, { tab: 'progress' });
+  const pid = ctx.persona.programIds[0];
+  const kids = (await api.people.students({ programId: pid })).filter((s) => s.status === 'active').slice(0, 3).map((s) => s.id);
+  const pres = (await api.curriculum.list({ area: 'sensorial' })).find((p) => p.active);
+  const today = todayISO();
+  const before = new Map((await api.progress.state({ programId: pid })).filter((x) => x.presentationId === pres.id).map((x) => [x.studentId, x.status]));
+  await Learning.render(ctx);
+  const d = await modalFrom(() => ctx.el.querySelector('#l-body').querySelector('#pg-group').handlers.click[0]());
+  await new Promise((r) => setTimeout(r, 20));
+  const toasts = [];
+  ctx.toast = (m) => toasts.push(m);
+  const err = await submitModal(d, [['area', 'sensorial'], ['date', today], ['presentationId', pres.id], ['status', 'next'], ...kids.map((k) => ['studentIds', k])]);
+  assert.equal(err, '');
+  const after = new Map((await api.progress.state({ programId: pid })).filter((x) => x.presentationId === pres.id).map((x) => [x.studentId, x.status]));
+  const NEXT = { undefined: 'introduced', introduced: 'practising', practising: 'mastered', mastered: 'mastered' };
+  for (const k of kids) assert.equal(after.get(k), NEXT[before.get(k)], `${k} moved one step`);
+});
+
+test('#30 reports: "Start reports for this class" makes one draft per child for the term and skips children who already have one', async () => {
+  const Learning = await import('../src/ui/screens/learning.js');
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER, { tab: 'reports' });
+  const pid = ctx.persona.programIds[0];
+  const db = api.getDb();
+  const ay = db.academicYears.find((a) => a.id === db.school.currentAcademicYearId);
+  const kids = (await api.people.students({ programId: pid })).filter((s) => s.status === 'active');
+  const to = todayISO() > ay.endDate ? ay.endDate : todayISO();
+  await api.reports.generate({ studentId: kids[0].id, academicYearId: ay.id, termName: 'Term 2', fromDate: ay.startDate, toDate: to });
+  await Learning.render(ctx);
+  const d = await modalFrom(() => ctx.el.querySelector('#l-body').querySelector('#rp-class').handlers.click[0]());
+  const toasts = [];
+  ctx.toast = (m) => toasts.push(m);
+  assert.equal(await submitModal(d, [['termName', 'Term 2'], ['fromDate', ay.startDate], ['toDate', to]]), '');
+  const term2 = (await api.reports.list({})).filter((r) => r.termName === 'Term 2' && r.academicYearId === ay.id && kids.some((k) => k.id === r.studentId));
+  assert.equal(term2.length, kids.length, 'one report per child');
+  await new Promise((r) => setTimeout(r, 5));
+  assert.match(toasts.join(' '), new RegExp(`Created ${kids.length - 1} reports, 1 skipped`));
+});

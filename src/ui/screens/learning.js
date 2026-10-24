@@ -3,7 +3,7 @@
 // children. Parents never see a progress grid: progress reaches them only inside a published report.
 // Images are drawn from blobs (photo-view.js); nothing here ever puts a server URL in the page.
 import { todayISO, addDays } from '../../domain/dates.js';
-import { esc, banner, empty, pageHead, badge, fdate, fullName, options, formModal, confirmDialog, openModal, attempt, errMessage, DASH } from '../components.js';
+import { esc, banner, empty, pageHead, badge, fdate, fullName, options, formModal, confirmDialog, openModal, attempt, errMessage, notifyQuota, DASH } from '../components.js';
 import { AREA_KEYS, AREA_LABEL, STATUS_KEYS, STATUS_LABEL, STATUS_KIND, TERM_NAMES, NARRATIVE_LABEL, REPORT_STATUS } from '../learn-labels.js';
 import { photoImg, loadPhotos } from '../photo-view.js';
 import { preparePhoto, sizeText } from '../photo-prep.js';
@@ -201,8 +201,9 @@ async function progressTab(ctx, host, { programId, students }) {
       const cell = (area) => { const l = mine.filter((x) => x.area === area); const n = (st) => l.filter((x) => x.status === st).length; return l.length ? `${n('mastered')} &middot; ${n('practising')} &middot; ${n('introduced')}` : DASH; };
       return `<tr><td><a href="${esc(ctx.href('/learning', { tab: 'progress', program: programId, student: s.id }))}">${esc(fullName(s))}</a></td>${AREA_KEYS.map((a) => `<td class="num">${cell(a)}</td>`).join('')}</tr>`;
     });
-    host.innerHTML = `<div class="stack"><p class="muted" style="margin:0">Each cell shows presentations <strong>mastered &middot; practising &middot; introduced</strong>. Choose a child to record progress.</p>
+    host.innerHTML = `<div class="stack"><div class="row between"><p class="muted" style="margin:0">Each cell shows presentations <strong>mastered &middot; practising &middot; introduced</strong>. Choose a child to record progress.</p>${students.length ? '<button class="btn primary" id="pg-group">Record a group lesson</button>' : ''}</div>
       ${students.length ? `<div class="tablewrap"><table><thead><tr><th>Child</th>${AREA_KEYS.map((a) => `<th>${esc(AREA_LABEL[a])}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>` : empty('No children in this programme')}</div>`;
+    host.querySelector('#pg-group')?.addEventListener('click', async () => { if (await groupLessonForm(ctx, students, state)) ctx.rerender(); });
     return;
   }
   const s = students.find((x) => x.id === studentId);
@@ -230,6 +231,46 @@ async function progressTab(ctx, host, { programId, students }) {
       await openModal({ title: `${p.name} - history`, body: `<ul class="list card-list">${hist.value.map((ev) => `<li><div class="row between"><span>${badge(STATUS_LABEL[ev.status], STATUS_KIND[ev.status])} ${fdate(ev.date)}</span>${ev.correction ? badge('Correction', 'warn') : ''}</div>${ev.note ? `<div>${esc(ev.note)}</div>` : ''}${ev.reason ? `<small>Reason: ${esc(ev.reason)}</small>` : ''}</li>`).join('')}</ul>` });
     }
   });
+}
+
+/**
+ * One presentation given to a small group: tick the children, then each gets their next step (or the chosen status).
+ * Saved child by child with the same record as one child's (the server loads one child's records per save).
+ */
+async function groupLessonForm(ctx, students, state) {
+  const today = todayISO();
+  const list = await ctx.api.curriculum.list({ includeRetired: false });
+  const presOptions = (area) => options(list.filter((p) => p.area === area).map((p) => ({ value: p.id, label: p.name })), '', { blank: 'Choose the presentation' });
+  let result = null;
+  const ok = await formModal({
+    title: 'Record a group lesson', submitLabel: 'Record for ticked children',
+    fieldsHtml: `<div class="grid cols-2"><label class="field"><span class="lbl">Montessori area</span><select name="area" id="g-area">${options(AREA_KEYS.map((a) => ({ value: a, label: AREA_LABEL[a] })), 'practicalLife')}</select></label>
+      <label class="field"><span class="lbl">Date</span><input type="date" name="date" value="${esc(today)}" max="${esc(today)}" required></label></div>
+      <label class="field"><span class="lbl">Presentation</span><select name="presentationId" id="g-pres" required>${presOptions('practicalLife')}</select></label>
+      <label class="field"><span class="lbl">Status</span><select name="status">${options([{ value: 'next', label: 'The next step for each child' }, ...STATUS_KEYS.map((k) => ({ value: k, label: STATUS_LABEL[k] }))], 'next')}</select></label>
+      <fieldset class="field" style="border:0;padding:0;margin:0 0 12px"><legend class="lbl" style="font-size:.82rem;font-weight:800">Children in the group</legend>
+        ${students.map((s) => `<label class="check sm"><input type="checkbox" name="studentIds" value="${esc(s.id)}"> ${esc(fullName(s))}</label>`).join('')}</fieldset>
+      <div class="help">A child who has already mastered it is skipped. Going back needs a correction, recorded for one child at a time.</div>`,
+    onOpen: (d) => { const area = d.querySelector('#g-area'); area.addEventListener('change', () => { d.querySelector('#g-pres').innerHTML = presOptions(area.value); }); },
+    onSubmit: async (v) => {
+      const ids = [].concat(v.studentIds || []);
+      if (!v.presentationId) throw new Error('Choose the presentation');
+      if (!ids.length) throw new Error('Tick at least one child');
+      result = { done: 0, skipped: 0, failed: [] };
+      for (const id of ids) {
+        const cur = state.find((x) => x.studentId === id && x.presentationId === v.presentationId);
+        const status = v.status === 'next' ? (cur ? STATUS_KEYS[rank(cur.status) + 1] : 'introduced') : v.status;
+        if (!status) { result.skipped++; continue; }
+        try { await ctx.api.progress.record({ studentId: id, presentationId: v.presentationId, status, date: v.date, note: '', correction: false, reason: null }); result.done++; } catch (e) {
+          notifyQuota(e);
+          result.failed.push(`${students.find((s) => s.id === id)?.firstName || id}: ${errMessage(e)}`);
+        }
+      }
+      if (!result.done && result.failed.length) throw new Error(`Nothing was recorded. ${result.failed.join('; ')}`);
+    },
+  });
+  if (ok && result) ctx.toast(`Recorded for ${result.done} child${result.done === 1 ? '' : 'ren'}${result.skipped ? `, ${result.skipped} already mastered` : ''}${result.failed.length ? `. Not recorded: ${result.failed.join('; ')}` : ''}`, result.failed.length ? 'bad' : '');
+  return ok;
 }
 
 function recordForm(ctx, s, p, cur) {
@@ -262,9 +303,32 @@ async function reportsTab(ctx, host, { programId, students }) {
   const ids = new Set(students.map((s) => s.id));
   const names = new Map(students.map((s) => [s.id, fullName(s)]));
   const reports = (await api.reports.list({})).filter((r) => ids.has(r.studentId));
-  host.innerHTML = `<div class="stack"><div class="row between"><p class="muted" style="margin:0">A report is a frozen copy: progress as of the term end and the observations you shared. Parents see it only once the principal publishes it.</p><button class="btn primary" id="rp-new">Start a report</button></div>
+  host.innerHTML = `<div class="stack"><div class="row between"><p class="muted" style="margin:0">A report is a frozen copy: progress as of the term end and the observations you shared. Parents see it only once the principal publishes it.</p><span class="row"><button class="btn" id="rp-class">Start reports for this class</button><button class="btn primary" id="rp-new">Start a report</button></span></div>
     ${reports.length ? `<div class="tablewrap"><table><thead><tr><th>Child</th><th>Term</th><th>Dates</th><th>Status</th><th></th></tr></thead><tbody>${reports.map((r) => `<tr><td>${esc(names.get(r.studentId))}</td><td>${esc(r.termName)}</td><td class="nowrap">${fdate(r.fromDate)} to ${fdate(r.toDate)}</td>
       <td>${badge(...REPORT_STATUS[r.status])}</td><td><a class="btn" href="${esc(ctx.href('/learning', { tab: 'reports', program: programId, report: r.id }))}">Open</a></td></tr>`).join('')}</tbody></table></div>` : empty('No reports yet', 'Start one for a child at the end of a term.')}</div>`;
+  host.querySelector('#rp-class').addEventListener('click', async () => {
+    const ay = db.academicYears.find((a) => a.id === db.school.currentAcademicYearId);
+    if (!ay) { ctx.toast('No current academic year is set', 'bad'); return; }
+    let r = null;
+    const ok = await formModal({
+      title: 'Start reports for this class', submitLabel: 'Create reports',
+      fieldsHtml: `<label class="field"><span class="lbl">Term</span><select name="termName">${options(TERM_NAMES.map((t) => ({ value: t, label: t })), 'Term 1')}</select></label>
+        <div class="grid cols-2"><label class="field"><span class="lbl">From</span><input type="date" name="fromDate" value="${esc(ay.startDate)}" min="${esc(ay.startDate)}" max="${esc(ay.endDate)}" required></label>
+        <label class="field"><span class="lbl">To</span><input type="date" name="toDate" value="${esc(todayISO() > ay.endDate ? ay.endDate : todayISO())}" min="${esc(ay.startDate)}" max="${esc(ay.endDate)}" required></label></div>
+        <div class="help">One draft report for each of the ${esc(students.length)} children, for academic year ${esc(ay.label || ay.id)}. A child who already has a report for this term is skipped (open it to refresh it).</div>`,
+      onSubmit: async (v) => {
+        r = { made: 0, skipped: 0, failed: [] };
+        for (const s of students) {
+          if (reports.some((x) => x.studentId === s.id && x.academicYearId === ay.id && x.termName === v.termName)) { r.skipped++; continue; }
+          try { await api.reports.generate({ studentId: s.id, academicYearId: ay.id, termName: v.termName, fromDate: v.fromDate, toDate: v.toDate }); r.made++; } catch (e) { notifyQuota(e); r.failed.push(`${s.firstName}: ${errMessage(e)}`); }
+        }
+        if (!r.made && r.failed.length) throw new Error(`No report was created. ${r.failed.join('; ')}`);
+      },
+    });
+    if (!ok || !r) return;
+    ctx.toast(`Created ${r.made} report${r.made === 1 ? '' : 's'}${r.skipped ? `, ${r.skipped} skipped (already started)` : ''}${r.failed.length ? `. Not created: ${r.failed.join('; ')}` : ''}`, r.failed.length ? 'bad' : '');
+    ctx.rerender();
+  });
   host.querySelector('#rp-new').addEventListener('click', async () => {
     const ay = db.academicYears.find((a) => a.id === db.school.currentAcademicYearId);
     if (!ay) { ctx.toast('No current academic year is set', 'bad'); return; }
