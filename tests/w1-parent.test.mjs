@@ -370,3 +370,116 @@ test('#33 teacher Learning asks the server about photo consent once per programm
   await Learning.render(wrap(mkCtx(api, TEACHER, { tab: 'observations' })));
   assert.equal(n, 1, 'the re-render after Share / Edit / Add photo reuses the answer');
 });
+
+// ---- #7 fees: due now (overdue or within 14 days) vs upcoming ------------------------------------------------
+const inv = (id, dueDate, balancePaise, overdueDays = 0) => ({ id, number: `INV/W1/${id}`, installmentName: `Term ${id}`, dueDate, status: 'issued', balancePaise, totalPaise: balancePaise, paidPaise: 0, overdueDays });
+function feesCtx(api, kidInvoices, query = {}) {
+  const ctx = mkCtx(api, PARENT, query);
+  ctx.api = { ...api, fees: { ...api.fees, invoices: async () => kidInvoices.map((i) => ({ ...i })) } };
+  return ctx;
+}
+const W1_INVOICES = () => [inv('a', addDays(todayISO(), -5), 100000, 5), inv('b', addDays(todayISO(), 10), 20000), inv('c', addDays(todayISO(), 60), 300000)];
+
+test('#7 parent home: the fees tile counts what is due now; next term issued early shows as upcoming, not due', async () => {
+  const api = await mkApi();
+  const ctx = feesCtx(api, W1_INVOICES());
+  await (await import('../src/ui/screens/home.js')).render(ctx);
+  const html = ctx.el.innerHTML;
+  assert.match(html, /₹1,200(\.00)?<\/div><div class="l">sample fees due now/);
+  assert.match(html, /₹3,000(\.00)? upcoming/);
+});
+
+test('#7 parent fees: the red "Due" badge and the Pay button cover due-now invoices only; only upcoming: no red badge', async () => {
+  const api = await mkApi();
+  const Fees = await import('../src/ui/screens/fees-invoices.js');
+  let ctx = feesCtx(api, W1_INVOICES());
+  await Fees.render(ctx);
+  assert.match(ctx.el.innerHTML, /<span class="badge bad">Due ₹1,200(\.00)?<\/span>/);
+  assert.match(ctx.el.innerHTML, /Upcoming ₹3,000/);
+  assert.match(ctx.el.innerHTML, /data-pay="[^"]+" data-scope="now">Pay ₹1,200(\.00)? online/);
+  ctx = feesCtx(api, [inv('c', addDays(todayISO(), 60), 300000)]);
+  await Fees.render(ctx);
+  assert.doesNotMatch(ctx.el.innerHTML, /badge bad">Due/);
+  assert.doesNotMatch(ctx.el.innerHTML, /All paid/);
+  assert.match(ctx.el.innerHTML, /class="btn" data-pay="[^"]+" data-scope="all">Pay ₹3,000(\.00)? early/);
+});
+
+test('#7 payment window: each invoice shows its due date; only the ones due now start ticked', async () => {
+  const { payOnline } = await import('../src/ui/screens/pay-online.js');
+  const made = [];
+  const orig = document.createElement;
+  document.createElement = () => { const d = fake(); d.showModal = () => {}; d.close = () => {}; made.push(d); return d; };
+  try {
+    const api = await mkApi();
+    payOnline(mkCtx(api, PARENT), { id: 'stu-01', firstName: 'Neel' }, W1_INVOICES());
+    for (let i = 0; i < 20 && !made.length; i++) await new Promise((r) => setTimeout(r, 5));
+  } finally { document.createElement = orig; }
+  const html = made.map((d) => d.innerHTML).join('');
+  const { fdate } = await import('../src/ui/components.js');
+  assert.match(html, new RegExp(`due ${fdate(addDays(todayISO(), 60))}`));
+  assert.match(html, /value="a"[^>]* checked/);
+  assert.match(html, /value="b"[^>]* checked/);
+  assert.doesNotMatch(html, /value="c"[^>]* checked/);
+  assert.match(html, /id="po-total">₹1,200/);
+});
+
+// ---- #10 a reported absence shows on the home card -------------------------------------------------------------
+test('#10 parent home: today\'s reported absence reads "Absence reported", then "Absence seen by teacher"', async () => {
+  const api = await mkApi();
+  const today = todayISO();
+  api.session.set(PARENT);
+  const kid = api.session.current().studentIds[0];
+  api.getDb().attendance.filter((a) => a.date === today && a.studentId === kid).forEach((a) => { a.date = '1999-01-01'; }); // register not taken yet
+  for (const r of await api.care.leave({ studentId: kid })) if (r.status === 'active') await api.care.withdrawLeave(r.id);
+  const req = await api.care.requestLeave({ studentId: kid, fromDate: today, toDate: today, reason: 'Fever' });
+  const Home = await import('../src/ui/screens/home.js');
+  assert.match(await draw(api, PARENT, Home), /badge warn">Absence reported</);
+  api.session.set(TEACHER);
+  await api.care.markLeaveSeen(req.id);
+  assert.match(await draw(api, PARENT, Home), /badge warn">Absence seen by teacher</);
+});
+
+// ---- #15 a started payment survives the browser being closed during the UPI switch -----------------------------
+test('#15 the "payment not confirmed yet" marker is kept in localStorage (not sessionStorage) and is cleared on sign-out', () => {
+  const src = readFileSync('src/ui/screens/pay-online.js', 'utf8');
+  assert.doesNotMatch(src, /sessionStorage\./);
+  assert.match(src, /localStorage\.getItem\(PENDING_KEY\)/);
+  assert.match(src, /export function clearPendingPayment/);
+  const app = readFileSync('src/ui/app.js', 'utf8');
+  assert.match(app.split('async function signOutNow')[1].split('\n}\n')[0], /clearPendingPayment\(\)/);
+});
+
+// ---- #17 no bus: the Bus tab becomes Calendar ------------------------------------------------------------------
+test('#17 a parent with no child on a bus gets Calendar in the tab bar instead of Bus; the home "no bus" tile is not a link', async () => {
+  const Shell = await import('../src/ui/shell.js');
+  const root = fake();
+  Shell.renderShell(root, { school: { name: 'S' }, personas: { featured: [], others: [] }, current: { id: 'x', role: 'parent' }, noBus: true });
+  const bar = root.innerHTML.split('<nav class="tabbar')[1];
+  assert.match(bar, /<span>Calendar<\/span>/);
+  assert.doesNotMatch(bar, /<span>Bus<\/span>/);
+  const withBus = fake();
+  Shell.renderShell(withBus, { school: { name: 'S' }, personas: { featured: [], others: [] }, current: { id: 'x', role: 'parent' } });
+  assert.match(withBus.innerHTML.split('<nav class="tabbar')[1], /<span>Bus<\/span>/);
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const kid = api.session.current().studentIds[0];
+  api.getDb().students.forEach((s) => { if (api.session.current().studentIds.includes(s.id)) s.routeId = null; });
+  const html = await draw(api, PARENT, await import('../src/ui/screens/home.js'));
+  assert.doesNotMatch(html, /href="#\/bus"/);
+  assert.match(html, /no bus/);
+  assert.ok(kid);
+});
+
+// ---- #82 the month's attendance on the parent home -------------------------------------------------------------
+test('#82 parent home: "This month: present X of Y school days" with the absent, late and leave dates', async () => {
+  const api = await mkApi();
+  api.session.set(PARENT);
+  const kid = api.session.current().studentIds[0];
+  const from = `${todayISO().slice(0, 8)}01`;
+  const s = await api.attendance.summary(kid, from, todayISO());
+  const html = await draw(api, PARENT, await import('../src/ui/screens/home.js'));
+  assert.match(html, new RegExp(`This month: present ${s.present + s.late} of ${s.workingDays} school day`));
+  const { fdate } = await import('../src/ui/components.js');
+  const abs = api.getDb().attendance.filter((a) => a.studentId === kid && a.date >= from && a.status === 'absent');
+  for (const a of abs) assert.ok(html.includes(fdate(a.date)), `absent ${a.date} listed`);
+});

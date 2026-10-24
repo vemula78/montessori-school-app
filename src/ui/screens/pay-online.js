@@ -2,7 +2,8 @@
 // this page only chooses which invoices (and optionally a smaller amount) and then opens the payment provider's
 // Checkout window. Checkout's script cannot be self-hosted, so it is loaded here, lazily, and nowhere else.
 import { rupeesToPaise } from '../../domain/money.js';
-import { esc, money, banner, formModal, confirmDialog, toast, errMessage } from '../components.js';
+import { todayISO } from '../../domain/dates.js';
+import { esc, money, fdate, banner, formModal, confirmDialog, toast, errMessage, isDueNow } from '../components.js';
 
 const CHECKOUT_URL = 'https://checkout.razorpay.com/v1/checkout.js';
 const PENDING_KEY = 'school.pay.pending.v1';
@@ -26,9 +27,13 @@ function loadCheckout() {
 }
 
 // ---- a started-but-unconfirmed payment must survive the phone switching to a UPI app and back ----
-const readPending = () => { try { return JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null'); } catch { return null; } };
-const savePending = (p) => { try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch { /* the focus check still works for this page view */ } };
-const clearPending = () => { try { sessionStorage.removeItem(PENDING_KEY); } catch { /* nothing to clear */ } };
+// localStorage, not sessionStorage: a low-memory phone often kills the browser during the UPI switch, and the parent
+// comes back through the Home Screen icon in a new session. Order id, child id and time only; expires after 24 h.
+const readPending = () => { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch { return null; } };
+const savePending = (p) => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch { /* the focus check still works for this page view */ } };
+const clearPending = () => { try { localStorage.removeItem(PENDING_KEY); } catch { /* nothing to clear */ } };
+/** Sign-out: the next person on this phone must not inherit the marker. */
+export function clearPendingPayment() { clearPending(); }
 
 let watch = null; // {orderId, timer, onVisible, started}
 function stopWatch() {
@@ -91,6 +96,9 @@ export async function payOnline(ctx, student, invoices) {
   const open = invoices.filter(isOpen).sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
   if (!open.length) { toast('Nothing is due for this child', 'bad'); return; }
   const byId = new Map(open.map((i) => [i.id, i]));
+  const today = todayISO();
+  const anyDue = open.some((i) => isDueNow(i.dueDate, today));
+  const ticked = (i) => !anyDue || isDueNow(i.dueDate, today); // only what is due now; paying early (nothing due yet): all
   let order = null;
   let expected = 0;
 
@@ -98,8 +106,8 @@ export async function payOnline(ctx, student, invoices) {
     title: `Pay fees for ${student.firstName}`, submitLabel: 'Continue to payment',
     fieldsHtml: `<p class="muted">Choose what to pay. You will pay securely with the payment provider (UPI, card or net banking). The school never sees your card or bank details.</p>
       <fieldset style="border:1px solid var(--line);border-radius:12px;padding:8px 12px;margin:0 0 12px"><legend style="font-weight:800;font-size:.82rem">Invoices</legend>
-        ${open.map((i) => `<label class="check"><input type="checkbox" name="invoice" value="${esc(i.id)}" data-bal="${esc(i.balancePaise)}" checked><span>${esc(i.installmentName)} <small>${esc(i.number)} &middot; ${money(i.balancePaise)}</small></span></label>`).join('')}</fieldset>
-      <div class="kpi" style="margin-bottom:12px"><div class="v" id="po-total">${money(open.reduce((s, i) => s + i.balancePaise, 0))}</div><div class="l">to pay now</div></div>
+        ${open.map((i) => `<label class="check"><input type="checkbox" name="invoice" value="${esc(i.id)}" data-bal="${esc(i.balancePaise)}"${ticked(i) ? ' checked' : ''}><span>${esc(i.installmentName)} <small>${esc(i.number)} &middot; due ${fdate(i.dueDate)} &middot; ${money(i.balancePaise)}</small></span></label>`).join('')}</fieldset>
+      <div class="kpi" style="margin-bottom:12px"><div class="v" id="po-total">${money(open.filter(ticked).reduce((s, i) => s + i.balancePaise, 0))}</div><div class="l">to pay now</div></div>
       <label class="field"><span class="lbl">Pay a smaller amount instead (optional, &#8377; 100 or more)</span><input name="amount" inputmode="decimal" placeholder="leave empty to pay the full amount"></label>
       <small>A smaller amount is applied to the oldest due invoice first.</small>`,
     onOpen: (d) => {

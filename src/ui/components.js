@@ -214,6 +214,8 @@ export function dueHint(dueDate, today) {
   if (d < 0 || d > 14) return '';
   return d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
 }
+// Due now = overdue or due within the same two weeks as dueHint; a later instalment issued early is "upcoming".
+export const isDueNow = (dueDate, today) => diffDays(today, dueDate) <= 14;
 
 export const PROGRAM_COLORS = ['clay', 'sky', 'ok'];
 

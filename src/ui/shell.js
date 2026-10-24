@@ -44,8 +44,9 @@ export const isTouchRole = (role) => role === 'parent' || role === 'driver';
 // calendar stays in the rail and on the home page (Coming up).
 const PHONE_TABS = (role) => role === 'teacher';
 const PHONE_TAB_SKIP = new Set(['/calendar']);
-export function navFor(role, real = false) {
+export function navFor(role, real = false, { noBus = false } = {}) {
   const keys = [...(NAV[role] || ['home'])];
+  if (role === 'parent' && noBus) keys.splice(keys.indexOf('bus'), 1, 'calendar'); // no child on a route: the calendar every family needs
   if (real) {
     for (const [add, before] of REAL_EXTRA[role] || []) {
       const at = keys.indexOf(before);
@@ -108,10 +109,10 @@ function personaBlock(personas, current, real) {
 }
 const DASHCHAR = '\u2014';
 
-export function renderShell(root, { school, personas, current, real = false }) {
+export function renderShell(root, { school, personas, current, real = false, noBus = false }) {
   const role = current?.role;
   const touch = isTouchRole(role);
-  const items = navFor(role, real);
+  const items = navFor(role, real, { noBus });
   const tabbed = !touch && PHONE_TABS(role);
   const link = (i, short = touch) => `<a href="#${esc(i.path)}" data-path="${esc(i.path)}" data-key="${esc(i.path)}">${icon(i.icon)}<span>${esc(short ? (i.short || i.label) : i.label)}</span><span class="nbadge badge clay hide" data-badge="${esc(i.path)}"></span></a>`;
   root.innerHTML = `

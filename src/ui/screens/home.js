@@ -1,6 +1,6 @@
 // Role-specific landing page. A failed read is shown as "unavailable" (a dash), never as an empty or healthy result.
 import { todayISO, addDays } from '../../domain/dates.js';
-import { esc, icon, money, fdate, fdatetime, badge, empty, fullName, indexBy, errMessage, DASH } from '../components.js';
+import { esc, icon, money, fdate, fdatetime, badge, empty, fullName, indexBy, errMessage, isDueNow, DASH } from '../components.js';
 import { mountInstall } from '../install.js';
 import { openRequestCount } from './admin.js';
 
@@ -61,18 +61,36 @@ async function parentHome(ctx) {
     }
     const att = db.attendance.find((a) => a.date === today && a.studentId === k.id);
     const diaryToday = db.diaryEntries.filter((d) => d.studentId === k.id && d.date === today).length;
-    let balance = null;
-    try { balance = (await api.fees.invoices({ studentId: k.id })).filter((i) => i.status !== 'cancelled').reduce((s, i) => s + (i.balancePaise || 0), 0); } catch { /* unavailable: shown as a dash */ }
+    let balance = null; // due now (overdue or within 14 days); a later instalment issued early counts as upcoming
+    let upcoming = 0;
+    try {
+      const open = (await api.fees.invoices({ studentId: k.id })).filter((i) => i.status !== 'cancelled' && (i.balancePaise || 0) > 0);
+      balance = open.filter((i) => isDueNow(i.dueDate, today)).reduce((s, i) => s + i.balancePaise, 0);
+      upcoming = open.reduce((s, i) => s + i.balancePaise, 0) - balance;
+    } catch { /* unavailable: shown as a dash */ }
     let working = null; // null = unknown
     try { working = await api.calendar.isWorkingDay(today, k.programId); } catch { /* unknown: fall back to "Not marked yet" */ }
-    const attBadge = att ? badge(att.status, att.status === 'present' ? 'ok' : att.status === 'absent' ? 'bad' : 'warn') : badge(working === false ? 'No school today' : 'Not marked yet', 'mute');
+    let leave = null; // an absence the parent reported for today, before the register is taken
+    if (!att) { try { leave = (await api.care.leave({ studentId: k.id, from: today })).find((r) => r.status === 'active' && r.fromDate <= today && today <= r.toDate) || null; } catch { /* the register badge stays */ } }
+    const attBadge = att ? badge(att.status, att.status === 'present' ? 'ok' : att.status === 'absent' ? 'bad' : 'warn')
+      : leave ? badge(leave.seenAt ? 'Absence seen by teacher' : 'Absence reported', 'warn') : badge(working === false ? 'No school today' : 'Not marked yet', 'mute');
+    let month = ''; // this month so far: the register's own counts over school days
+    try {
+      const from = `${today.slice(0, 8)}01`;
+      const s = await api.attendance.summary(k.id, from, today);
+      const dates = (st) => db.attendance.filter((a) => a.studentId === k.id && a.status === st && a.date >= from && a.date <= today).map((a) => a.date).sort().map(fdate);
+      const parts = [['Absent', 'absent'], ['Late', 'late'], ['Leave', 'leave']].map(([l, st]) => [l, dates(st)]).filter(([, d]) => d.length).map(([l, d]) => `${l} ${d.join(', ')}`);
+      const present = s.present + s.late; // a late child was at school
+      month = `<small><strong>This month: present ${esc(present)} of ${esc(s.workingDays)} school day${s.workingDays === 1 ? '' : 's'}</strong>${s.unmarked ? ` (${esc(s.unmarked)} not marked)` : ''}${parts.length ? `<br>${esc(parts.join(' · '))}` : ''}</small>`;
+    } catch { /* not shown */ }
     cards.push(`<div class="card stack">
       <div class="row"><span class="avatar">${esc((k.firstName[0] || '') + (k.lastName[0] || ''))}</span><div class="grow"><div class="item-title">${esc(fullName(k))}</div><small>${esc(progs.get(k.programId)?.name || DASH)}</small></div>${attBadge}</div>
       <div class="grid cols-3">
         <a class="kpi" href="#/diary?student=${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${esc(diaryToday)}</div><div class="l">${diaryToday === 1 ? 'diary entry today' : 'diary entries today'}</div></a>
-        <a class="kpi" href="#/fees/student/${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${money(balance)}</div><div class="l">${api.mode === 'demo' ? 'sample fees due' : 'fees due'}</div></a>
-        <a class="kpi" href="#/bus" style="text-decoration:none;color:inherit"><div class="v">${k.routeId ? 'Bus' : DASH}</div><div class="l">${k.routeId ? 'tracking' : 'no bus'}</div></a>
+        <a class="kpi" href="#/fees/student/${esc(k.id)}" style="text-decoration:none;color:inherit"><div class="v">${money(balance)}</div><div class="l">${api.mode === 'demo' ? 'sample fees due now' : 'fees due now'}${upcoming ? ` &middot; ${money(upcoming)} upcoming` : ''}</div></a>
+        ${k.routeId ? '<a class="kpi" href="#/bus" style="text-decoration:none;color:inherit"><div class="v">Bus</div><div class="l">tracking</div></a>' : `<div class="kpi"><div class="v">${DASH}</div><div class="l">no bus</div></div>`}
       </div>
+      ${month}
       <a class="btn sm" href="#/care?student=${esc(k.id)}">Absences &amp; pick-up</a></div>`);
   }
   return `

@@ -13,6 +13,7 @@ import { renderConsent } from './consent.js';
 import * as push from './push.js';
 import { clearSlips } from './screens/invites-print.js';
 import { clearPhotoCache } from './photo-view.js';
+import { clearPendingPayment } from './screens/pay-online.js';
 
 const REAL = isRealMode();
 
@@ -214,6 +215,7 @@ async function signOutNow() {
   await attempt(() => api.auth.signOut());
   clearSlips(); // issued invite codes are shown once and must not outlive the sign-in that issued them
   clearPhotoCache(); // children's photos held in memory for this session
+  clearPendingPayment(); // the next person on this phone must not see a "payment not confirmed" from this one
   gateOk = false; shell = null; shellFor = null; token += 1; runCleanups(); pushNudge = null;
   document.title = 'School app';
   location.hash = '';
@@ -350,12 +352,13 @@ async function mountScreen(m, persona, el, query, my) {
 function ensureShell(persona) {
   if (shell && shellFor === persona.id && root.contains(shell.screen)) return;
   const db = api.getDb();
+  const noBus = persona.role === 'parent' && !(persona.studentIds || []).some((id) => db.students.find((s) => s.id === id)?.routeId);
   if (REAL) {
-    shell = renderShell(root, { school: db.school, current: persona, real: true });
+    shell = renderShell(root, { school: db.school, current: persona, real: true, noBus });
     if (db.school?.name) document.title = db.school.name;
     shell.signOut.addEventListener('click', signOutNow);
   } else {
-    shell = renderShell(root, { school: db.school, personas: curatePersonas(api.session.personas(), db), current: persona });
+    shell = renderShell(root, { school: db.school, personas: curatePersonas(api.session.personas(), db), current: persona, noBus });
     shell.select.addEventListener('change', async () => {
       if (runner.isRunning()) runner.stop('Trip recording stopped because the persona was switched.');
       await attempt(() => api.session.set(shell.select.value));

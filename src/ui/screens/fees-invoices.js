@@ -2,7 +2,7 @@
 // (a mock in the demo, the real payment provider in the real app).
 import { todayISO } from '../../domain/dates.js';
 import { rupeesToPaise } from '../../domain/money.js';
-import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, dueHint, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH, PAYMENT_MODE_LABEL, CONCESSION_LABEL } from '../components.js';
+import { esc, money, fdate, badge, empty, pageHead, options, invoiceStatusBadge, dueHint, isDueNow, formModal, confirmDialog, attempt, toast, fullName, notFoundOrThrow, DASH, PAYMENT_MODE_LABEL, CONCESSION_LABEL } from '../components.js';
 import { isRealMode } from '../mode.js';
 import { payOnline, resumePending } from './pay-online.js';
 
@@ -96,11 +96,13 @@ async function parentList(ctx) {
     const inv = (await api.fees.invoices({ studentId: k.id })).filter((i) => i.status !== 'cancelled').sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
     store.set(k.id, inv);
     const open = inv.filter(isOpen);
-    const bal = open.reduce((s, i) => s + i.balancePaise, 0);
-    blocks.push(`<div class="card stack"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3><div class="row">${bal ? badge(`Due ${money(bal)}`, 'bad') : badge('All paid', 'ok')}<a class="btn sm" href="#/fees/student/${esc(k.id)}">Payments &amp; receipts</a></div></div>
+    const bal = open.filter((i) => isDueNow(i.dueDate, today)).reduce((s, i) => s + i.balancePaise, 0); // due now
+    const up = open.reduce((s, i) => s + i.balancePaise, 0) - bal; // a later instalment issued early
+    blocks.push(`<div class="card stack"><div class="row between"><h3 style="margin:0">${esc(fullName(k))}</h3><div class="row">${bal ? badge(`Due ${money(bal)}`, 'bad') : ''}${up ? badge(`Upcoming ${money(up)}`, 'info') : ''}${open.length ? '' : badge('All paid', 'ok')}<a class="btn sm" href="#/fees/student/${esc(k.id)}">Payments &amp; receipts</a></div></div>
       ${inv.length ? `<ul class="list">${inv.map((i) => `<li><div class="row between"><div><a href="#/fees/invoice/${esc(i.id)}" class="item-title">${esc(i.installmentName)}</a> <small>${esc(i.number)} &middot; due ${fdate(i.dueDate)}${isOpen(i) && dueHint(i.dueDate, today) ? ` <strong>(${esc(dueHint(i.dueDate, today))})</strong>` : ''}</small></div>
         <div class="row"><span class="num">${isOpen(i) ? money(i.balancePaise) : money(i.totalPaise)}</span>${invoiceStatusBadge(i.status, i.overdueDays > 0 && isOpen(i))}</div></div></li>`).join('')}</ul>` : empty('No invoices yet')}
-      ${open.length ? `<button class="btn primary" data-pay="${esc(k.id)}">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>` : ''}</div>`);
+      ${bal ? `<button class="btn primary" data-pay="${esc(k.id)}" data-scope="now">Pay ${money(bal)} online${REAL ? '' : ' (mock)'}</button>`
+        : open.length ? `<button class="btn" data-pay="${esc(k.id)}" data-scope="all">Pay ${money(up)} early${REAL ? ' online' : ' (mock)'}</button>` : ''}</div>`);
   }
   ctx.el.innerHTML = `${pageHead('Fees', '', REAL ? '<a class="btn" href="#/reminders">Reminders</a>' : '')}${pending}<div class="stack">${blocks.join('') || empty('No children linked to this account')}</div>
     ${REAL ? '' : '<p class="muted" style="font-size:.82rem;margin-top:12px">Online payment here is a mock for the prototype - no real payment is taken.</p>'}`;
@@ -108,7 +110,9 @@ async function parentList(ctx) {
     const b = e.target.closest('[data-pay]');
     if (!b) return;
     const kid = kids.find((k) => k.id === b.dataset.pay);
-    await pay(ctx, kid, store.get(kid.id).filter(isOpen));
+    const open = store.get(kid.id).filter(isOpen);
+    // the real payment window lists every open invoice and pre-ticks the ones due now; the demo's mock pays what the button says
+    await pay(ctx, kid, REAL || b.dataset.scope !== 'now' ? open : open.filter((i) => isDueNow(i.dueDate, today)));
   });
 }
 
