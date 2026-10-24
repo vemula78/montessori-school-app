@@ -243,3 +243,53 @@ test('#85 running late: the route\'s driver sends an important notice to that ro
   assert.deepEqual(kids, route1);
   assert.equal((await restAs(tpa.token, `notices?id=eq.${n.id}&select=id`)).data.length, 0, 'teachers do not read bus-route notices');
 });
+
+test('#11 a parent writes to the fee office: the accountant reads and answers it; the teacher never sees it', async () => {
+  const t = ok(await command(parentBus.token, 'threads.open', { studentId: 'stu-04', subject: 'Fake: fee question', body: 'Fake body', to: 'accountant' }), 'open');
+  assert.equal(t.to, 'accountant');
+  ok(await command(acct.token, 'threads.reply', t.id, 'Fake answer from the office'), 'reply');
+  refused(await command(tpa.token, 'threads.reply', t.id, 'x'), 403, 'NOT_ALLOWED', 'the teacher');
+  assert.equal((await restAs(tpa.token, `threads?id=eq.${t.id}&select=id`)).data.length, 0);
+  assert.equal((await restAs(acct.token, `messages?thread_id=eq.${t.id}&select=id`)).data.length, 2);
+});
+
+test('#83 a "please send" entry reaches the family, who acknowledge it once', async () => {
+  const today = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  const e = ok(await command(tpa.token, 'diary.add', { studentId: 'stu-04', date: today, type: 'needs', data: { items: ['spareClothes'], note: '' } }), 'needs');
+  refused(await command(parentSib.token, 'diary.acknowledge', e.id), 403, 'NOT_ALLOWED', 'another family');
+  const a = ok(await command(parentBus.token, 'diary.acknowledge', e.id), 'acknowledge');
+  assert.equal(a.ackBy, 'grd-02');
+  assert.equal(psql(`select doc->>'ackBy' from diary_entries where id = '${e.id}'`), 'grd-02');
+});
+
+test('#81 a UPI payment the family reports becomes a receipt only when the accountant confirms it', async () => {
+  const inv = JSON.parse(psql(`select row_to_json(x) from (select i.id, i.number from invoices i where i.student_id = 'stu-02' and i.status in ('issued', 'partiallyPaid') order by i.due_date limit 1) x`));
+  refused(await command(parentSib.token, 'fees.claimUpi', { studentId: 'stu-02', invoiceIds: [inv.id], amountPaise: 999999999, reference: 'FAKEUTR9001', paidOn: new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10) }), 422, 'INVALID_AMOUNT', 'more than is open');
+  const paidOn = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  const c = ok(await command(parentSib.token, 'fees.claimUpi', { studentId: 'stu-02', invoiceIds: [inv.id], amountPaise: 150000, reference: 'FAKEUTR9001', paidOn }), 'claim');
+  assert.equal(psql(`select count(*) from payments where doc->>'reference' = 'FAKEUTR9001'`), '0', 'no receipt yet');
+  refused(await command(parentBus.token, 'fees.claimUpi', { studentId: 'stu-02', invoiceIds: [inv.id], amountPaise: 100, reference: 'FAKEUTR9002', paidOn }), 403, 'NOT_ALLOWED', 'not their child');
+  refused(await command(parentSib.token, 'fees.confirmClaim', c.id), 403, 'NOT_ALLOWED', 'a parent cannot confirm');
+  const r = ok(await command(acct.token, 'fees.confirmClaim', c.id), 'confirm');
+  assert.deepEqual([r.claim.status, r.payment.mode, r.payment.amountPaise], ['confirmed', 'upi', 150000]);
+  assert.equal(psql(`select doc->>'receiptNumber' from payments where doc->>'reference' = 'FAKEUTR9001'`), r.payment.receiptNumber);
+  const c2 = ok(await command(parentSib.token, 'fees.claimUpi', { studentId: 'stu-02', invoiceIds: [inv.id], amountPaise: 100, reference: 'FAKEUTR9003', paidOn }), 'second claim');
+  assert.equal(ok(await command(acct.token, 'fees.rejectClaim', c2.id, 'Fake: not in the statement'), 'reject').status, 'rejected');
+  assert.ok((await restAs(parentSib.token, 'payment_claims?select=id,status')).data.some(x => x.id === c2.id && x.status === 'rejected'));
+});
+
+test('#88 meeting slots: the teacher publishes, families book (one per child; again moves it), and see others only as taken', async () => {
+  const ev = psql(`select id from calendar_events where doc->>'type' = 'ptm' and doc->>'title' like 'Parent-teacher meeting - Primary A (sample)%' limit 1`);
+  const r = ok(await command(tpa.token, 'ptm.publishSlots', { eventId: ev, programId: 'prog-primary-a', from: '10:00', to: '11:00', minutes: 30 }), 'publish');
+  assert.equal(r.created, 2);
+  refused(await command(parentBus.token, 'ptm.publishSlots', { eventId: ev, programId: 'prog-primary-a', from: '12:00', to: '13:00', minutes: 30 }), 403, 'NOT_ALLOWED', 'a parent');
+  ok(await command(parentBus.token, 'ptm.book', r.slots[0].id, 'stu-04'), 'book');
+  ok(await command(parentBus.token, 'ptm.book', r.slots[1].id, 'stu-04'), 'book again moves it');
+  assert.equal(psql(`select string_agg(slot_id, ',') from ptm_bookings where student_id = 'stu-04'`), r.slots[1].id);
+  refused(await command(parentSib.token, 'ptm.book', r.slots[1].id, 'stu-01'), 422, 'VALIDATION', 'taken');
+  const seen = (await snapshot(parentSib)).ptmSlots.find(x => x.id === r.slots[1].id);
+  assert.deepEqual([seen.booked, seen.booking], [true, null], 'taken, never by whom');
+  refused(await command(parentSib.token, 'ptm.cancelBooking', r.slots[1].id), 403, 'NOT_ALLOWED', 'not their booking');
+  ok(await command(parentBus.token, 'ptm.cancelBooking', r.slots[1].id), 'cancel');
+  ok(await command(tpa.token, 'ptm.cancelSlot', r.slots[1].id), 'staff cancel a free slot');
+});

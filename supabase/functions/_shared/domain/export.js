@@ -49,6 +49,8 @@ export function guardianExport(db, guardianId, { full = false, photoOk = () => f
     progressEvents: full ? (db.progressEvents || []).filter(mine) : [],
     reports: (db.reports || []).filter(r => mine(r) && (full || r.status === 'published')),
     progressReports: (db.evaluations || []).filter(e => mine(e) && (full || e.status === 'published')),
+    upiPaymentsReported: (db.paymentClaims || []).filter(mine),
+    meetingBookings: (db.ptmSlots || []).filter(x => x.booking && ids.has(x.booking.studentId)).map(x => ({ slotId: x.id, eventId: x.eventId, date: x.date, start: x.start, end: x.end, studentId: x.booking.studentId, bookedAt: x.booking.bookedAt })),
     ...(full ? {} : { learningNote: 'Notes the teacher has not shared, progress records and draft reports (termly and annual) are given by the principal on a written request.' }),
     consents: (db.consents || []).filter(c => c.guardianId === guardianId),
     messagesCounted: db.messages.filter(m => threadIds.has(m.threadId)).length,

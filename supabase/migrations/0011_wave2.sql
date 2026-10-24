@@ -8,6 +8,8 @@
 --   * a closed staff record (staff.doc.active = false) closes that person's sign-in at once: app.my_link() gives nothing
 --     (staff_closed, kept by a trigger on staff) and my_snapshot says 'revoked'
 --   * load_slice hints diaryEntryIds (several diary entries) and learningStudentIds (several children's learning records)
+--   * conversations with the office (threads.doc.to), UPI payment claims (payment_claims), meeting slots (ptm_slots, with
+--     bookings apart in ptm_bookings so parents see a slot is taken, never by whom); retention may delete slots
 --   * notice attachments: notice_files rows (staged → attached → removed), bytes in the PRIVATE bucket `notice-files`
 --     (no storage policies; the command function signs 60-second downloads for those who may read the notice)
 -- persist / load_slice / my_snapshot of 0010 move to schema app and are wrapped here (the 0004–0010 pattern).
@@ -123,14 +125,73 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
 values ('notice-files', 'notice-files', false, 2097152, array['application/pdf', 'image/jpeg', 'image/png'])
 on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
 
+-- ---------------------------------------------------------------- conversations with the office (#11)
+-- thread.doc.to: absent/'teacher' (the child's teachers), 'accountant' (the fee office: the accountant and the principal),
+-- 'principal' (the principal only). Teachers never read the office's conversations; messages follow their thread.
+drop policy read_scoped on public.threads;
+create policy read_scoped on public.threads for select to authenticated using (
+  case (select app.my_role())
+    when 'admin' then true
+    when 'teacher' then coalesce(doc->>'to', 'teacher') = 'teacher' and program_id = any ((select app.my_program_ids())::text[])
+    when 'accountant' then doc->>'to' = 'accountant'
+    when 'parent' then guardian_id = (select app.my_guardian_id()) and student_id = any ((select app.my_student_ids())::text[])
+    else false end);
+
+-- ---------------------------------------------------------------- UPI payments a family reports (#81)
+create table public.payment_claims (
+  id text primary key, doc jsonb not null,
+  student_id text generated always as (doc->>'studentId') stored not null,
+  status text generated always as (doc->>'status') stored check (status in ('pending', 'confirmed', 'rejected'))
+);
+create index payment_claims_student on public.payment_claims (student_id);
+alter table public.payment_claims enable row level security;
+alter table public.payment_claims force row level security;
+create policy read_scoped on public.payment_claims for select to authenticated using (
+  case (select app.my_role())
+    when 'admin' then true when 'accountant' then true
+    when 'parent' then student_id = any ((select app.my_student_ids())::text[])
+    else false end);
+
+-- ---------------------------------------------------------------- parent-teacher meeting slots (#88)
+-- A slot's booking is kept apart (ptm_bookings) so a parent reads that a slot is taken (doc.booked) but never by whom.
+create table public.ptm_slots (
+  id text primary key, doc jsonb not null,
+  program_id text generated always as (doc->>'programId') stored not null,
+  date text generated always as (doc->>'date') stored not null,
+  check (not doc ? 'booking')
+);
+create index ptm_slots_program_date on public.ptm_slots (program_id, date);
+create table public.ptm_bookings (
+  slot_id text primary key references public.ptm_slots (id) on delete cascade,
+  student_id text not null,
+  doc jsonb not null
+);
+create index ptm_bookings_student on public.ptm_bookings (student_id);
+alter table public.ptm_slots enable row level security;
+alter table public.ptm_slots force row level security;
+alter table public.ptm_bookings enable row level security;
+alter table public.ptm_bookings force row level security;
+create policy read_scoped on public.ptm_slots for select to authenticated using (
+  case (select app.my_role())
+    when 'admin' then true
+    when 'teacher' then program_id = any ((select app.my_program_ids())::text[])
+    when 'parent' then program_id in (select s.program_id from public.students s where s.id = any ((select app.my_student_ids())::text[]))
+    else false end);
+create policy read_scoped on public.ptm_bookings for select to authenticated using (
+  case (select app.my_role())
+    when 'admin' then true
+    when 'teacher' then exists (select 1 from public.ptm_slots x where x.id = slot_id and x.program_id = any ((select app.my_program_ids())::text[]))
+    when 'parent' then student_id = any ((select app.my_student_ids())::text[])
+    else false end);
+
 -- ---------------------------------------------------------------- load_slice wrapper
 alter function public.load_slice(text[], jsonb) set schema app;
 alter function app.load_slice(text[], jsonb) rename to load_slice_0010;
 create function public.load_slice(p_collections text[], p_hints jsonb default '{}'::jsonb) returns jsonb
 language plpgsql stable security invoker set search_path = public, app, pg_temp as $$
 declare
-  v5b constant jsonb := '{"noticeFiles":"notice_files"}';
-  r jsonb := app.load_slice_0010(array(select c from unnest(p_collections) c where not v5b ? c), p_hints);
+  v5b constant jsonb := '{"noticeFiles":"notice_files","paymentClaims":"payment_claims"}';
+  r jsonb := app.load_slice_0010(array(select c from unnest(p_collections) c where not v5b ? c and c <> 'ptmSlots'), p_hints);
   learn constant jsonb := '{"observations":"observations","photos":"photos","progressEvents":"progress_events","reports":"reports"}';
   ids text[];
   c text;
@@ -142,6 +203,10 @@ begin
     execute format('select jsonb_agg(doc order by id) from public.%I', v5b->>c) into v;
     r := jsonb_set(r, array['db', c], coalesce(v, '[]'::jsonb));
   end loop;
+  if 'ptmSlots' = any(p_collections) then
+    r := jsonb_set(r, '{db,ptmSlots}', coalesce((select jsonb_agg((x.doc - 'booked') || jsonb_build_object('booking', b.doc) order by x.id)
+      from public.ptm_slots x left join public.ptm_bookings b on b.slot_id = x.id), '[]'::jsonb));
+  end if;
   -- the students' allergies and medical alerts (student_health.alerts)
   if 'students' = any(p_collections) then
     r := jsonb_set(r, '{db,students}', coalesce((select jsonb_agg(x || jsonb_build_object('healthAlerts', (select h.alerts from public.student_health h where h.student_id = x->>'id')) order by n)
@@ -172,7 +237,7 @@ alter function app.persist(text, bigint, jsonb) rename to persist_0010;
 create function public.persist(p_rev_key text, p_expected bigint, p_changes jsonb) returns bigint
 language plpgsql volatile security invoker set search_path = public, app, pg_temp as $$
 declare
-  v5b constant jsonb := '{"noticeFiles":"notice_files"}';
+  v5b constant jsonb := '{"noticeFiles":"notice_files","paymentClaims":"payment_claims"}';
   inner_changes jsonb := p_changes;
   studs jsonb := p_changes->'upserts'->'students';
   col text;
@@ -181,7 +246,10 @@ declare
   res bigint;
 begin
   if p_changes ? 'upserts' then
-    inner_changes := jsonb_set(inner_changes, '{upserts}', (p_changes->'upserts') - array(select jsonb_object_keys(v5b)));
+    inner_changes := jsonb_set(inner_changes, '{upserts}', (p_changes->'upserts') - array(select jsonb_object_keys(v5b)) - 'ptmSlots');
+  end if;
+  if p_changes ? 'deletes' then
+    inner_changes := jsonb_set(inner_changes, '{deletes}', (p_changes->'deletes') - 'ptmSlots');
   end if;
   if jsonb_typeof(studs) = 'array' then
     inner_changes := jsonb_set(inner_changes, '{upserts,students}', coalesce((select jsonb_agg(e - 'healthAlerts') from jsonb_array_elements(studs) e), '[]'::jsonb));
@@ -193,6 +261,21 @@ begin
     execute format('insert into public.%I (id, doc) select e->>''id'', e from jsonb_array_elements($1) e on conflict (id) do update set doc = excluded.doc', v5b->>col)
       using arr;
   end loop;
+  -- meeting slots: the slot (with booked true/false) and its booking apart
+  for x in select * from jsonb_array_elements(case when jsonb_typeof(p_changes->'upserts'->'ptmSlots') = 'array' then p_changes->'upserts'->'ptmSlots' else '[]'::jsonb end) loop
+    insert into public.ptm_slots (id, doc) values (x->>'id', (x - 'booking') || jsonb_build_object('booked', jsonb_typeof(x->'booking') = 'object'))
+      on conflict (id) do update set doc = excluded.doc;
+    if jsonb_typeof(x->'booking') = 'object' then
+      insert into public.ptm_bookings (slot_id, student_id, doc) values (x->>'id', x->'booking'->>'studentId', x->'booking')
+        on conflict (slot_id) do update set student_id = excluded.student_id, doc = excluded.doc;
+    else
+      delete from public.ptm_bookings where slot_id = x->>'id';
+    end if;
+  end loop;
+  -- retention: slots a departed child had booked (their bookings go with them)
+  if jsonb_typeof(p_changes->'deletes'->'ptmSlots') = 'array' then
+    delete from public.ptm_slots where id = any(array(select jsonb_array_elements_text(p_changes->'deletes'->'ptmSlots')));
+  end if;
   if jsonb_typeof(studs) = 'array' then
     for x in select * from jsonb_array_elements(studs) loop
       continue when not x ? 'healthAlerts';
@@ -223,7 +306,12 @@ begin
   if r->>'status' <> 'active' then return r; end if;
   r := jsonb_set(r, '{students}', coalesce((select jsonb_agg(x || jsonb_build_object('healthAlerts', (select h.alerts from public.student_health h where h.student_id = x->>'id')) order by n)
     from jsonb_array_elements(r->'students') with ordinality e(x, n)), '[]'::jsonb));
-  r := r || jsonb_build_object('noticeFiles', coalesce((select jsonb_agg(doc - 'path' order by id) from public.notice_files), '[]'::jsonb));
+  r := r || jsonb_build_object(
+    'noticeFiles', coalesce((select jsonb_agg(doc - 'path' order by id) from public.notice_files), '[]'::jsonb),
+    'paymentClaims', coalesce((select jsonb_agg(doc order by id) from public.payment_claims), '[]'::jsonb),
+    -- a parent reads another family's slot as booked:true with booking null (ptm_bookings RLS)
+    'ptmSlots', coalesce((select jsonb_agg(x.doc || jsonb_build_object('booking', b.doc) order by x.date, x.id)
+      from public.ptm_slots x left join public.ptm_bookings b on b.slot_id = x.id where x.date >= ((app.ist_today() - 30))::text), '[]'::jsonb));
   -- the driver: reported absences of their route's children, dates only (no reason, no guardian)
   if r->'me'->>'role' = 'driver' then
     r := jsonb_set(r, '{leaveRequests}', coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'studentId', d.student_id, 'fromDate', d.from_date, 'toDate', d.to_date,
@@ -233,9 +321,9 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- grants
-revoke all on public.leave_days, public.staff_closed, public.notice_files from anon, authenticated;
-grant select on public.leave_days, public.staff_closed, public.notice_files to authenticated;
-grant all on public.leave_days, public.staff_closed, public.notice_files to service_role;
+revoke all on public.leave_days, public.staff_closed, public.notice_files, public.payment_claims, public.ptm_slots, public.ptm_bookings from anon, authenticated;
+grant select on public.leave_days, public.staff_closed, public.notice_files, public.payment_claims, public.ptm_slots, public.ptm_bookings to authenticated;
+grant all on public.leave_days, public.staff_closed, public.notice_files, public.payment_claims, public.ptm_slots, public.ptm_bookings to service_role;
 revoke all on function app.leave_days_sync(), app.staff_closed_sync() from public, anon, authenticated;
 grant execute on function app.leave_days_sync(), app.staff_closed_sync() to service_role;
 revoke all on function public.my_snapshot(), public.load_slice(text[], jsonb), public.persist(text, bigint, jsonb) from public, anon, authenticated;

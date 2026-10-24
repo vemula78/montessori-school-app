@@ -19,6 +19,8 @@ import { addObservation, shareObservation } from '../domain/observations.js';
 import { recordProgress } from '../domain/progress.js';
 import { generateReport, saveNarratives, submitReport, publishReport } from '../domain/reports.js';
 import { startEvaluation, saveEvaluation, submitEvaluation, publishEvaluation, rubricItems } from '../domain/evaluations.js';
+import { claimUpiPayment } from '../domain/upi.js';
+import { publishSlots, bookSlot } from '../domain/ptm.js';
 import { starterPresentations } from '../domain/curriculum-starter.js';
 import { CONSENT_VERSION } from '../domain/commands.js';
 import { startTrip, recordPosition, markChild, endTrip } from '../domain/transport.js';
@@ -143,6 +145,8 @@ export function buildSeed(now = new Date()) {
     reportFooter: { address: SCHOOL.address, phones: [fakePhone(1), fakePhone(2)], email: 'office@example.com', website: 'www.example.com' },
     directorName: 'Asha Exampleton',
     privacyContact: null,
+    officeHours: { start: '08:30', end: '16:00', days: [1, 2, 3, 4, 5] },
+    upi: { vpa: 'kinfolk.demo@examplebank', payeeName: 'Kinfolk Montessori School (Demo)' },
   };
   db.academicYears = [
     { id: AY_PREV, label: 'AY 2025-26', startDate: '2025-06-01', endDate: '2026-05-31' },
@@ -520,6 +524,24 @@ export function buildSeed(now = new Date()) {
     const i0 = startEvaluation(db, { studentId: ira.id, academicYearId: AY }, { actor: tea(ID.tPA), now: isoAt(today, 8, 30), today });
     const half = Object.fromEntries(Object.entries(rate(ira.level, 0)).slice(0, 20));
     saveEvaluation(db, i0.id, { ratings: half, revision: i0.revision }, { actor: tea(ID.tPA), now: isoAt(today, 8, 40), today });
+  }
+
+  // ---------------------------------------------------------------- wave 2: an office conversation, a "please send", a UPI claim, PTM slots
+  {
+    const nowCtx = (actor, hh, mm) => ({ actor, now: isoAt(today, hh, mm), today });
+    const t = openThread(db, { guardianId: grd.Neel, studentId: stu.Neel, subject: 'Receipt for the Term 2 fee', body: 'Could you send the receipt for the Term 2 fee again? Sample text for the demo.', to: 'accountant' },
+      ctxAt(addDays(today, -2), par('Neel'), 18, 10)).thread;
+    replyThread(db, t.id, 'Of course: it is under Fees > Receipts in the app; we have marked it for you. Sample text for the demo.', ctxAt(addDays(today, -1), ACCT, 10, 5));
+    const diya = db.students.find((s) => s.id === stu.Diya);
+    if (diya.status === 'active') addDiaryEntry(db, { studentId: diya.id, date: today, type: 'needs', data: { items: ['spareClothes', 'wipes'], note: '' } }, nowCtx(tea(ID.tTD), 11, 0));
+    const rohanInv = invoiceOf('Rohan', 'Term 1');
+    claimUpiPayment(db, { studentId: stu.Rohan, invoiceIds: [rohanInv.id], amountPaise: Math.min(500000, invoiceBalance(db, rohanInv)), reference: 'UPIDEMO3001', paidOn: today },
+      nowCtx(par('Rohan'), 8, 15), grd.Rohan);
+    let d = addDays(today, 10);
+    for (let i = 0; i < 14 && !isWorkingDay(db, d, P.pa); i++) d = addDays(d, 1);
+    const ptm = createEvent(db, { academicYearId: AY, type: 'ptm', title: 'Parent-teacher meeting - Primary A (sample)', startDate: d, endDate: d, programIds: [P.pa], description: 'Book a slot in the app.' }, nowCtx(ADMIN, 9, 0));
+    const { slots } = publishSlots(db, { eventId: ptm.id, programId: P.pa, from: '15:00', to: '16:00', minutes: 15, teacherId: ID.tPA }, nowCtx(tea(ID.tPA), 9, 30));
+    bookSlot(db, slots[1].id, stu.Neel, nowCtx(par('Neel'), 19, 0), grd.Neel);
   }
 
   // ---------------------------------------------------------------- one ended simulated trip (previous school day)

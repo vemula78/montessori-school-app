@@ -9,6 +9,7 @@ import { byId } from './domain/people.js';
 import { stopsForDirection, effectiveChildEvents } from './domain/transport.js';
 
 const STOP_TEXT = { nearing: 'Bus is nearing', arrived: 'Bus has arrived at' };
+const NEED_TEXT = { spareClothes: 'spare clothes', nappies: 'nappies', wipes: 'wipes', other: 'something else (see the diary)' };
 const CHILD_TEXT = { boarded: 'boarded the bus at', dropped: 'was dropped at', absent: 'was marked absent at' };
 
 const guardiansOf = (db, studentIds) => [...new Set(studentIds.flatMap(id => byId(db.students, id)?.guardianIds || []))];
@@ -79,6 +80,7 @@ export function pushMessages(name, before, after, result) {
     }
   }
   const pay = name === 'fees.recordGatewayPayment' ? (result && result.created ? result.payment : null)
+    : name === 'fees.confirmClaim' ? (result && result.payment) || null
     : ['fees.recordPayment', 'fees.mockOnlinePayment'].includes(name) ? result : null;
   if (pay && pay.receiptNumber) {
     const s = byId(after.students, pay.studentId);
@@ -103,6 +105,14 @@ export function pushMessages(name, before, after, result) {
       out.push({ guardianIds: [t.guardianId], studentIds: [t.studentId], purposes: ['push'],
         payload: { title: 'Message from school', body: `New message about ${s ? s.firstName : 'your child'}`, url: `#/messages/${t.id}`, tag: `msg-${sent.id}` } });
     }
+  }
+  // a "please send" diary entry (#83): the child's guardians, never the note
+  const needs = name === 'diary.add' ? (result && result.type === 'needs' ? [result] : []) : name === 'diary.addMany' ? ((result && result.entries) || []).filter(e => e.type === 'needs') : [];
+  for (const e of needs) {
+    const s = byId(after.students, e.studentId);
+    const items = (e.data.items || []).map(i => NEED_TEXT[i] || i).join(', ');
+    out.push({ guardianIds: guardiansOf(after, [e.studentId]), studentIds: [e.studentId], purposes: ['push'],
+      payload: { title: 'Please send to school', body: `${items}${s ? ` for ${s.firstName}` : ''}`, url: '#/diary', tag: `needs-${e.id}` } });
   }
   if ((name === 'notices.send' || name === 'transport.runningLate') && result && result.important) {
     const rs = after.noticeReceipts.filter(r => r.noticeId === result.id);

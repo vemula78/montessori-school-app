@@ -178,13 +178,21 @@ export function unreadReport(db, noticeId, { withPhone = false, studentFilter = 
 
 const side = role => (role === 'parent' ? 'parent' : 'staff');
 
-export function openThread(db, { guardianId, studentId, subject, body }, ctx) {
+/**
+ * Who a conversation is with (#11): 'teacher' (the child's programme; the default), 'accountant' (fees: the accountant and
+ * the principal read it) or 'principal' (the principal only). Teachers never read the office's conversations.
+ */
+export const THREAD_TARGETS = ['teacher', 'accountant', 'principal'];
+export const threadTarget = t => t.to || 'teacher';
+
+export function openThread(db, { guardianId, studentId, subject, body, to = 'teacher' }, ctx) {
+  if (!THREAD_TARGETS.includes(to)) fail('VALIDATION', `Unknown recipient: ${to}`);
   const g = mustGet(db, 'guardians', guardianId, 'Guardian');
   const s = mustGet(db, 'students', studentId, 'Student');
   if (!g.studentIds.includes(s.id) || !s.guardianIds.includes(g.id)) fail('VALIDATION', 'Guardian is not linked to this child');
   if (!subject || !String(subject).trim()) fail('VALIDATION', 'Subject is required');
   if (!body || !String(body).trim()) fail('VALIDATION', 'Message is required');
-  const thread = { id: newId('thr'), guardianId, studentId, programId: s.programId, subject: String(subject).trim(), status: 'open', createdAt: ctx.now };
+  const thread = { id: newId('thr'), guardianId, studentId, programId: s.programId, subject: String(subject).trim(), status: 'open', createdAt: ctx.now, ...(to !== 'teacher' ? { to } : {}) };
   db.threads.push(thread);
   const message = pushMessage(db, thread, body, ctx);
   return { thread, messages: [message] };

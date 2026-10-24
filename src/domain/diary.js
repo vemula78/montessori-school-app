@@ -5,7 +5,12 @@ import { isISODate, compareISO, isHHMM, tsToMs } from './dates.js';
 import { mustGet, activeStudents } from './people.js';
 import { appendAudit } from './audit.js';
 
-export const DIARY_TYPES = ['observation', 'meal', 'sleep', 'health', 'activity'];
+export const DIARY_TYPES = ['observation', 'meal', 'sleep', 'health', 'activity', 'toilet', 'needs'];
+// wave 2 (#83): 'toilet' (a nappy change or toilet visit; offered for the toddlers' level) and 'needs' (please send …,
+// which the family acknowledges)
+export const TODDLER_TYPES = ['toilet'];
+export const TOILET_KINDS = ['wet', 'dry', 'bowel', 'toilet'];
+export const NEED_ITEMS = ['spareClothes', 'nappies', 'wipes', 'other'];
 export const OBSERVATION_AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
 export const DIARY_CHANGE_WINDOW_MS = 24 * 3600_000; // the teacher who wrote an entry may correct or remove it this long; the principal always
 
@@ -30,6 +35,22 @@ function cleanData(type, d = {}) {
     }
     case 'activity':
       return { text: text(d.text, 'Activity') };
+    case 'toilet': {
+      if (!isHHMM(d.time)) fail('VALIDATION', 'Give the time (HH:MM)');
+      if (!TOILET_KINDS.includes(d.kind)) fail('VALIDATION', `Unknown kind: ${d.kind}`);
+      const note = d.note ? String(d.note).trim() : '';
+      if (note.length > 200) fail('VALIDATION', 'The note must be at most 200 characters');
+      return { time: d.time, kind: d.kind, note };
+    }
+    case 'needs': {
+      const items = Array.isArray(d.items) ? [...new Set(d.items)] : [];
+      if (!items.length) fail('VALIDATION', 'Choose what the family should send');
+      for (const it of items) if (!NEED_ITEMS.includes(it)) fail('VALIDATION', `Unknown item: ${it}`);
+      const note = d.note ? String(d.note).trim() : '';
+      if (items.includes('other') && !note) fail('VALIDATION', 'Say what else to send');
+      if (note.length > 200) fail('VALIDATION', 'The note must be at most 200 characters');
+      return { items, note };
+    }
     default:
       fail('VALIDATION', `Unknown diary type: ${type}`);
   }
@@ -42,7 +63,8 @@ export function addDiaryEntry(db, { studentId, date, type, data }, ctx) {
   if (s.status !== 'active') fail('VALIDATION', 'Student is not active');
   if (!isISODate(date)) fail('VALIDATION', `Invalid date: ${date}`);
   if (compareISO(date, ctx.today) > 0) fail('VALIDATION', 'Diary date is in the future');
-  const entry = { id: newId('dia'), studentId, date, type, data: cleanData(type, data), createdBy: ctx.actor.id, createdAt: ctx.now, parentReadAt: null };
+  const entry = { id: newId('dia'), studentId, date, type, data: cleanData(type, data), createdBy: ctx.actor.id, createdAt: ctx.now, parentReadAt: null,
+    ...(type === 'needs' ? { ackAt: null, ackBy: null } : {}) };
   db.diaryEntries.push(entry);
   return entry;
 }
@@ -109,6 +131,15 @@ export function removeDiaryEntry(db, id, ctx) {
   db.diaryEntries.splice(db.diaryEntries.indexOf(e), 1);
   appendAudit(db, ctx, { entity: 'diaryEntry', entityId: e.id, action: 'remove', summary: `diary entry removed for ${e.studentId} (${e.type}, ${e.date})` });
   return { removed: e.id };
+}
+
+/** A parent says they will send what a 'needs' entry asks for (once; it also counts as read). */
+export function acknowledgeNeed(db, entryId, ctx) {
+  const e = mustGet(db, 'diaryEntries', entryId, 'Diary entry');
+  if (e.type !== 'needs') fail('VALIDATION', 'Only a "please send" entry is acknowledged');
+  if (!e.parentReadAt) e.parentReadAt = ctx.now;
+  if (!e.ackAt) Object.assign(e, { ackAt: ctx.now, ackBy: ctx.actor.id });
+  return e;
 }
 
 export function markDiaryRead(db, entryId, ctx) {

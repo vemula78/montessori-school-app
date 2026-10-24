@@ -72,6 +72,8 @@ const ENUMS = {
   evaluations: ['draft', 'submitted', 'published'],
   signatures: ['ready', 'removed'],
   noticeFiles: ['staged', 'attached', 'removed'],
+  paymentClaims: ['pending', 'confirmed', 'rejected'],
+  ptmSlots: ['open', 'cancelled'],
 };
 const LEVELS = ['toddlers', 'mont1', 'mont2', 'mont3'];
 const AREAS = ['practicalLife', 'sensorial', 'language', 'math', 'culture'];
@@ -436,6 +438,17 @@ function checks(db, add, v) {
     if (f.status === 'attached' && !f.noticeId) add('MALFORMED', 'noticeFile', f.id, 'an attached file names no notice');
   }
   for (const n of db.notices) if (db.noticeFiles.filter(f => f.noticeId === n.id && f.status === 'attached').length > 3) add('TOO_MANY_FILES', 'notice', n.id, 'more than three attachments');
+  for (const c of db.paymentClaims) {
+    ref('paymentClaim', c.id, 'studentId', 'students', c.studentId);
+    for (const i of c.invoiceIds || []) ref('paymentClaim', c.id, 'invoiceIds', 'invoices', i);
+    money('paymentClaim', c.id, 'amountPaise', c.amountPaise);
+    if (c.status === 'confirmed') ref('paymentClaim', c.id, 'paymentId', 'payments', c.paymentId);
+  }
+  for (const x of db.ptmSlots) {
+    ref('ptmSlot', x.id, 'eventId', 'calendarEvents', x.eventId);
+    ref('ptmSlot', x.id, 'programId', 'programs', x.programId);
+    if (x.booking) ref('ptmSlot', x.id, 'booking.studentId', 'students', x.booking.studentId);
+  }
   const consentKeys = new Set();
   for (const c of db.consents) {
     ref('consent', c.id, 'guardianId', 'guardians', c.guardianId);

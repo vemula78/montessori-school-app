@@ -546,7 +546,7 @@ export async function createRemoteApi(config, { createSurface, ApiError, toApiEr
     refresh: op(() => refresh().then(() => undefined)),
     session, people, setup: surface.setup, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     auth, consent, push, import: imports, reminders, curriculum, observations, progress, reports, photos, rights, oversight,
-    school: surface.school, evaluations, signatures, health: surface.health,
+    school: surface.school, evaluations, signatures, health: surface.health, ptm: surface.ptm,
     _supabase: sb,
   };
   return api;

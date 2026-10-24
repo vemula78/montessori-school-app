@@ -44,7 +44,9 @@ import { schoolDetails, officeHoursStatus } from '../domain/school.js';
 import { sniffMime, pngSize, fileProblem } from '../domain/files.js';
 import { healthAlerts, healthView } from '../domain/health.js';
 import { filesOfNotice, NOTICE_FILE_MIMES, NOTICE_FILE_MAX_BYTES } from '../domain/notice-files.js';
-import { RUNNING_LATE_KINDS } from '../domain/commands.js';
+import { RUNNING_LATE_KINDS, threadVisible } from '../domain/commands.js';
+import { upiLink } from '../domain/upi.js';
+import { slotsFor } from '../domain/ptm.js';
 import { totp, verifyTotp, randomSecret, otpauthUri, secondsLeft } from './totp.js';
 
 export { buildPersonas };
@@ -164,6 +166,17 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     /** officeHours() → {set, open, hours, nextOpen:{day, time, inDays}|null} at this moment (school time). */
     officeHours: op(() => { me(); return officeHoursStatus(db().school, nowISO(clock())); }),
   };
+  /** Parent-teacher meeting slots (#88). */
+  const ptm = {
+    /** slots({eventId?, programId?, date?}) → [{id, eventId, programId, date, start, end, teacherId, teacherName, status, taken, booking:{studentId, studentName, guardianId, bookedAt}|null}] (a parent: only their own bookings are named). */
+    slots: op((q = {}) => { const p = allow('admin', 'teacher', 'parent'); return slotsFor(db(), p, q); }),
+    /** publishSlots({eventId, programId, date?, from, to, minutes, teacherId?}) → {created, slots} — teacher of the programme or principal. */
+    publishSlots: cmd('ptm.publishSlots'),
+    cancelSlot: cmd('ptm.cancelSlot'),
+    /** book(slotId, studentId) — a parent; one slot per child and meeting (another booking moves it). cancelBooking(slotId). */
+    book: cmd('ptm.book'),
+    cancelBooking: cmd('ptm.cancelBooking'),
+  };
   /** Allergies and medical alerts (#78): the principal, the child's teachers and parents read; the principal and parents set. */
   const health = {
     /** alerts(programId?) → [{studentId, name, allergies, medical, notes, updatedAt, updatedByRole}] for children with any (the badge list); principal all, teacher own programme. */
@@ -262,19 +275,21 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
   };
 
   const threads = {
+    /** list() → conversations this person may read (the accountant: the fee office's); each has `to` ('teacher' when absent in the doc). */
     list: op(() => {
-      const p = allow('admin', 'teacher', 'parent'); const d = db();
-      const list = d.threads.filter(t => p.role === 'admin' || (p.role === 'teacher' && p.programIds.includes(t.programId)) || (p.role === 'parent' && t.guardianId === p.guardianId));
+      const p = allow('admin', 'teacher', 'parent', 'accountant'); const d = db();
+      const list = d.threads.filter(t => threadVisible(p, t));
       return list.map(t => M.threadView(d, t, p.role)).sort((a, b) => {
         const ta = a.lastMessage?.sentAt || a.createdAt, tb = b.lastMessage?.sentAt || b.createdAt;
         return ta < tb ? 1 : ta > tb ? -1 : 0;
       });
     }),
     get: op(id => {
-      const p = allow('admin', 'teacher', 'parent'); const d = db();
+      const p = allow('admin', 'teacher', 'parent', 'accountant'); const d = db();
       const t = visibleThread(p, d, id);
       return { thread: M.threadView(d, t, p.role), messages: M.threadMessages(d, id) };
     }),
+    /** open({guardianId?, studentId, subject, body, to?:'teacher'|'accountant'|'principal'}) — a parent chooses who; the accountant opens 'accountant' ones. */
     open: cmd('threads.open'),
     reply: cmd('threads.reply'),
     markRead: cmd('threads.markRead'),
@@ -452,6 +467,19 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
       return F.feeStatement(d, studentId, academicYearId || d.school.currentAcademicYearId);
     }),
     mockOnlinePayment: cmd('fees.mockOnlinePayment'),
+    /** upiLink(studentId, invoiceIds?) → {link:'upi://pay?…'|null, vpa, payeeName, amountPaise, note} or null when the school set no UPI ID. Parent of the child or finance staff. */
+    upiLink: op((studentId, invoiceIds) => { const p = allow('admin', 'accountant', 'parent'); mustSee(p, studentId); return upiLink(db(), studentId, invoiceIds || null); }),
+    /** claimUpi({studentId, invoiceIds, amountPaise, reference, paidOn}) → claim (pending). A parent of the child. */
+    claimUpi: cmd('fees.claimUpi'),
+    /** claims({status?, studentId?}) → [claim + studentName], newest first; finance staff all, a parent their own children's. */
+    claims: op(({ status, studentId } = {}) => {
+      const p = allow('admin', 'accountant', 'parent'); const d = db();
+      return (d.paymentClaims || []).filter(c => (STAFF_SEES_ALL.includes(p.role) || p.studentIds.includes(c.studentId)) && (!status || c.status === status) && (!studentId || c.studentId === studentId))
+        .map(c => ({ ...c, studentName: fullName(byId(d.students, c.studentId)) })).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    }),
+    /** confirmClaim(claimId, {paidOn?}) → {claim, payment} (a receipt); rejectClaim(claimId, reason) → claim. Finance staff. */
+    confirmClaim: cmd('fees.confirmClaim'),
+    rejectClaim: cmd('fees.rejectClaim'),
   };
 
   const attendance = {
@@ -470,6 +498,8 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
     correct: cmd('diary.correct'),
     remove: cmd('diary.remove'),
     markRead: cmd('diary.markRead'),
+    /** acknowledge(entryId) — a parent's "I will send it" on a 'needs' entry. */
+    acknowledge: cmd('diary.acknowledge'),
     /** removeMany(entryIds) → {removed, ids}: several entries at once (a whole-class entry), all or none. */
     removeMany: cmd('diary.removeMany'),
     /** markReadMany(ids): a parent's read receipts for one day, sent after the page is painted (the real app reloads once). */
@@ -642,7 +672,7 @@ export function createSurface({ db, me, clock, cmd, appUsers, requireConsent = f
   };
 
   return { people, setup, notices, threads, calendar, transport, fees, attendance, diary, care, audit, importHelpers, curriculum, observations, progress, reports, photos, rights, announcement, oversight,
-    school, evaluations, signatures, health, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
+    school, evaluations, signatures, health, ptm, helpers: { tripOut, seeInvoice, seePayment, visibleGuardianIds, photoRows } };
 }
 
 /**
@@ -1233,7 +1263,7 @@ export function createApi(opts = {}) {
     refresh: op(() => undefined),
     session, people, setup: surface.setup, notices, threads, calendar, transport, fees, attendance, diary, care: surface.care, audit, admin,
     curriculum, observations, progress, reports, photos, rights: surface.rights, oversight: surface.oversight,
-    auth, consent, push, import: imports, reminders, school: surface.school, evaluations, signatures, health: surface.health,
+    auth, consent, push, import: imports, reminders, school: surface.school, evaluations, signatures, health: surface.health, ptm: surface.ptm,
     /** test hook */
     _storage: () => storage,
   };

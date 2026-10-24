@@ -10,7 +10,7 @@
 // A read probe answers "does this actor see at least one such row" on the seed plus FIXTURE (a cell of a capability the
 // seed has no row for would always read "no").
 
-import { CONSENT_VERSION, COMMANDS, personaFor, consentScopedPersona, ctxFor, STAFF_SEES_ALL } from './commands.js';
+import { CONSENT_VERSION, COMMANDS, personaFor, consentScopedPersona, ctxFor, STAFF_SEES_ALL, threadVisible } from './commands.js';
 import { twoStepRequired } from './admin.js';
 import { byId } from './people.js';
 
@@ -53,6 +53,9 @@ export const FIXTURE = {
       createdBy: 'stf-teacher-pa', createdAt: '2026-05-01T05:00:00.000Z', updatedBy: 'stf-principal', updatedAt: '2026-05-20T05:00:00.000Z', submittedBy: 'stf-teacher-pa',
       submittedAt: '2026-05-10T05:00:00.000Z', publishedBy: 'stf-principal', publishedAt: '2026-05-20T05:00:00.000Z', lastPublishedAt: null, unpublishedReason: null,
       signers: { teacherIds: ['stf-teacher-pa'], centerHeadId: 'stf-principal' } }],
+    // a conversation grd-02 opened with the fee office about stu-04
+    threads: [{ id: 'thr-matrix-1', guardianId: 'grd-02', studentId: 'stu-04', programId: 'prog-primary-a', subject: 'Fake matrix question', status: 'open',
+      createdAt: '2026-10-01T05:00:00.000Z', to: 'accountant' }],
     signatures: [{ id: 'sig-matrix-1', ownerKind: 'staff', staffId: 'stf-teacher-pb', path: 'sig/matrix-1.png', mime: 'image/png', bytes: 100, sha256: null, width: 30, height: 10,
       status: 'ready', uploadedBy: 'stf-principal', uploadedAt: '2026-06-01T05:00:00.000Z', removedBy: null, removedAt: null, objectDeletedAt: null }],
   },
@@ -60,7 +63,7 @@ export const FIXTURE = {
 /** Table of each care collection (scripts/permissions-sql.mjs inserts FIXTURE.care there). */
 export const CARE_TABLES = { leaveRequests: 'leave_requests', pickupContacts: 'pickup_contacts', pickups: 'pickups' };
 /** Table of each v5 fixture collection. */
-export const V5_TABLES = { evaluations: 'evaluations', signatures: 'signatures' };
+export const V5_TABLES = { evaluations: 'evaluations', signatures: 'signatures', threads: 'threads' };
 
 const Y = true, N = false;
 const row = (p2, p1, t, a, d, pc, pn) => ({ principal_aal2: p2, principal_aal1_enrolled: p1, teacher: t, accountant: a, driver: d, parent_consented: pc, parent_no_consent: pn });
@@ -122,6 +125,12 @@ export const PERMISSIONS = {
       js: { kind: 'read', name: 'publishedEvaluations' }, sql: "select count(*) from public.evaluations where status = 'published'" },
     { key: 'signatures_others', label: "Other staff members' signature records", allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'read', name: 'otherSignatures' }, sql: "select count(*) from public.signatures where coalesce(staff_id, '') <> coalesce(app.my_staff_id(), '')" },
+    { key: 'office_conversations', label: 'Conversations with the fee office', allow: row(Y, N, N, Y, N, Y, N),
+      js: { kind: 'read', name: 'officeThreads' }, sql: "select count(*) from public.threads where doc->>'to' = 'accountant'" },
+    { key: 'upi_claims', label: "UPI payments families reported", allow: row(Y, N, N, Y, N, N, N),
+      js: { kind: 'read', name: 'paymentClaims' }, sql: 'select count(*) from public.payment_claims' },
+    { key: 'ptm_bookings', label: 'Who booked which meeting slot', allow: row(Y, N, Y, N, N, N, N),
+      js: { kind: 'read', name: 'ptmBookings' }, sql: 'select count(*) from public.ptm_bookings' },
     { key: 'curriculum', label: 'Curriculum', allow: row(Y, N, Y, N, N, N, N),
       js: { kind: 'read', name: 'curriculum' }, sql: 'select count(*) from public.presentations' },
     { key: 'bus_positions', label: 'Bus trips and positions', allow: row(Y, N, N, Y, Y, Y, N),
@@ -155,6 +164,8 @@ export const PERMISSIONS = {
       js: { kind: 'command', name: 'signatures.uploadCheck', args: [{ owner: { kind: 'staff', staffId: 'stf-teacher-pa' } }] }, sql: null },
     { key: 'school_settings', label: 'Set the school details (report footer, privacy contact, office hours, UPI)', allow: row(Y, N, N, N, N, N, N),
       js: { kind: 'command', name: 'admin.setSchoolDetails', args: [{ directorName: 'Matrix Exampleton' }] }, sql: null },
+    { key: 'claim_upi', label: 'Report a UPI payment (own child)', allow: row(N, N, N, N, N, Y, N),
+      js: { kind: 'command', name: 'fees.claimUpi', args: [{ studentId: 'stu-04', invoiceIds: [], amountPaise: 100, reference: 'MATRIX001', paidOn: TODAY }] }, sql: null },
     { key: 'running_late', label: 'Tell a bus route\'s families the bus is late (route 1)', allow: row(Y, N, N, N, Y, N, N),
       js: { kind: 'command', name: 'transport.runningLate', args: [{ routeId: 'route-1', kind: 'late10' }] }, sql: null },
     { key: 'set_health', label: "Set a child's allergies and medical alerts (stu-04)", allow: row(Y, N, N, N, N, Y, N),
@@ -201,6 +212,10 @@ const READS = {
   unpublishedEvaluations: (db, p) => p.role !== 'parent' && anyOf(db.evaluations, e => e.status !== 'published' && learner(p, e.studentId)),
   publishedEvaluations: (db, p) => anyOf(db.evaluations, e => e.status === 'published' && learner(p, e.studentId)),
   otherSignatures: (db, p) => p.role === 'admin' && anyOf(db.signatures, x => (x.staffId || '') !== (p.staffId || '')),
+  officeThreads: (db, p) => anyOf(db.threads, t => t.to === 'accountant' && threadVisible(p, t) && (p.role !== 'parent' || p.studentIds.includes(t.studentId))),
+  paymentClaims: (db, p) => anyOf(db.paymentClaims, c => STAFF_SEES_ALL.includes(p.role) || (p.role === 'parent' && p.studentIds.includes(c.studentId))),
+  ptmBookings: (db, p) => anyOf(db.ptmSlots, x => x.booking && (p.role === 'admin' || (p.role === 'teacher' && p.programIds.includes(x.programId))
+    || (p.role === 'parent' && p.studentIds.includes(x.booking.studentId)))),
   curriculum: (db, p) => ['admin', 'teacher'].includes(p.role) && db.presentations.length > 0,
   busPositions: (db, p) => anyOf(db.trips, t => (t.positions || []).length > 0 && (STAFF_SEES_ALL.includes(p.role)
     || (p.role === 'driver' && anyOf(db.routes, r => r.id === t.routeId && (r.driverId === p.staffId || r.attendantId === p.staffId)))

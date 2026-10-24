@@ -52,6 +52,8 @@ import * as SG from './signatures.js';
 import * as SC from './school.js';
 import * as HL from './health.js';
 import * as NF from './notice-files.js';
+import * as UP from './upi.js';
+import * as PT from './ptm.js';
 
 export const ROLE_LABEL = { admin: 'Principal', teacher: 'Teacher', accountant: 'Accountant', driver: 'Driver', parent: 'Parent' };
 export const STAFF_SEES_ALL = ['admin', 'accountant'];
@@ -146,11 +148,17 @@ export function canManageNotice(p, db, noticeId) {
   }
   return deny('Not your notice');
 }
+/** May persona p read this conversation? The principal all; a teacher their programmes' (not the office's); the accountant
+ * the fee office's; a parent their own. (RLS states the same rule, migration 0011.) */
+export function threadVisible(p, t) {
+  const to = M.threadTarget(t);
+  return p.role === 'admin' || (p.role === 'teacher' && to === 'teacher' && p.programIds.includes(t.programId))
+    || (p.role === 'accountant' && to === 'accountant') || (p.role === 'parent' && t.guardianId === p.guardianId);
+}
 export function visibleThread(p, db, id) {
   const t = byId(db.threads, id);
   if (!t) fail('NOT_FOUND', 'Conversation not found');
-  const ok = p.role === 'admin' || (p.role === 'teacher' && p.programIds.includes(t.programId)) || (p.role === 'parent' && t.guardianId === p.guardianId);
-  if (!ok) deny('Not your conversation');
+  if (!threadVisible(p, t)) deny('Not your conversation');
   return t;
 }
 export const visibleRoutes = (p, db) => {
@@ -283,23 +291,27 @@ export const COMMANDS = {
   'notices.acknowledge': { slice: 'messaging', authorize: p => allow(p, 'parent'), run: (db, [noticeId], ctx, p) => M.acknowledgeNotice(db, noticeId, p.guardianId, ctx) },
   'threads.open': {
     slice: 'messaging',
-    authorize(p, db, [{ guardianId, studentId } = {}]) {
-      allow(p, 'admin', 'teacher', 'parent');
+    // to: 'teacher' (default) | 'accountant' (the fee office) | 'principal'. A teacher opens teacher conversations only, the
+    // accountant fee-office ones only.
+    authorize(p, db, [{ guardianId, studentId, to = 'teacher' } = {}]) {
+      allow(p, 'admin', 'teacher', 'parent', 'accountant');
+      if (p.role === 'teacher' && to !== 'teacher') deny('Teachers write about their own classes');
+      if (p.role === 'accountant' && to !== 'accountant') deny('The accountant writes as the fee office');
       const gid = p.role === 'parent' ? (guardianId || p.guardianId) : guardianId;
       if (p.role === 'parent' && gid !== p.guardianId) deny('You can only write as yourself');
       mustSee(p, db, studentId);
       if (byId(db.students, studentId).status !== 'active') fail('VALIDATION', 'This child has left the school; their records are read-only');
     },
-    run(db, [{ guardianId, studentId, subject, body } = {}], ctx, p) {
+    run(db, [{ guardianId, studentId, subject, body, to = 'teacher' } = {}], ctx, p) {
       const gid = p.role === 'parent' ? (guardianId || p.guardianId) : guardianId;
-      const r = M.openThread(db, { guardianId: gid, studentId, subject, body }, ctx);
+      const r = M.openThread(db, { guardianId: gid, studentId, subject, body, to }, ctx);
       const view = M.threadView(db, r.thread, p.role);
       return { ...view, thread: view, messages: r.messages };
     },
   },
-  'threads.reply': { slice: 'messaging', authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher', 'parent'); visibleThread(p, db, id); }, run: (db, [id, body], ctx) => M.replyThread(db, id, body, ctx) },
-  'threads.markRead': { slice: 'messaging', authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher', 'parent'); visibleThread(p, db, id); }, run: (db, [id], ctx) => M.markThreadRead(db, id, ctx) },
-  'threads.close': { slice: 'messaging', authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher', 'parent'); visibleThread(p, db, id); }, run: (db, [id], ctx) => M.closeThread(db, id, ctx) },
+  'threads.reply': { slice: 'messaging', authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher', 'parent', 'accountant'); visibleThread(p, db, id); }, run: (db, [id, body], ctx) => M.replyThread(db, id, body, ctx) },
+  'threads.markRead': { slice: 'messaging', authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher', 'parent', 'accountant'); visibleThread(p, db, id); }, run: (db, [id], ctx) => M.markThreadRead(db, id, ctx) },
+  'threads.close': { slice: 'messaging', authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher', 'parent', 'accountant'); visibleThread(p, db, id); }, run: (db, [id], ctx) => M.closeThread(db, id, ctx) },
 
   // ---- calendar
   'calendar.create': { slice: 'calendar', authorize: p => allow(p, 'admin'), run: (db, [ev], ctx) => C.createEvent(db, ev, ctx) },
@@ -385,6 +397,17 @@ export const COMMANDS = {
     authorize: (p, db, [{ studentId } = {}]) => { allow(p, 'admin', 'accountant', 'parent'); mustSee(p, db, studentId); },
     run: (db, [{ studentId, invoiceIds } = {}], ctx, p) => F.mockOnlinePayment(db, { studentId, invoiceIds, guardianId: p.role === 'parent' ? p.guardianId : null }, ctx),
   },
+  // ---- UPI straight to the school (#81; src/domain/upi.js): a parent reports, the office confirms or rejects
+  /** claimUpi({studentId, invoiceIds, amountPaise, reference, paidOn}) — a parent of the child; a pending claim, no receipt yet. */
+  'fees.claimUpi': {
+    slice: 'ledger',
+    authorize: (p, db, [a = {}]) => { allow(p, 'parent'); mustSee(p, db, a?.studentId); },
+    run: (db, [a], ctx, p) => UP.claimUpiPayment(db, a || {}, ctx, p.guardianId),
+  },
+  /** confirmClaim(claimId, {paidOn?}) → {claim, payment}: an ordinary 'upi' payment with the claim's reference. */
+  'fees.confirmClaim': { slice: 'ledger', authorize: fin, run: (db, [id, a], ctx) => UP.confirmClaim(db, id, a || {}, ctx) },
+  /** rejectClaim(claimId, reason) — the family sees the reason. */
+  'fees.rejectClaim': { slice: 'ledger', authorize: fin, run: (db, [id, reason], ctx) => UP.rejectClaim(db, id, reason, ctx) },
   /** Amount and payer details for a new gateway order (the client's amount can only lower it). Read only. */
   'fees.gatewayOrderQuote': {
     slice: 'ledger', serverOnly: true, readOnly: true,
@@ -489,6 +512,12 @@ export const COMMANDS = {
       return { removed: unique.length, ids: unique };
     },
   },
+  /** acknowledge(entryId) — a parent says they will send what a "please send" entry asks for. */
+  'diary.acknowledge': {
+    slice: 'classroom', load: ([entryId]) => ({ diaryEntryId: String(entryId ?? '') }),
+    authorize: (p, db, [entryId]) => { allow(p, 'parent'); mustSee(p, db, diaryEntryOf(db, entryId).studentId); },
+    run: (db, [entryId], ctx) => D.acknowledgeNeed(db, entryId, ctx),
+  },
   'diary.markRead': {
     slice: 'classroom', load: ([entryId]) => ({ diaryEntryId: entryId }),
     authorize(p, db, [entryId]) {
@@ -538,6 +567,35 @@ export const COMMANDS = {
     slice: 'health',
     authorize: (p, db, [a = {}]) => { allow(p, 'admin', 'parent'); mustSee(p, db, a?.studentId); },
     run: (db, [a], ctx) => HL.setHealth(db, a || {}, ctx),
+  },
+
+  // ---- parent-teacher meeting slots (#88; slice 'care', src/domain/ptm.js)
+  /** publishSlots({eventId, programId, date?, from, to, minutes, teacherId?}) → {created, slots} — a teacher of the programme or the principal. */
+  'ptm.publishSlots': {
+    slice: 'care',
+    authorize: (p, db, [a = {}]) => { allow(p, 'admin', 'teacher'); if (!byId(db.programs, a?.programId)) fail('NOT_FOUND', 'Program not found'); teachesProgram(p, a.programId); },
+    run: (db, [a], ctx) => PT.publishSlots(db, a || {}, ctx),
+  },
+  'ptm.cancelSlot': {
+    slice: 'care',
+    authorize: (p, db, [id]) => { allow(p, 'admin', 'teacher'); teachesProgram(p, careRow(db, 'ptmSlots', id, 'Slot').programId); },
+    run: (db, [id], ctx) => PT.cancelSlot(db, id, ctx),
+  },
+  /** book(slotId, studentId) — a parent; one slot per child and meeting (booking another moves the child). */
+  'ptm.book': {
+    slice: 'care',
+    authorize: (p, db, [id, studentId]) => { allow(p, 'parent'); careRow(db, 'ptmSlots', id, 'Slot'); mustSee(p, db, studentId); },
+    run: (db, [id, studentId], ctx, p) => PT.bookSlot(db, id, studentId, ctx, p.guardianId),
+  },
+  /** cancelBooking(slotId) — the family (their own child's booking, until the day before), the programme's teacher, the principal. */
+  'ptm.cancelBooking': {
+    slice: 'care',
+    authorize(p, db, [id]) {
+      allow(p, 'admin', 'teacher', 'parent');
+      const slot = careRow(db, 'ptmSlots', id, 'Slot');
+      if (p.role === 'parent') { if (!slot.booking || !p.studentIds.includes(slot.booking.studentId)) deny('Not your booking'); } else teachesProgram(p, slot.programId);
+    },
+    run: (db, [id], ctx) => PT.cancelBooking(db, id, ctx),
   },
 
   // ---- gateway settlement report (CSV from the gateway dashboard)
@@ -1355,10 +1413,10 @@ const CSV_MAX_BYTES = 512 * 1024;
 /** The DB slice each command needs on the server, and the collections it may write. */
 const BASE = ['academicYears', 'programs', 'students', 'guardians', 'staff', 'routes', 'feeHeads'];
 const LEARNING = ['presentations', 'observations', 'photos', 'progressEvents', 'reports'];
-const CARE = ['leaveRequests', 'pickupContacts', 'pickups'];
+const CARE = ['leaveRequests', 'pickupContacts', 'pickups', 'ptmSlots'];
 export const SLICES = {
-  ledger: { reads: [...BASE, 'calendarEvents', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'importRows', 'erasureRequests'],
-    writes: ['school', 'counters', 'academicYears', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests'] },
+  ledger: { reads: [...BASE, 'calendarEvents', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'importRows', 'erasureRequests', 'paymentClaims'],
+    writes: ['school', 'counters', 'academicYears', 'students', 'guardians', 'staff', 'feeHeads', 'feeStructures', 'invoices', 'payments', 'refunds', 'credits', 'importBatches', 'erasureRequests', 'paymentClaims'] },
   // noticeFiles (wave 2): attachments, staged by their uploader and bound when a notice is sent or corrected
   messaging: { reads: [...BASE, 'notices', 'noticeReceipts', 'threads', 'messages', 'noticeFiles'], writes: ['notices', 'noticeReceipts', 'threads', 'messages', 'noticeFiles'] },
   calendar: { reads: [...BASE, 'calendarEvents'], writes: ['calendarEvents'] },
@@ -1371,7 +1429,7 @@ export const SLICES = {
   settlement: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'settlementLines'], writes: ['settlementLines'] },
   export: { reads: [...BASE, 'invoices', 'payments', 'refunds', 'credits', 'notices', 'noticeReceipts', 'threads', 'messages', 'attendance', 'diaryEntries', 'consents',
     'trips', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'remindersSent', 'pushSubscriptions', 'gatewayOrders', 'gatewayEvents',
-    'dataRequests', ...LEARNING, ...CARE, 'evaluations', 'noticeFiles'], writes: [] },
+    'dataRequests', ...LEARNING, ...CARE, 'evaluations', 'noticeFiles', 'paymentClaims'], writes: [] },
   // erasure scrubs the absence reasons the guardian wrote (leaveRequests)
   erasure: { reads: [...BASE, 'threads', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importBatches', 'importRows', 'dataRequests', 'leaveRequests'],
     writes: ['guardians', 'messages', 'appUsers', 'invites', 'erasureRequests', 'importRows', 'dataRequests', 'leaveRequests'] },
@@ -1382,7 +1440,8 @@ export const SLICES = {
   // the only slice whose command removes rows (retention.purge, system only); persist's allow-list matches PURGEABLE
   retention: { reads: [...BASE, ...LEARNING, 'diaryEntries', 'attendance', 'threads', 'messages', ...CARE, 'evaluations'], writes: RT.PURGEABLE },
   // schema v4: absences reported in advance, pick-up people and the pick-up log (small tables: loaded whole)
-  care: { reads: [...BASE, ...CARE], writes: CARE },
+  // ptmSlots (wave 2): meeting slots and their bookings; calendarEvents: the meeting each slot belongs to
+  care: { reads: [...BASE, ...CARE, 'calendarEvents'], writes: CARE },
   // school set-up (classes, staff, routes and stops); trips are read only to refuse changes under a running bus
   setup: { reads: [...BASE, 'trips'], writes: ['programs', 'staff', 'routes'] },
   // schema v5: the annual Progress Report (evaluations are small: loaded whole; attendance by the evalAttendance hint)

@@ -4,7 +4,8 @@
 //   observations  observations and progress events are deleted; their photos go too (live → deleting/expired,
 //                 rows already without an object are deleted)
 //   diary         diary entries, termly reports and annual Progress Reports (evaluations) are deleted
-//   attendance    attendance rows are deleted, with the absences reported in advance, the pick-up log and the pick-up people
+//   attendance    attendance rows are deleted, with the absences reported in advance, the pick-up log, the pick-up people and
+//                 parent-teacher meeting slots the child had booked
 //   messages      the messages of the child's conversations are deleted (the conversation row stays)
 // Never touched: fee records (the law requires them), people, consent records, the audit log, staff signatures (staff
 // data, not a child's: kept until replaced or removed; RETENTION_COVERAGE says where every collection stands).
@@ -20,12 +21,14 @@ export const RETENTION_MAX_MONTHS = 240;
 export const CATEGORIES = { photos: 'photosMonthsAfterLeaving', observations: 'observationsMonthsAfterLeaving', diary: 'diaryMonthsAfterLeaving',
   attendance: 'attendanceMonthsAfterLeaving', messages: 'messagesMonthsAfterLeaving' };
 /** Collections whose rows a retention purge may delete (the server's persist allow-list matches). */
-export const PURGEABLE = ['observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'evaluations', 'attendance', 'messages', 'leaveRequests', 'pickups', 'pickupContacts'];
+export const PURGEABLE = ['observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'evaluations', 'attendance', 'messages', 'leaveRequests', 'pickups', 'pickupContacts', 'ptmSlots'];
 /** Where each collection added after Phase 3 stands under retention: a category (deleted after a child leaves) or why it is kept. */
 export const RETENTION_COVERAGE = {
   leaveRequests: 'attendance', pickupContacts: 'attendance', pickups: 'attendance',
   evaluations: 'diary',
   signatures: 'kept: staff data, not a child\'s; removed when replaced or deleted by the principal',
+  ptmSlots: 'attendance (a slot a departed child had booked is deleted with its booking)',
+  paymentClaims: 'kept: fee records (the amount and bank reference a family reported), like the ledger',
   noticeFiles: 'kept with their notice (school documents, no child data); staged files unused for 24 hours are removed by the nightly job',
 };
 
@@ -88,6 +91,7 @@ export function retentionPlan(db, today) {
     if (cat === 'attendance') {
       put('attendance', of('attendance').map(x => `${x.date}|${x.studentId}`));
       for (const c of ['leaveRequests', 'pickups', 'pickupContacts']) put(c, of(c).map(x => x.id));
+      put('ptmSlots', (db.ptmSlots || []).filter(x => x.booking && ids.has(x.booking.studentId)).map(x => x.id));
     }
     if (cat === 'messages') {
       const threads = new Set((db.threads || []).filter(t => ids.has(t.studentId)).map(t => t.id));

@@ -12,7 +12,7 @@ const keyOf = (c, r) => (KEY[c] ? KEY[c](r) : r.id);
 // schema v4 adds the care rows of a child who left (absences, pick-up people, pick-ups), under the attendance period;
 // schema v5 the annual Progress Reports (evaluations), under the diary period
 const DELETABLE = new Set(['calendarEvents', 'importRows', 'observations', 'progressEvents', 'photos', 'diaryEntries', 'reports', 'attendance', 'messages',
-  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations']);
+  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'ptmSlots']);
 const stable = x => JSON.stringify(x);
 
 /**

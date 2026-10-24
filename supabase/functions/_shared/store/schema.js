@@ -126,6 +126,14 @@ export const SCHEMA_VERSION = 5; // v2 (Phase 3): learning collections, consents
  *   A notice attachment (PDF/JPEG/PNG, ≤ 2 MB, at most 3 per notice): metadata only; bytes in the private bucket `notice-files`.
  *   Notices (v5) may also carry history [{title, body, at, by, reason}], correctedAt/By, withdrawnAt/By, withdrawReason, and the
  *   audience {scope:'route', routeIds}.
+ * @typedef {{id:string, studentId:string, guardianId:string, invoiceIds:string[], amountPaise:number, reference:string, paidOn:string,
+ *   status:'pending'|'confirmed'|'rejected', createdAt:string, decidedBy:string|null, decidedAt:string|null, rejectReason:string|null,
+ *   paymentId:string|null, receiptNumber:string|null}} PaymentClaim   a family's "I paid by UPI" report (#81); confirmed = a payment
+ * @typedef {{id:string, eventId:string, programId:string, date:string, start:string, end:string, teacherId:string|null, status:'open'|'cancelled',
+ *   booking:{studentId:string, guardianId:string, bookedAt:string}|null, booked?:boolean, createdBy:string, createdAt:string, cancelledAt:string|null}} PtmSlot
+ *   A parent-teacher meeting slot (#88). In the real app a parent's copy of another family's slot has booking null and booked true.
+ *   Threads (v5) may carry to:'accountant'|'principal' (absent = the child's teacher); diary entries types 'toilet' and 'needs'
+ *   (needs: ackAt/ackBy when the family acknowledged).
  * @typedef {{id:string, ts:string, actorRole:string, actorId:string, entity:string, entityId:string, action:string, summary:string}} AuditRow
  * @typedef {{invoice:Object<string,number>, receipt:Object<string,number>, refund:Object<string,number>}} Counters
  * @typedef {{schemaVersion:number, rev:number, school:School, academicYears:AcademicYear[], programs:Program[],
@@ -135,7 +143,7 @@ export const SCHEMA_VERSION = 5; // v2 (Phase 3): learning collections, consents
  *   credits:Credit[], attendance:AttendanceRecord[], diaryEntries:DiaryEntry[], auditLog:AuditRow[], counters:Counters,
  *   presentations:Presentation[], observations:Observation[], photos:Photo[], progressEvents:ProgressEvent[], reports:Report[],
  *   consents:Consent[], dataRequests:DataRequest[], leaveRequests:LeaveRequest[], pickupContacts:PickupContact[], pickups:Pickup[],
- *   evaluations:Evaluation[], signatures:Signature[], noticeFiles:NoticeFile[]}} Db
+ *   evaluations:Evaluation[], signatures:Signature[], noticeFiles:NoticeFile[], paymentClaims:PaymentClaim[], ptmSlots:PtmSlot[]}} Db
  * @typedef {{role:'admin'|'teacher'|'accountant'|'driver'|'parent'|'system', id:string}} Actor
  * @typedef {{actor:Actor, now:string, today:string}} Ctx  now = ISO timestamp, today = local 'YYYY-MM-DD'
  */
@@ -146,10 +154,10 @@ export const COLLECTIONS = [
   'threads', 'messages', 'calendarEvents', 'routes', 'trips', 'feeHeads', 'feeStructures',
   'invoices', 'payments', 'refunds', 'credits', 'attendance', 'diaryEntries', 'auditLog',
   'presentations', 'observations', 'photos', 'progressEvents', 'reports', 'consents', 'dataRequests',
-  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'signatures', 'noticeFiles',
+  'leaveRequests', 'pickupContacts', 'pickups', 'evaluations', 'signatures', 'noticeFiles', 'paymentClaims', 'ptmSlots',
 ];
 /** Collections added by schema v5 (migrate() gives an older document empty lists). */
-export const V5_COLLECTIONS = ['evaluations', 'signatures', 'noticeFiles'];
+export const V5_COLLECTIONS = ['evaluations', 'signatures', 'noticeFiles', 'paymentClaims', 'ptmSlots'];
 /** School settings added by schema v5 (null until the principal sets them). */
 export const V5_SCHOOL_KEYS = ['reportFooter', 'directorName', 'privacyContact', 'officeHours', 'upi'];
 

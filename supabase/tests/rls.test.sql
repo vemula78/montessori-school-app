@@ -20,7 +20,7 @@
 -- Impersonation: set local role + request.jwt.claims, exactly what PostgREST does for a signed-in user.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(269);
+select plan(285);
 
 -- ---------------------------------------------------------------- helpers (rolled back with the test)
 create schema tests;
@@ -677,6 +677,39 @@ select is((select count(*)::int from public.notice_files where id = 'nfl-t-2'), 
 reset role;
 select is((select public from storage.buckets where id = 'notice-files'), false, 'w2_notice_files_bucket_private');
 select throws_ok($$select public.persist('pgtap-w2-msg', 1, '{"deletes":{"noticeFiles":["nfl-t-1"]}}'::jsonb)$$, '42501', null, 'w2_notice_files_never_deleted');
+
+-- conversations with the office (#11), UPI claims (#81), meeting slots (#88)
+select tests.as_user('00000000-0000-4000-8000-000000000002'); -- teacher-pa
+select is((select count(*)::int from public.threads where doc ? 'to'), 0, 'w2_teacher_reads_no_office_conversation');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000003'); -- accountant
+select ok((select count(*) from public.threads) > 0 and (select bool_and(doc->>'to' = 'accountant') from public.threads), 'w2_accountant_reads_fee_office_conversations_only');
+select ok(exists (select 1 from public.messages), 'w2_accountant_reads_their_messages');
+reset role;
+select lives_ok($$select public.persist('pgtap-w2-ledger', 0, jsonb_build_object('upserts', jsonb_build_object('paymentClaims', jsonb_build_array(
+  jsonb_build_object('id', 'upc-t-1', 'studentId', 'stu-04', 'guardianId', 'grd-02', 'invoiceIds', '[]'::jsonb, 'amountPaise', 100, 'reference', 'FAKE00001', 'status', 'pending')))))$$,
+  'w2_persist_writes_payment_claims');
+select tests.as_user('00000000-0000-4000-8000-000000000006'); -- grd-02
+select is((select array_agg(id) from public.payment_claims), array['upc-t-1'], 'w2_parent_reads_own_children_claims_only');
+select ok((select count(*) from public.ptm_slots) > 0 and (select count(*) from public.ptm_bookings) = 0, 'w2_parent_reads_slots_of_their_programme_but_not_who_booked');
+select ok(public.my_snapshot()->'ptmSlots' @> '[{"booked":true,"booking":null}]'::jsonb, 'w2_parent_snapshot_says_taken_never_by_whom');
+reset role;
+select tests.as_user_iat('00000000-0000-4000-8000-000000000005', 'aal1', extract(epoch from now())::bigint + 5); -- grd-01: Neel's booking
+select is((select count(*)::int from public.ptm_bookings where student_id = 'stu-01'), 1, 'w2_parent_reads_own_booking');
+select is((select count(*)::int from public.payment_claims), 0, 'w2_another_family_reads_no_claim');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000002'); -- teacher-pa
+select ok(exists (select 1 from public.ptm_bookings), 'w2_teacher_reads_bookings_of_own_programme');
+select is((select count(*)::int from public.payment_claims), 0, 'w2_teacher_reads_no_claim');
+reset role;
+select tests.as_user('00000000-0000-4000-8000-000000000004'); -- driver
+select is((select count(*)::int from public.ptm_slots) + (select count(*)::int from public.ptm_bookings) + (select count(*)::int from public.payment_claims), 0, 'w2_driver_reads_none_of_these');
+reset role;
+select throws_ok($$insert into public.ptm_slots (id, doc) values ('ptm-x', '{"id":"ptm-x","programId":"prog-primary-a","date":"2099-01-01","booking":{"studentId":"stu-01"}}')$$, '23514', null, 'w2_a_slot_row_never_holds_its_booking');
+select is(jsonb_array_length(public.load_slice('{ptmSlots}'::text[], '{}'::jsonb)->'db'->'ptmSlots') > 0
+  and (public.load_slice('{ptmSlots}'::text[], '{}'::jsonb)->'db'->'ptmSlots') @> '[{"booking":{"studentId":"stu-01"}}]'::jsonb, true, 'w2_load_slice_slots_carry_their_bookings');
+select lives_ok($$select public.persist('pgtap-w2-care', 1, jsonb_build_object('deletes', jsonb_build_object('ptmSlots', (select jsonb_agg(slot_id) from public.ptm_bookings where student_id = 'stu-01'))))$$, 'w2_retention_may_delete_slots');
+select is((select count(*)::int from public.ptm_bookings where student_id = 'stu-01'), 0, 'w2_booking_deleted_with_its_slot');
 
 select * from finish();
 rollback;

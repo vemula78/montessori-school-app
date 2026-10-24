@@ -299,7 +299,7 @@ test('school settings: the principal sets the report footer, director, privacy c
   assert.throws(() => run(db, ADMIN, 'admin.setSchoolDetails', { colour: 'red' }), /Unknown setting/);
   assert.throws(() => run(db, ADMIN, 'admin.setSchoolDetails', { reportFooter: { address: 'x', phones: ['1', '2', '3', '4'] } }), /three/);
   const r = run(db, ADMIN, 'admin.setSchoolDetails', { privacyContact: { name: 'Fake Exampleton', role: 'Office manager', email: 'Privacy@Example.com' },
-    officeHours: { start: '08:30', end: '16:00', days: [5, 1, 2, 3, 4] }, upi: { vpa: 'demo.school@examplebank', payeeName: 'Kinfolk Montessori School (Demo)' } });
+    officeHours: { start: '08:00', end: '15:30', days: [5, 1, 2, 3, 4] }, upi: { vpa: 'demo.school@examplebank', payeeName: 'Kinfolk Montessori School (Demo)' } });
   assert.equal(r.privacyContact.email, 'privacy@example.com');
   assert.deepEqual(r.officeHours.days, [1, 2, 3, 4, 5]);
   const a = db.auditLog.at(-1);
@@ -309,8 +309,8 @@ test('school settings: the principal sets the report footer, director, privacy c
   // office hours at a fixed moment (IST): Monday 10:00 open; Monday 18:00 closed until Tuesday 08:30; Saturday → Monday
   const school = db.school;
   assert.equal(officeHoursStatus(school, '2026-10-26T04:30:00.000Z').open, true);
-  assert.deepEqual(officeHoursStatus(school, '2026-10-26T12:30:00.000Z').nextOpen, { day: 2, time: '08:30', inDays: 1 });
-  assert.deepEqual(officeHoursStatus(school, '2026-10-24T06:00:00.000Z').nextOpen, { day: 1, time: '08:30', inDays: 2 });
+  assert.deepEqual(officeHoursStatus(school, '2026-10-26T12:30:00.000Z').nextOpen, { day: 2, time: '08:00', inDays: 1 });
+  assert.deepEqual(officeHoursStatus(school, '2026-10-24T06:00:00.000Z').nextOpen, { day: 1, time: '08:00', inDays: 2 });
   assert.equal(officeHoursStatus({}, '2026-10-24T06:00:00.000Z').set, false);
 });
 
@@ -515,4 +515,127 @@ test('#85 bus-route notices: the principal or the route\'s driver; "running late
   const p = await api.notices.send({ title: 'Fake route notice', body: 'Fake', audience: { scope: 'route', routeIds: ['route-2'] } });
   assert.ok(api.getDb().noticeReceipts.filter(r => r.noticeId === p.id).length > 0);
   assert.deepEqual(validateDb(api.getDb()).filter(v => v.severity !== 'warning'), []);
+});
+
+test('#11 #32 office conversations: a parent writes to the fee office or the principal; teachers never read them; office hours are a setting, nothing is blocked', async () => {
+  const api = await mkApi();
+  api.session.set('persona-grd-02');
+  await assert.rejects(api.threads.open({ studentId: 'stu-04', subject: 'x', body: 'x', to: 'janitor' }), /Unknown recipient/);
+  const t = await api.threads.open({ studentId: 'stu-04', subject: 'Fake: late fee question', body: 'Fake body', to: 'accountant' });
+  assert.equal(t.to, 'accountant');
+  const toHead = await api.threads.open({ studentId: 'stu-04', subject: 'Fake: for the principal', body: 'Fake body', to: 'principal' });
+  api.session.set('persona-stf-accountant');
+  const acc = await api.threads.list();
+  assert.ok(acc.some(x => x.id === t.id) && !acc.some(x => x.id === toHead.id), 'the accountant reads the fee office\'s only');
+  assert.ok(acc.every(x => x.to === 'accountant'));
+  await api.threads.reply(t.id, 'Fake reply from the office');
+  await assert.rejects(api.threads.reply(toHead.id, 'x'), code('NOT_ALLOWED'));
+  await assert.rejects(api.threads.open({ guardianId: 'grd-02', studentId: 'stu-04', subject: 'x', body: 'x', to: 'teacher' }), code('NOT_ALLOWED'));
+  api.session.set('persona-stf-teacher-pa');
+  const tl = await api.threads.list();
+  assert.ok(!tl.some(x => x.id === t.id || x.id === toHead.id), 'teachers never read office conversations');
+  await assert.rejects(api.threads.get(t.id), code('NOT_ALLOWED'));
+  await assert.rejects(api.threads.open({ guardianId: 'grd-02', studentId: 'stu-04', subject: 'x', body: 'x', to: 'principal' }), code('NOT_ALLOWED'));
+  api.session.set('persona-stf-principal');
+  assert.ok((await api.threads.list()).some(x => x.id === toHead.id));
+  const oh = await api.school.officeHours();
+  assert.deepEqual([oh.set, oh.hours.start, oh.hours.end], [true, '08:30', '16:00']);
+});
+
+test('#83 toileting and "please send": new diary kinds, validated; a parent acknowledges a request once', async () => {
+  const api = await mkApi();
+  api.session.set('persona-stf-teacher-toddler');
+  await assert.rejects(api.diary.add({ studentId: 'stu-03', date: TODAY, type: 'toilet', data: { time: '25:00', kind: 'wet' } }), /HH:MM/);
+  await assert.rejects(api.diary.add({ studentId: 'stu-03', date: TODAY, type: 'toilet', data: { time: '10:15', kind: 'sticky' } }), /Unknown kind/);
+  const t = await api.diary.add({ studentId: 'stu-03', date: TODAY, type: 'toilet', data: { time: '10:15', kind: 'wet', note: '' } });
+  assert.deepEqual(t.data, { time: '10:15', kind: 'wet', note: '' });
+  await assert.rejects(api.diary.add({ studentId: 'stu-03', date: TODAY, type: 'needs', data: { items: ['other'] } }), /Say what else/);
+  const n = await api.diary.add({ studentId: 'stu-03', date: TODAY, type: 'needs', data: { items: ['nappies', 'wipes'] } });
+  assert.deepEqual([n.ackAt, n.ackBy], [null, null]);
+  await assert.rejects(api.diary.acknowledge(n.id), code('NOT_ALLOWED'), 'staff do not acknowledge');
+  api.session.set('persona-grd-02'); // Aarav (stu-03)
+  await assert.rejects(api.diary.acknowledge(t.id), /Only a "please send"/);
+  const a = await api.diary.acknowledge(n.id);
+  assert.ok(a.ackAt && a.ackBy === 'grd-02' && a.parentReadAt);
+  const again = await api.diary.acknowledge(n.id);
+  assert.equal(again.ackAt, a.ackAt, 'once');
+  api.session.set('persona-grd-01');
+  await assert.rejects(api.diary.acknowledge(n.id), code('NOT_ALLOWED'));
+});
+
+test('#81 UPI claims: the amount is checked against what is open; the office confirms (a normal receipt, numbers contiguous) or rejects with a reason', async () => {
+  const api = await mkApi();
+  // a child with something open and no claim yet (Rohan has the seed's pending claim)
+  const d0 = api.getDb();
+  api.session.set('persona-stf-accountant');
+  const open = (await api.fees.invoices({})).find(i => i.balancePaise > 0 && i.studentId !== 'stu-16' && d0.students.find(s => s.id === i.studentId).status === 'active');
+  const SID = open.studentId, FAM = `persona-${d0.students.find(s => s.id === SID).guardianIds[0]}`;
+  api.session.set(FAM);
+  const inv = (await api.fees.invoices({ studentId: SID })).find(i => i.id === open.id);
+  const link = await api.fees.upiLink(SID, [inv.id]);
+  assert.match(link.link, /^upi:\/\/pay\?pa=kinfolk\.demo%40examplebank&pn=Kinfolk%20Montessori%20School%20\(Demo\)&am=\d+\.\d{2}&cu=INR&tn=Fees%20/);
+  assert.equal(link.amountPaise, inv.balancePaise);
+  const base = { studentId: SID, invoiceIds: [inv.id], reference: 'FAKEUTR0001', paidOn: TODAY };
+  await assert.rejects(api.fees.claimUpi({ ...base, amountPaise: inv.balancePaise + 1 }), code('INVALID_AMOUNT'));
+  await assert.rejects(api.fees.claimUpi({ ...base, amountPaise: 10.5 }), code('INVALID_AMOUNT'));
+  await assert.rejects(api.fees.claimUpi({ ...base, amountPaise: 100, reference: 'x' }), /reference/);
+  await assert.rejects(api.fees.claimUpi({ ...base, studentId: SID === 'stu-01' ? 'stu-03' : 'stu-01', invoiceIds: [inv.id], amountPaise: 100 }), code('NOT_ALLOWED'));
+  const half = Math.floor(inv.balancePaise / 2);
+  const c1 = await api.fees.claimUpi({ ...base, amountPaise: half });
+  assert.equal(c1.status, 'pending');
+  await assert.rejects(api.fees.claimUpi({ ...base, amountPaise: 100 }), /already been reported/);
+  await assert.rejects(api.fees.claimUpi({ ...base, reference: 'FAKEUTR0002', amountPaise: inv.balancePaise - half + 1 }), code('INVALID_AMOUNT'), 'the pending claim counts');
+  assert.equal((await api.fees.upiLink(SID, [inv.id])).amountPaise, inv.balancePaise - half, 'the link asks only for the rest');
+  const c2 = await api.fees.claimUpi({ ...base, reference: 'FAKEUTR0002', amountPaise: 1000 });
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.fees.confirmClaim(c1.id), code('NOT_ALLOWED'));
+  api.session.set('persona-stf-accountant');
+  const before = api.getDb().counters.receipt;
+  const r = await api.fees.confirmClaim(c1.id);
+  assert.deepEqual([r.claim.status, r.payment.mode, r.payment.reference, r.payment.amountPaise], ['confirmed', 'upi', 'FAKEUTR0001', half]);
+  assert.equal(r.claim.receiptNumber, r.payment.receiptNumber);
+  const ay = r.payment.academicYearId;
+  assert.equal(api.getDb().counters.receipt[ay], (before[ay] || 0) + 1, 'the next receipt number');
+  await assert.rejects(api.fees.confirmClaim(c1.id), /already confirmed/);
+  await assert.rejects(api.fees.rejectClaim(c2.id, ''), /reason/);
+  assert.equal((await api.fees.rejectClaim(c2.id, 'Fake: not in the bank statement')).status, 'rejected');
+  api.session.set(FAM);
+  const mine = await api.fees.claims({});
+  assert.deepEqual(mine.filter(c => [c1.id, c2.id].includes(c.id)).map(c => c.status).sort(), ['confirmed', 'rejected']);
+  api.session.set(FAM === 'persona-grd-01' ? 'persona-grd-02' : 'persona-grd-01');
+  assert.ok(!(await api.fees.claims({})).some(c => c.id === c1.id));
+  assert.deepEqual(validateDb(api.getDb()).filter(v => v.severity !== 'warning'), []);
+});
+
+test('#88 PTM slots: published by the programme\'s teacher; one slot per child and meeting (booking again moves it); parents see only that other slots are taken', async () => {
+  const api = await mkApi();
+  const db = api.getDb();
+  const ev = db.calendarEvents.find(e => e.type === 'ptm' && e.title.startsWith('Parent-teacher meeting - Primary A (sample)'));
+  api.session.set('persona-stf-teacher-pb');
+  await assert.rejects(api.ptm.publishSlots({ eventId: ev.id, programId: 'prog-primary-a', from: '09:00', to: '10:00', minutes: 20 }), code('NOT_ALLOWED'));
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.ptm.publishSlots({ eventId: ev.id, programId: 'prog-primary-a', from: '15:00', to: '16:00', minutes: 15, teacherId: 'stf-teacher-pa' }), /already exist/);
+  const r = await api.ptm.publishSlots({ eventId: ev.id, programId: 'prog-primary-a', from: '09:00', to: '10:00', minutes: 20 });
+  assert.equal(r.created, 3);
+  const all = await api.ptm.slots({ eventId: ev.id });
+  const neelSlot = all.find(x => x.booking && x.booking.studentId === 'stu-01');
+  assert.equal(neelSlot.booking.studentName, 'Neel Notrealsen', 'staff see who booked');
+  api.session.set('persona-grd-02'); // Ira (stu-04) is in Primary A
+  const seen = await api.ptm.slots({ eventId: ev.id });
+  const taken = seen.find(x => x.id === neelSlot.id);
+  assert.deepEqual([taken.taken, taken.booking], [true, null], 'another family\'s booking shows as taken, never whose');
+  await assert.rejects(api.ptm.book(neelSlot.id, 'stu-04'), /just booked/);
+  const free = seen.filter(x => !x.taken);
+  await api.ptm.book(free[0].id, 'stu-04');
+  await api.ptm.book(free[1].id, 'stu-04');
+  const mine = (await api.ptm.slots({ eventId: ev.id })).filter(x => x.booking);
+  assert.deepEqual(mine.map(x => x.id), [free[1].id], 'booking again moved the child');
+  await assert.rejects(api.ptm.book(free[2].id, 'stu-03'), /another programme/);
+  await assert.rejects(api.ptm.cancelBooking(neelSlot.id), code('NOT_ALLOWED'));
+  await api.ptm.cancelBooking(free[1].id);
+  api.session.set('persona-stf-teacher-pa');
+  await assert.rejects(api.ptm.cancelSlot(neelSlot.id), /booked/);
+  assert.equal((await api.ptm.cancelSlot(free[0].id)).status, 'cancelled');
+  api.session.set('persona-grd-02');
+  await assert.rejects(api.ptm.book(free[0].id, 'stu-04'), /cancelled/);
 });
