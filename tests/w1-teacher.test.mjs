@@ -317,3 +317,49 @@ test('#24 whole-class diary: a meal has a per-child amount ("As above"); a nap s
   assert.match(d.querySelector('#d-fields').innerHTML, /name="from" value="13:05"/);
   assert.match(d.querySelector('#d-fields').innerHTML, /name="to" value="14:20"/);
 });
+
+// ---------------------------------------------------------------- going home
+const Pickup = await import('../src/ui/screens/pickup.js');
+
+test('#22 pickup.record: "went home on the school bus" for a child with a route, with no note and no not-on-the-list audit; refused without a route', () => {
+  const db = dSeed();
+  const bus = db.students.find((s) => s.programId === primaryA(db) && s.status === 'active' && s.routeId);
+  const walk = db.students.find((s) => s.programId === primaryA(db) && s.status === 'active' && !s.routeId);
+  const p = dRun(db, T_PA, 'pickup.record', [{ studentId: bus.id, date: D_TODAY, collectedBy: { kind: 'bus' }, time: '15:10' }]);
+  assert.equal(p.kind, 'bus');
+  assert.equal(p.personId, null);
+  assert.ok(!db.auditLog.some((a) => a.entityId === p.id && a.action === 'otherPerson'));
+  assert.throws(() => dRun(db, T_PA, 'pickup.record', [{ studentId: walk.id, date: D_TODAY, collectedBy: { kind: 'bus' }, time: '15:10' }]), { code: 'VALIDATION' });
+});
+
+test('#23 Going home: one tap per child today (the bus first for a bus child, then the last collector first); #22 the bus is an option; #34 guardians as tap-to-call links', async () => {
+  const api = await mkApi();
+  const ctx = mkCtx(api, TEACHER);
+  const pid = ctx.persona.programIds[0];
+  const db = api.getDb();
+  const bus = db.students.find((s) => s.programId === pid && s.status === 'active' && s.routeId);
+  const today = todayISO();
+  // the sample data may already record today's pick-ups: start this child from none
+  const who = await api.care.whoMayCollect(bus.id);
+  ctx.query = { program: pid };
+  await Pickup.render(ctx);
+  const html = ctx.el.innerHTML;
+  if (!(await api.care.pickups({ studentId: bus.id, date: today })).length) {
+    assert.match(html, new RegExp(`data-quick="${bus.id}" data-by="bus:">On the bus \\(`));
+    assert.match(html, new RegExp(`data-quick="${bus.id}" data-by="guardian:${who.guardians[0].id}"`));
+    assert.match(html, /Someone else/);
+  }
+  // one tap records it
+  const q = fake();
+  q.dataset = { quick: bus.id, by: 'bus:' };
+  const click = ctx.el.handlers.click.at(-1);
+  await click({ target: { closest: (sel) => (sel === '[data-quick]' ? q : null) } });
+  const rec = (await api.care.pickups({ studentId: bus.id, date: today }))[0];
+  assert.equal(rec.kind, 'bus');
+  assert.match(rec.time, /^\d\d:\d\d$/);
+  assert.match(await draw(api, TEACHER, Pickup, { program: pid }), /Collected by <strong>the school bus<\/strong>/);
+  // the modal: the bus option and a call link for each guardian with a phone
+  const d = await modalFrom(() => click({ target: { closest: (sel) => (sel === '[data-rec]' ? { dataset: { rec: bus.id } } : null) } }));
+  assert.match(d.innerHTML, /value="bus:"/);
+  assert.match(d.innerHTML, /href="tel:\+91\d+">Call /);
+});

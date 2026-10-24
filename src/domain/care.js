@@ -103,7 +103,8 @@ export const pickupId = (date, studentId) => `pck-${date}-${studentId}`;
 
 /**
  * Who collected the child on `date` (one row per child and day; recording again corrects it).
- * collectedBy: {kind:'guardian', id} | {kind:'contact', id} | {kind:'other', name}; 'other' needs a note.
+ * collectedBy: {kind:'guardian', id} | {kind:'contact', id} | {kind:'other', name} | {kind:'bus'}; 'other' needs a note;
+ * 'bus' (went home on the school bus) only for a child with a route.
  * time: when the child was collected ('HH:MM', school time), needed for an earlier day; `at` is when it was recorded.
  * Names are stored only for 'other' (no row of its own); a guardian or contact is referred to by id.
  * Recording again keeps the earlier version in `history` and is audited ('correct').
@@ -127,6 +128,9 @@ export function recordPickup(db, { studentId, date, collectedBy, note, time } = 
     const c = (db.pickupContacts || []).find(x => x.id === by.id && x.studentId === studentId && x.status === 'active');
     if (!c) fail('VALIDATION', "That person is not on this child's pick-up list");
     row = { kind: 'contact', personId: c.id, name: null };
+  } else if (by.kind === 'bus') {
+    if (!s.routeId) fail('VALIDATION', 'This child does not go home by the school bus');
+    row = { kind: 'bus', personId: null, name: null };
   } else if (by.kind === 'other') {
     row = { kind: 'other', personId: null, name: words(by.name, 'Name of the person', 2, 80) };
     if (!text) fail('VALIDATION', 'Someone not on the list: write how the family confirmed it (for example "mother phoned at 14:30")');

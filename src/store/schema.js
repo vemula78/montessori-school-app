@@ -95,7 +95,7 @@ export const SCHEMA_VERSION = 4; // v2 (Phase 3): learning collections, consents
  *   addedByRole:string, addedAt:string, removedBy:string|null, removedAt:string|null}} PickupContact
  *   A person the family authorises to collect the child (besides the guardians); at most 6 active per child. Removing
  *   someone blanks the phone (the name stays for older pick-up records).
- * @typedef {{id:string, studentId:string, date:string, kind:'guardian'|'contact'|'other', personId:string|null, name:string|null,
+ * @typedef {{id:string, studentId:string, date:string, kind:'guardian'|'contact'|'other'|'bus', personId:string|null, name:string|null,
  *   note:string, time:string|null, at:string, recordedBy:string, correctedAt:string|null,
  *   history:{kind:string, personId:string|null, name:string|null, note:string, time:string|null, at:string, recordedBy:string}[]}} Pickup
  *   Who collected the child that day; id = 'pck-<date>-<studentId>' (one per child and day). name only for kind 'other'.
