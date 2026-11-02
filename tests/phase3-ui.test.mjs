@@ -20,6 +20,15 @@ import { href } from '../src/ui/router.js';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(root, p), 'utf8');
 const NOW = new Date(2026, 9, 2, 10, 0, 0);
+// The screens read today from the real clock (todayISO), but the sample data and these assertions are pinned to NOW:
+// without this the 30-day observation window moves off the sample rows as the real date moves on.
+{
+  const RealDate = Date, offset = NOW.getTime() - RealDate.now();
+  globalThis.Date = class extends RealDate {
+    constructor(...a) { if (a.length === 0) super(RealDate.now() + offset); else super(...a); }
+    static now() { return RealDate.now() + offset; }
+  };
+}
 const EVIL = '"><img src=x onerror=alert(1)><script>alert(2)</script>';
 const JPEG = (n = 1000, type = 'image/jpeg') => new Blob([new Uint8Array(n)], { type });
 

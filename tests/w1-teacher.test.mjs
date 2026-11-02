@@ -44,7 +44,8 @@ async function draw(api, who, mod, query = {}) {
   await mod.render(ctx);
   return ctx.el.innerHTML;
 }
-const lastSchoolDay = async (api, pid) => { let d = todayISO(); while (!(await api.calendar.isWorkingDay(d, pid))) d = addDays(d, -1); return d; };
+// the last working day where children were marked in: the sample leaves today's Primary A register open, so on a weekday today has none
+const lastSchoolDay = async (api, pid) => { let d = todayISO(); while (!(await api.calendar.isWorkingDay(d, pid)) || !(await api.attendance.forDate(d, pid)).some((r) => r.status === 'present' || r.status === 'late')) d = addDays(d, -1); return d; };
 
 /** Radio buttons of the register as state: st[studentId] = the checked value (or undefined). */
 function radios(ctx, st) {
