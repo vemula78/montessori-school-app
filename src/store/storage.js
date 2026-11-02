@@ -19,8 +19,8 @@ import { validateDb, checkStructure } from '../domain/validate.js';
 // visitor empty Learning lists, so a fresh key gives every demo visitor the full sample data instead.
 // v4: absences and pick-up (11-Oct-2026), for the same reason. v5: wave 2 (progress reports, signatures, school settings;
 // 24-Oct-2026).
-export const DB_KEY = 'montessori.db.v5';
-export const OLD_DB_KEYS = ['montessori.db.v1', 'montessori.db.v2', 'montessori.db.v3', 'montessori.db.v4'];
+export const DB_KEY = 'montessori.db.v6';
+export const OLD_DB_KEYS = ['montessori.db.v1', 'montessori.db.v2', 'montessori.db.v3', 'montessori.db.v4', 'montessori.db.v5'];
 export const CORRUPT_PREFIX = 'montessori.db.corrupt.';
 export const APPROX_QUOTA_BYTES = 5 * 1024 * 1024;
 

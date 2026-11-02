@@ -154,7 +154,7 @@ const v1Blob = () => {
   return d;
 };
 
-test('DB_KEY v5: returning demo visitors get the full sample data (progress reports, signatures, school settings), not empty lists', () => assert.equal(DB_KEY, 'montessori.db.v5'));
+test('DB_KEY v6: returning demo visitors get the full wave-2 sample data (health alerts, notice files, PTM slots, payment claims), not the partial v5 data saved while wave 2 was being built', () => assert.equal(DB_KEY, 'montessori.db.v6'));
 
 test('a stored v1 document is migrated on load: new collections empty, leftOn null, retention not decided, nothing else changed', () => {
   const be = memoryBackend();
